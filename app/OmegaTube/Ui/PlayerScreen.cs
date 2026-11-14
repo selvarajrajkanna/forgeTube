@@ -45,7 +45,7 @@ namespace OmegaTube.Ui
             public TextLabel Label;
             public bool Active;      // subscribed / liked / disliked
         }
-        private enum Action { Restart, PlayPause, Next, Comments, Description, Skip, Captions, Audio, Speed, Quality, Loop, Stats }
+        private enum Action { Restart, PlayPause, Next, Comments, Description, Skip, Autoplay, Captions, Audio, Speed, Quality, Loop, Stats }
 
         private class Button
         {
@@ -136,6 +136,8 @@ namespace OmegaTube.Ui
         private bool live;                 // broadcast: no timeline, no seeking
         private bool InList => !string.IsNullOrEmpty(item.PlaylistId);
         private bool Loop => loopVideoId == item.Id;
+        private bool autoplay;
+        private View autoplayKnob;
         private DateTime lastSave;
         private string lastPlayIcon;
 
@@ -150,6 +152,7 @@ namespace OmegaTube.Ui
             this.item = item;
             this.maxHeight = maxHeight > 0 ? maxHeight : app.Config.Player.MaxHeight;
             audioTrack = app.Config.Player.AudioLang;
+            autoplay = app.Config.Player.Autoplay;
             if (loopVideoId != item.Id)
             {
                 loopVideoId = null;
@@ -267,6 +270,7 @@ namespace OmegaTube.Ui
             AddRightButton(Action.Speed, "speed");
             AddRightButton(Action.Audio, "audio_track").Available = false;      // until the video has several
             AddRightButton(Action.Captions, "subtitles").Available = false;     // until the video has some
+            AddRightButton(Action.Autoplay, null);
             skipButton = AddSkipButton();
             LayoutRightButtons();
 
@@ -341,6 +345,18 @@ namespace OmegaTube.Ui
                 var tail = Widgets.Rounded(Theme.Text, 5, 5, 1);
                 tail.Position = new Position(14, 27);
                 view.Add(tail);
+            }
+            else if (action == Action.Autoplay)
+            {
+                // Native Tizen.NUI toggle switch icon.
+                var trackPill = Widgets.Rounded(Color.Transparent, 28, 16, 8);
+                trackPill.Position = new Position(9, 15);
+                trackPill.BorderlineWidth = 2f;
+                trackPill.BorderlineColor = Theme.Text;
+                autoplayKnob = Widgets.Rounded(Theme.Text, 10, 10, 5);
+                autoplayKnob.Position = new Position(autoplay ? 14 : 4, 3);
+                trackPill.Add(autoplayKnob);
+                view.Add(trackPill);
             }
             else
             {
@@ -468,6 +484,7 @@ namespace OmegaTube.Ui
             rightButtons.Find(b => b.Action == Action.Captions).Available = info.Captions.Count > 0;
             rightButtons.Find(b => b.Action == Action.Speed).Available = !live;
             rightButtons.Find(b => b.Action == Action.Loop).Available = !live;
+            rightButtons.Find(b => b.Action == Action.Autoplay).Available = !live;
             LayoutRightButtons();
             if (!captionsAutoPicked)
             {
@@ -1152,7 +1169,7 @@ namespace OmegaTube.Ui
             {
                 App.Replace(new PlayerScreen(App, playlistRow.FirstItem));
             }
-            else if (!live && App.Config.Player.Autoplay && suggestions?.FirstItem != null)
+            else if (!live && autoplay && suggestions?.FirstItem != null)
             {
                 ShowUpNext(suggestions.FirstItem);
             }
@@ -1540,9 +1557,14 @@ namespace OmegaTube.Ui
                     continue;   // the skip pill
                 }
                 bool on = b.Action == Action.Captions ? captions != null
+                        : b.Action == Action.Autoplay ? autoplay
                         : b.Action == Action.Loop ? Loop
                         : b.Action == Action.Stats && statsLabel != null && statsLabel.Visibility;
                 Widgets.SetVisible(b.Indicator, on && b.Available);
+            }
+            if (autoplayKnob != null)
+            {
+                autoplayKnob.PositionX = autoplay ? 14 : 4;
             }
         }
 
@@ -1562,6 +1584,7 @@ namespace OmegaTube.Ui
                 Action.Next => InList ? T("Next in the list") : T("Next video"),
                 Action.Comments => T("Comments"),
                 Action.Description => T("Description"),
+                Action.Autoplay => autoplay ? T("Autoplay: on") : T("Autoplay: off"),
                 Action.Captions => T("Subtitles: {0}", captions != null ? CaptionName(captions) : T("off")),
                 Action.Audio => T("Audio track: {0}", AudioName(info.AudioTrack)),
                 Action.Speed => T("Speed: {0}", SpeedLabel(sessionSpeed)),
@@ -1900,6 +1923,11 @@ namespace OmegaTube.Ui
                 case Action.Speed:
                 case Action.Quality:
                     OpenPanel(action);
+                    break;
+                case Action.Autoplay:
+                    autoplay = !autoplay;
+                    Toast(autoplay ? T("Autoplay on") : T("Autoplay off"));
+                    UpdateIndicators();
                     break;
                 case Action.Loop:
                     loopVideoId = Loop ? null : item.Id;
