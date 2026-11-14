@@ -47,7 +47,7 @@ namespace OmegaTube.Ui
             Add(avatarRing);
             avatar = new ImageView { Size = new Size(64, 64), Position = new Position(23, 44) };
             Add(avatar);
-            Widgets.MaskedImage(avatar, Theme.Icon("person"), Theme.Image("circle_mask"));
+            Widgets.RoundedImage(avatar, Theme.Icon("person"), 32, 64, 64);
 
             var clip = new View { Position = new Position(0, Top), Size = new Size(Theme.RailExpandedWidth, 1080 - Top),
                                   ClippingMode = ClippingModeType.ClipChildren };
@@ -84,7 +84,7 @@ namespace OmegaTube.Ui
             if (avatar != null)
             {
                 string url = string.IsNullOrEmpty(photo) ? Theme.Icon("person") : photo;
-                Widgets.MaskedImage(avatar, url, Theme.Image("circle_mask"));
+                Widgets.RoundedImage(avatar, url, 32, 64, 64);
             }
         }
 

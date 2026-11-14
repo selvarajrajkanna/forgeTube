@@ -427,7 +427,6 @@ namespace OmegaTube.Ui
             tick.Start();
             captionTick = new Timer(100);
             captionTick.Tick += (s, e) => UiGuard.Tick("PlayerScreen.UpdateCaption", () => { UpdateCaption(); return true; });
-            captionTick.Start();
             UiGuard.Fire("PlayerScreen.Start", Start);
             UiGuard.Fire("PlayerScreen.LoadSuggestions", LoadSuggestions);
             UiGuard.Fire("PlayerScreen.LoadDetails", LoadDetails);
@@ -1265,6 +1264,7 @@ namespace OmegaTube.Ui
             UpdateIndicators();
             if (choice == null)
             {
+                captionTick?.Stop();
                 if (announce)
                 {
                     Toast(T("Subtitles off"));
@@ -1303,10 +1303,12 @@ namespace OmegaTube.Ui
             {
                 Toast(T("Subtitles unavailable"));
                 captions = null;
+                captionTick?.Stop();
                 UpdateIndicators();
                 return;
             }
             cues = list;
+            captionTick?.Start();
         }
 
         private string CaptionName(CaptionChoice c)

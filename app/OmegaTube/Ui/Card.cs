@@ -102,7 +102,7 @@ namespace OmegaTube.Ui
 
             if (!string.IsNullOrEmpty(Item.Thumbnail))
             {
-                Widgets.MaskedImage(thumb, Item.Thumbnail, Theme.Image("round_mask"));
+                Widgets.RoundedImage(thumb, Item.Thumbnail, Theme.CardRadius, width, (int)thumb.SizeHeight);
             }
         }
 

@@ -43,23 +43,22 @@ namespace OmegaTube.Ui
             return view;
         }
 
-        // A rounded image: the URL and the rounded-rect alpha mask are set together in one Image visual (setting
-        // AlphaMaskURL separately from ResourceUrl does not always combine into the same visual). Alpha masking
-        // is an old, widely supported NUI feature, so it rounds on Tizen 5.5 where CornerRadius is absent.
-        public static void MaskedImage(ImageView iv, string url, string maskUrl)
+        // A rounded image using GPU CornerRadius (Tizen 10+) and optional decode-size capping
+        // so oversized thumbnails are not decoded at full resolution in RAM.
+        public static void RoundedImage(ImageView iv, string url, float radius, int desiredWidth = 0, int desiredHeight = 0)
         {
-            try
+            Round(iv, radius);
+            if (desiredWidth > 0 && desiredHeight > 0)
             {
                 var map = new PropertyMap();
                 map.Add((int)Visual.Property.Type, new PropertyValue((int)Visual.Type.Image));
                 map.Add((int)ImageVisualProperty.URL, new PropertyValue(url));
-                map.Add((int)ImageVisualProperty.AlphaMaskURL, new PropertyValue(maskUrl));
-                map.Add((int)ImageVisualProperty.CropToMask, new PropertyValue(true));
+                map.Add((int)ImageVisualProperty.DesiredWidth, new PropertyValue(desiredWidth));
+                map.Add((int)ImageVisualProperty.DesiredHeight, new PropertyValue(desiredHeight));
                 iv.Image = map;
             }
-            catch (System.Exception e)
+            else
             {
-                Tizen.Log.Warn("omegatube-modern", "MaskedImage: " + e.Message);
                 iv.ResourceUrl = url;
             }
         }
