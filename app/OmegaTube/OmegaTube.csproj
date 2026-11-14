@@ -6,9 +6,6 @@
     <AssemblyName>OmegaTube</AssemblyName>
     <RootNamespace>OmegaTube</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <PublishReadyToRun>true</PublishReadyToRun>
-    <SelfContained>false</SelfContained>
-    <UseRidGraph>true</UseRidGraph>
   </PropertyGroup>
 
 </Project>
