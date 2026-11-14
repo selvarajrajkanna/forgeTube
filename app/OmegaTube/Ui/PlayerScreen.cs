@@ -80,6 +80,7 @@ namespace OmegaTube.Ui
         private readonly TextLabel titleLabel, metaLabel, timeLabel, durationLabel, clockLabel, stateLabel, statsLabel, toast;
         private readonly TextLabel tooltip;
         private readonly View backdrop;        // opaque while loading: the TV picture must not show through
+        private ImageView poster;
         private readonly View barA, barB;      // black bars where the video does not cover the screen (4:3, 21:9)
         private readonly View spinner;
         private readonly Animation spin;
@@ -170,7 +171,7 @@ namespace OmegaTube.Ui
             // Loading backdrop: black + the video's thumbnail, dimmed. Hidden once frames are on screen
             // (the video plane is under this transparent UI).
             backdrop = new View { Size = new Size(1920, 1080), BackgroundColor = Color.Black };
-            var poster = new ImageView
+            poster = new ImageView
             {
                 Size = new Size(1920, 1080),
                 ResourceUrl = "https://i.ytimg.com/vi/" + item.Id + "/hq720.jpg",
@@ -868,6 +869,12 @@ namespace OmegaTube.Ui
             spinner.Hide();
             spin.Stop();
             backdrop.Hide();
+            if (poster != null)
+            {
+                backdrop.Remove(poster);
+                poster.Dispose();
+                poster = null;
+            }
         }
 
         private async Task LoadSuggestions()

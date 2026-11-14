@@ -17,6 +17,7 @@ namespace OmegaTube.Ui
         public bool Shown { get; private set; } = true;   // managed mirror of Visibility (rows show / hide far cards)
 
         private readonly int width, thumbH;
+        private static readonly Shadow FocusShadow = new Shadow(24f, new Color(0f, 0f, 0f, 0.7f), new Vector2(0f, 8f));
         private readonly ImageView thumb;
         private readonly ImageView info;
         private readonly View infoTopPatch;
@@ -150,9 +151,16 @@ namespace OmegaTube.Ui
             }
             this.focused = focused;
             ApplyFocusColors();
-            BoxShadow = focused ? new Shadow(24f, new Color(0f, 0f, 0f, 0.7f), new Vector2(0f, 8f)) : null;
-            zoom?.Stop();
-            zoom = new Animation(140);
+            BoxShadow = focused ? FocusShadow : null;
+            if (zoom == null)
+            {
+                zoom = new Animation(140);
+            }
+            else
+            {
+                zoom.Stop();
+                zoom.Clear();
+            }
             float s = focused ? Theme.FocusScale : 1f;
             zoom.AnimateTo(this, "Scale", new Vector3(s, s, 1f), Widgets.EaseOut);
             zoom.Play();
