@@ -31,6 +31,18 @@ namespace OmegaTube
             window.KeyEvent += OnKeyEvent;
             MediaKeyGrabber.GrabMediaKeys(window);
 
+            string crash = BugReport.TakeCrash();
+            splash = new Splash(() => Home != null && Home.HasContent);
+            splash.Closed += () => UiGuard.Run("splash closed", () =>
+            {
+                splash = null;
+                if (crash != null && !ShowingReport)
+                {
+                    PushReport(crash, false);
+                }
+            });
+            window.Add(splash);
+
             try
             {
                 // Managed first: the UI language for the report screen if the core does not load.
@@ -44,6 +56,7 @@ namespace OmegaTube
                 EcoreWindow = GetEcoreWindow(window);
                 Home = new HomeScreen(this);
                 Push(Home);
+                splash.RaiseToTop();
             }
             catch (Exception e)
             {
@@ -54,21 +67,15 @@ namespace OmegaTube
                 {
                     NativeCore.Log("startup: " + e);
                 }
+                if (splash != null)
+                {
+                    window.Remove(splash);
+                    splash = null;
+                }
                 PushReport(BugReport.Describe(e), true);
                 return;
             }
 
-            string crash = BugReport.TakeCrash();
-            splash = new Splash(() => Home.HasContent);
-            splash.Closed += () => UiGuard.Run("splash closed", () =>
-            {
-                splash = null;
-                if (crash != null && !ShowingReport)
-                {
-                    PushReport(crash, false);
-                }
-            });
-            window.Add(splash);
             UiGuard.Fire("remote config", RefreshRemote);
         }
 

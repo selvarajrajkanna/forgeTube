@@ -24,7 +24,7 @@ fi
 
 scripts/build-core.sh
 rm -rf app/OmegaTube/bin/Release
-dotnet build app/OmegaTube/OmegaTube.csproj -c Release
+dotnet publish app/OmegaTube/OmegaTube.csproj -c Release -r tizen-armel --no-self-contained
 
 TPK=$(find app/OmegaTube/bin/Release -name '*.tpk' | head -n1)
 # OMEGA_NO_SIGN=1 (CI): keep the SDK's test signature, users re-sign for their TV (scripts/install-tv.sh).
