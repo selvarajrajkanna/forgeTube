@@ -13,6 +13,7 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 #include <psa/crypto.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -589,6 +590,7 @@ size_t Connection::read_some(void* dst, size_t n) {
 
 std::string Connection::read_all(size_t limit) {
     std::string out;
+    if (content_length_ > 0) out.reserve(std::min<size_t>(static_cast<size_t>(content_length_), limit));
     char tmp[16384];
     while (out.size() < limit) {
         size_t got = read_some(tmp, sizeof(tmp));
@@ -657,6 +659,33 @@ ConnectionPool& conn_pool() {
     return pool;
 }
 
+bool decompress_body(std::string_view src, bool gzip, std::string& out, size_t limit, bool& too_large) {
+    too_large = false;
+    if (src.empty()) return true;
+    z_stream zs{};
+    if (inflateInit2(&zs, (gzip ? 16 : 0) + MAX_WBITS) != Z_OK) return false;
+    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(src.data()));
+    zs.avail_in = static_cast<uInt>(src.size());
+    out.reserve(std::min(src.size() * 4, limit));
+    char buf[16384];
+    int rc = Z_OK;
+    while (rc == Z_OK) {
+        zs.next_out = reinterpret_cast<Bytef*>(buf);
+        zs.avail_out = sizeof(buf);
+        rc = inflate(&zs, Z_NO_FLUSH);
+        size_t have = sizeof(buf) - zs.avail_out;
+        if (out.size() + have > limit) {
+            inflateEnd(&zs);
+            out.clear();
+            too_large = true;
+            return false;
+        }
+        out.append(buf, have);
+    }
+    inflateEnd(&zs);
+    return rc == Z_STREAM_END;
+}
+
 Response fetch(const Request& req, size_t max_body) {
     Response res;
     Url first_url;
@@ -666,6 +695,14 @@ Response fetch(const Request& req, size_t max_body) {
     }
     auto conn = initial_key.empty() ? std::make_unique<Connection>() : conn_pool().take(initial_key);
     Request current = req;
+    bool has_ae = false;
+    for (const auto& h : current.headers) {
+        if (iequals(h.first, "Accept-Encoding")) {
+            has_ae = true;
+            break;
+        }
+    }
+    if (!has_ae) current.headers.emplace_back("Accept-Encoding", "gzip");
     for (int redirects = 0;; ++redirects) {
         if (!conn->send(current) && !conn->send(current)) {  // one retry: TV Wi-Fi hiccups are common
             res.error = conn->error();
@@ -689,6 +726,19 @@ Response fetch(const Request& req, size_t max_body) {
     if (!conn->body_done() && !conn->error().empty()) {
         res.error = conn->error();
         return res;
+    }
+    std::string_view encoding = conn->header_view("Content-Encoding");
+    if (iequals(encoding, "gzip") || iequals(encoding, "x-gzip") || iequals(encoding, "deflate")) {
+        std::string decoded;
+        bool too_large = false;
+        bool is_gzip = !iequals(encoding, "deflate");
+        if (!decompress_body(res.body, is_gzip, decoded, max_body, too_large)) {
+            res.body.clear();
+            res.error = too_large ? "response too large" : "gzip decode failed";
+            conn_pool().put(std::move(conn));
+            return res;
+        }
+        res.body = std::move(decoded);
     }
     conn_pool().put(std::move(conn));
     return res;

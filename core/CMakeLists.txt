@@ -29,6 +29,20 @@ target_compile_options(omega_quickjs PRIVATE -O2 -w)
 target_include_directories(omega_quickjs PUBLIC ${OMEGA_QUICKJS})
 target_link_libraries(omega_quickjs PUBLIC m)
 
+# zlib (static, PIC, inflate-only): gzip decompression for HTTP API responses.
+set(OMEGA_ZLIB ${OMEGA_DEPS}/zlib-1.3.1)
+add_library(omega_zlib STATIC
+    ${OMEGA_ZLIB}/adler32.c
+    ${OMEGA_ZLIB}/crc32.c
+    ${OMEGA_ZLIB}/inffast.c
+    ${OMEGA_ZLIB}/inflate.c
+    ${OMEGA_ZLIB}/inftrees.c
+    ${OMEGA_ZLIB}/zutil.c
+)
+set_target_properties(omega_zlib PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hidden)
+target_compile_options(omega_zlib PRIVATE -O3 -w)
+target_include_directories(omega_zlib PUBLIC ${OMEGA_ZLIB})
+
 # The EJS solver bundles (embedded as C strings).
 file(READ ${OMEGA_DEPS}/ejs-0.8.0/lib.min.js OMEGA_EJS_LIB)
 file(READ ${OMEGA_DEPS}/ejs-0.8.0/core.min.js OMEGA_EJS_CORE)
@@ -76,7 +90,7 @@ target_compile_options(omegacore PRIVATE -Wall -Wextra -O3 $<$<CXX_COMPILER_ID:G
 set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
 
 find_package(Threads REQUIRED)
-target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib Threads::Threads ${CMAKE_DL_LIBS})
 
 # The TV ships its own libstdc++; link ours statically so we never depend on its version.
 target_link_libraries(omegacore PRIVATE -static-libstdc++ -static-libgcc -Wl,--no-undefined)
@@ -90,5 +104,5 @@ if(OMEGA_HOST_TOOLS)
                    src/util/remote_config.cpp ${CMAKE_CURRENT_BINARY_DIR}/cacert.cpp
                    ${CMAKE_CURRENT_BINARY_DIR}/remote_config_default.cpp)
     target_include_directories(ytcheck PRIVATE src ${OMEGA_DEPS})
-    target_link_libraries(ytcheck PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs Threads::Threads)
+    target_link_libraries(ytcheck PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib Threads::Threads)
 endif()

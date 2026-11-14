@@ -8,6 +8,7 @@ JSON_VERSION=3.12.0
 QRCODEGEN_VERSION=1.8.0
 QUICKJS_VERSION=0.17.0
 EJS_VERSION=0.8.0
+ZLIB_VERSION=1.3.1
 DEPS=build/deps
 mkdir -p "$DEPS"
 
@@ -29,6 +30,11 @@ fi
 # QuickJS-ng (MIT): runs YouTube's player JS to decipher stream URLs of the fallback client.
 if [ ! -d "$DEPS/quickjs-$QUICKJS_VERSION" ]; then
   curl -sfL "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v$QUICKJS_VERSION.tar.gz" | tar -xz -C "$DEPS"
+fi
+# zlib (zlib license): gzip decompression for InnerTube / config HTTP responses.
+if [ ! -d "$DEPS/zlib-$ZLIB_VERSION" ]; then
+  curl -sfL "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" \
+    | tar -xz -C "$DEPS"
 fi
 # yt-dlp EJS solver (Unlicense; bundles meriyah ISC + astring MIT): finds the n / sig functions in the player JS.
 if [ ! -f "$DEPS/ejs-$EJS_VERSION/core.min.js" ]; then
