@@ -8,303 +8,178 @@
 <h1 align="center">omegatube-modern</h1>
 
 <p align="center">
-  A native YouTube client for Samsung smart TVs (Tizen 10) with SponsorBlock built in<br>
-  and its <b>own video player</b> for smooth 4K 10-bit HDR playback.<br>
-  <sub>Started as a fork of <a href="https://github.com/IIyn/omegatube">IIyn/omegatube</a>, optimized for Tizen 10 &amp; .NET 8 without legacy Tizen compatibility workarounds. Independent project, not affiliated with Google, YouTube or Samsung.</sub>
+  A fast, distraction-free native YouTube client for <b>Samsung Smart TVs (Tizen 10)</b><br>
+  with built-in SponsorBlock, <b>AV1 &amp; 10-bit HDR</b> playback, and a custom hardware-accelerated video player.<br>
+  <sub>Started as a fork of <a href="https://github.com/IIyn/omegatube">IIyn/omegatube</a>, rebuilt and optimized exclusively for Tizen 10. Independent project, not affiliated with Google, YouTube, or Samsung.</sub>
 </p>
 
 ---
 
 ## Contents
 
-- [Features](#features)
-- [Why omegatube-modern?](#why-omegatube-modern)
-- [How it works](#how-it-works)
-- [Install it on your TV (step by step)](#install-it-on-your-tv-step-by-step)
-- [Install it with Apps2Samsung](#install-it-with-apps2samsung)
+- [About](#about)
+- [Key Features](#key-features)
+- [Why It Feels So Fast](#why-it-feels-so-fast)
+- [Technical Architecture & Optimizations](#technical-architecture--optimizations)
+- [Install on Your TV](#install-on-your-tv)
+- [Install with Apps2Samsung](#install-with-apps2samsung)
 - [Troubleshooting](#troubleshooting)
-- [Reporting a bug](#reporting-a-bug)
-- [Suggesting a feature](#suggesting-a-feature)
-- [Contributing code](#contributing-code)
-- [Development](#development)
-- [Credits and license](#credits-and-license)
+- [Reporting a Bug](#reporting-a-bug)
+- [Contributing](#contributing)
+- [Credits and License](#credits-and-license)
 
-## Features
+---
 
-- **No interruptions.** The app's own player reads the video streams directly, so playback runs uninterrupted.
-- **SponsorBlock**: skips sponsors, intros, reminders to subscribe and more, one setting per category (auto skip, skip button or off).
-- **Native playback**: up to **4K / 1440p (VP9)**, **10-bit HDR (HDR10 / HLG)**, and 1080p60 (H.264), with a choice of codec. AV1 is supported where the TV hardware allows.
-- **Hardware-aware quality picker**: filters player quality options to resolutions supported by the TV panel.
-- **Your Google account**: sign in with a QR code. You get your home feed, subscriptions, history, likes and subscriptions, and your watch progress is kept in sync with your other devices.
-- **Live streams, playlists and mixes**, with a "play next" countdown.
-- **Subtitles**: auto-translated captions, adjustable size and background.
-- **Audio tracks** for multi-language videos, playback speed (with reverse-logarithmic seek acceleration) and loop.
-- **TV voice & IME search**: native `TextField` integration with the TV's system virtual keyboard and voice dictation.
-- **Stats for nerds**: live playback buffer/stall metrics, CPU & memory usage, Tizen OS version, TV firmware build, and app version.
-- **A remote-friendly interface** in the **Omega** layout, with a customisable side menu.
-- **Languages**: English, French, Spanish (keyboard layout defaults to English India).
+## About
 
-## Why omegatube-modern?
+**omegatube-modern** started as a fork of [IIyn/omegatube](https://github.com/IIyn/omegatube) with one clear goal: strip away legacy compatibility layers and squeeze maximum speed, picture quality, and efficiency out of modern **Samsung Tizen 10 TVs**.
 
-On Android TV, [SmartTube](https://github.com/yuliskov/SmartTube) is the reference YouTube client. **Samsung TVs don't run Android but Tizen**, and SmartTube doesn't exist for Tizen.
+Unlike browser-based TV apps that wrap YouTube's heavy web interface, **omegatube-modern** talks directly to YouTube and feeds video and audio straight into your TV's dedicated hardware decoders. The result is instant startup, crisp 4K HDR playback, and zero browser stutter.
 
-The best Tizen option so far is [TizenTube](https://github.com/reisxd/TizenTube), loaded through TizenBrew. It runs YouTube's own TV web app and adds features such as SponsorBlock to it. It works, but I kept hitting playback bugs:
-stuttering video, audio dropouts, and audible "thumps" when the audio buffer runs dry.
+---
 
-Those bugs can't be fixed from TizenTube. A web app plays video through the **TV's built-in browser engine** (HTML5 `<video>` + Media Source Extensions). On these TVs that engine is old and closed, and the JavaScript has no control over how it buffers and decodes. A smooth player had to bypass the browser entirely.
+## Key Features
 
-omegatube-modern is a ground-up rewrite. It does not use YouTube's web app or the browser's player. It downloads the streams itself and feeds the audio and video data straight to the TV's hardware decoders through Samsung's native player API, so buffering stays under the app's control. Playback is as smooth as the TV's own apps.
+### Picture & Sound Built for Modern TVs
+- **Proper AV1 & 10-bit HDR Support:** Prioritizes **AV1** where supported alongside **VP9** and **H.264**, with full **HDR10** and **HLG** metadata passthrough for vibrant 4K 10-bit playback.
+- **Hardware-Aware Quality Picker:** Automatically filters available resolutions, frame rates (up to 60fps), and HDR badges to match what your TV panel supports.
+- **Multi-Language Audio & Subtitles:** Switch audio tracks on multi-language videos, adjust subtitle size and background, or use auto-translated captions.
 
-## How it works
+### Minimal, Distraction-Free Video Player
+- **Clean, Compact Controls:** A modern Material-inspired overlay that stays out of your way so the video stays front and center.
+- **Per-Video Autoplay Toggle:** Quickly turn autoplay on or off right next to the subtitle button for the current video without changing your global settings.
+- **Side-by-Side Comments & Description:** Read video descriptions and browse comments in a sleek 30% side panel without covering or stopping the video.
+- **Smart Playback Controls:** Loop mode, variable playback speed, reverse-logarithmic seek acceleration, and a "Play Next" countdown for playlists and mixes.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  omegatube-modern.tpk                                        │
-│                                                              │
-│  ┌────────────────────────────┐   P/Invoke   ┌─────────────┐ │
-│  │ C# shell (TizenFX / NUI)   │ ───────────▶ │ C++ core    │ │
-│  │  screens, remote control,  │   C API      │ libomega-   │ │
-│  │  settings, translations    │ ◀─────────── │ core.so     │ │
-│  └────────────────────────────┘   JSON       └──────┬──────┘ │
-└─────────────────────────────────────────────────────┼────────┘
-                       ┌──────────────────────────────┼─────────────────────┐
-                       ▼                              ▼                     ▼
-              YouTube (InnerTube API,       Samsung ESPlayer         SponsorBlock,
-              video/audio streams, TLS)    (libesplusplayer.so,      Return YouTube
-                                            hardware decoders)        Dislike
-```
+### Ad-Free & Sponsor-Free Watching
+- **No Unwanted Interruptions:** Direct stream playback means smooth, uninterrupted watching from start to finish.
+- **Built-In SponsorBlock:** Automatically skips sponsors, intros, outros, and self-promotions—or offers a clean one-click skip button per category.
 
-### The two halves
+### Made for Your Remote & Account
+- **QR-Code Google Sign-In:** Sign in with your phone to access your Home feed, Subscriptions, History, Likes, and synced watch progress across devices.
+- **TV Keyboard & Voice Search:** Uses your TV's native on-screen keyboard and voice dictation for fast searching.
+- **Customizable Side Menu:** Reorder or hide tabs to match how you watch, with support for Live streams, Playlists, and Channels.
+- **Stats for Nerds:** Live overlay showing video/audio codecs, bitrate, buffer health, dropped frames, CPU/memory usage, Tizen OS version, and TV firmware.
 
-| Part | Toolkit / Language | Role |
+---
+
+## Why It Feels So Fast
+
+Most third-party YouTube apps on Samsung TVs run inside the TV's built-in web browser. That browser layer uses extra memory, slows down scrolling, and often causes audio thumps or frame drops because the app has no control over buffering.
+
+**omegatube-modern** skips the web browser completely:
+- **Direct to Hardware:** It downloads audio and video streams itself and hands them straight to your TV's native media chip.
+- **Instant Launch:** The splash screen appears immediately while local watch history and network security certificates warm up in the background.
+- **Fewer Delays Between Videos:** The app remembers recent server addresses, reuses secure connections, and loads video and audio tracks at the same time instead of one after another.
+- **Lightweight Interface:** Every card, icon, and animation is drawn using Tizen 10's native hardware-accelerated UI components—no heavy image masks or wasted memory.
+
+---
+
+## Technical Architecture & Optimizations
+
+| Layer | Technology | Role |
 | --- | --- | --- |
-| `app/OmegaTube` | C# (.NET 8, `net8.0-tizen10.0`, `Tizen.NUI` & `Tizen.NUI.BaseComponents`) | The interface: hardware-accelerated NUI screens, animations, focus and remote control handling, TV IME/voice search, settings, translations, local data. Packages everything into a `.tpk`. |
-| `core` | C++20 | Everything else: HTTPS, YouTube's InnerTube API, sign-in, the MP4/WebM demuxers (with 10-bit HDR10/HLG metadata), the player driving `libesplusplayer.so`, SponsorBlock. Built as `libomegacore.so` with a small C API (`core/include/omega/core.h`). |
+| **UI Shell** (`app/OmegaTube`) | C# / .NET 8 (`net8.0-tizen10.0`, API 10.0) | Native `Tizen.NUI` screens, GPU-accelerated animations, remote focus handling, TV IME/voice input, settings, and `.tpk` packaging. |
+| **Media & Network Core** (`core`) | C++20 (`libomegacore.so`) | HTTPS stack, InnerTube API client, MP4/WebM demuxers with HDR10/HLG metadata, SponsorBlock, and Samsung ESPlayer integration (`libesplusplayer.so`). |
 
-### Why this split?
+### Tizen 10 & C++20 Platform Improvements
+- **Exclusive Tizen 10 Target:** Legacy Tizen 5.5–9.0 workarounds, software fallbacks, and unused assets were removed, keeping the UI and runtime lean.
+- **ARMv8 Optimized C++20 Core:** Cross-compiled with `-O3` and ARMv8 NEON/crypto acceleration (`-march=armv8-a -mfpu=crypto-neon-fp-armv8`) with statically linked `libstdc++`/`libgcc` for predictable performance.
+- **Native NUI Components:**
+  - Uses GPU `CornerRadius` shaders and `DesiredWidth`/`DesiredHeight` decode-size capping instead of bitmap alpha masks (`AlphaMaskURL`), cutting texture memory and GPU composition passes.
+  - Native vector-drawn icons and indicators inside player controls instead of extra PNG textures.
+  - Reuses focus `Shadow` and `Animation` instances across card navigation, disposes the 1080p loading backdrop texture once the first video frame renders, and runs the subtitle timer only when captions are enabled.
+  - Lazy tab initialization and virtualized card rows keep memory low while browsing large feeds.
 
-- **Why not a web app?** The browser's video player is where the bugs come from (see above).
-- **Why not a pure native C/C++ app?** Samsung only lets third parties install native apps signed with a *partner* certificate. A .NET app, signed with the free developer certificate, may ship and load its own native `.so` library. So the C# part is a thin shell and the heavy lifting happens in C++.
-- **Why C++ for the core?** It talks to Samsung's native `esplusplayer` C API (loaded with `dlopen` from the TV's firmware), parses video containers byte by byte and keeps memory under tight control. The same code also builds on a PC (`core/tools`), so YouTube and demuxer changes can be tested without a TV.
+### Network, Demuxing & Startup Optimizations
+- **Async Startup Warmup:** Root CA certificates (`cacert.pem`) and local watch-position storage initialize on background threads while the splash screen renders immediately.
+- **DNS & TLS Caching:** 60-second in-memory DNS cache and Mbed TLS session resumption per `host:port` eliminate repeated lookups and full TLS handshakes.
+- **HTTP Keep-Alive Pool & Gzip Compression:** Persistent connection pooling for `net::fetch()` combined with `Accept-Encoding: gzip` (`zlib` inflate) and pre-allocated response buffers shrinks API payloads and speeds up feed/metadata loads.
+- **Parallel Stream Opening:** Video and audio tracks open, handshake, and parse container headers concurrently at playback start.
+- **Zero-Allocation Demux Replay:** Container probing replays the initial header bytes from a fixed stack-sized buffer with a zero-overhead fast path for all subsequent reads.
+- **Dynamic Remote Config:** YouTube client parameters live in `remote-config.json` and update automatically at startup so API changes can be resolved without reinstalling.
 
-### Inside the core
+---
 
-| Module | What it does |
-| --- | --- |
-| `net/` | HTTPS client on [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) with an embedded CA bundle. It does ranged reads with retries for videos and fetches segments for live streams. |
-| `media/` | Demuxers for fragmented MP4 (H.264, AV1, AAC) and WebM (VP9, Opus) that split streams into packets for the decoder. |
-| `player/` | Feeds the packets to the hardware through ESPlayer. Handles seeking, quality switching, A/V sync and a bounded buffer. |
-| `yt/` | YouTube's internal *InnerTube* API: feeds, search, video details, captions, likes and subscriptions, watch history pings. Also Google sign-in (TV device flow), SponsorBlock, and a JavaScript solver ([QuickJS-ng](https://github.com/quickjs-ng/quickjs) + [yt-dlp EJS](https://github.com/yt-dlp/ejs)) for the fallback client's stream URLs. |
-| `util/` | Logging and remote configuration. |
+## Install on Your TV
 
-### Other design choices
+> **Supported TVs:** Samsung Smart TVs running **Tizen 10.0 or newer**. For older Tizen 6.0–9.0 TVs, see [IIyn/omegatube](https://github.com/IIyn/omegatube).
 
-- **Remote configuration (`remote-config.json`).** YouTube changes its private API often. The client names, versions and keys the app sends live in this file, not in the code. The app downloads the latest copy from this repository at startup (falling back to the copy built into it), so a YouTube change can often be fixed by editing one JSON file, without a new release.
-- **Direct stream URLs.** The main client returns stream URLs that play directly, so nothing has to run YouTube's JavaScript. If it fails, a fallback TV client is used and its URLs are deciphered with the embedded JavaScript engine.
-- **Modern Tizen 10 / .NET 8 target (`net8.0-tizen10.0`, API 10.0).** Legacy Tizen 5.5–8.0 compatibility layers, unused themes/counters (Glorious, Return YouTube Dislike), and old workarounds were stripped out so the UI and runtime stay lean.
-- **Reproducible cross-compiling.** The C++20 core is built in a Docker image (`toolchain/Dockerfile`, Debian bookworm, `arm-linux-gnueabi`) with static `libstdc++`/`libgcc` so the binary runs cleanly on modern Tizen TVs.
+You need a computer (Windows 10/11, macOS, or Linux) on the **same Wi-Fi/network** as your TV and a free **Samsung account** (used to sign the package for your TV).
 
-## Install it on your TV (step by step)
+### 1. Run the Installer on Your Computer
 
-You don't need any technical knowledge: you copy one line, then the installer tells you what to do. It takes about 10 minutes the first time.
+- **Windows (PowerShell):**
+  ```powershell
+  irm https://raw.githubusercontent.com/selvarajrajkanna/omegatube-modern/main/scripts/install-tv.ps1 | iex
+  ```
+- **macOS / Linux (Terminal):**
+  ```sh
+  curl -fsSL https://github.com/selvarajrajkanna/omegatube-modern/releases/latest/download/install.sh | bash
+  ```
 
-> **Which TVs?** Samsung smart TVs running **Tizen 10.0 or newer**. (This fork is modernized specifically for Tizen 10 / .NET 8; for older Tizen 6.0–9.0 TVs, see the upstream [IIyn/omegatube](https://github.com/IIyn/omegatube) repository.)
+### 2. Follow the On-Screen Prompts
 
-> **Why can't I just download it from the Samsung store?** Samsung's store does not accept apps like this one. Apps from outside the store must be **signed with a certificate made for your specific TV**, which needs a free Samsung account. The installer does all of this for you.
+1. The installer downloads the required Samsung TV tools (first time only).
+2. Enable **Developer Mode** on your TV:
+   - Open the **Apps** screen on your TV.
+   - Press **1 2 3 4 5** on your remote.
+   - Turn **Developer Mode** **On**, enter the computer IP shown by the installer, and confirm.
+   - **Restart your TV** by holding the power button until the Samsung logo appears.
+3. Enter your TV's IP address (**Settings → General → Network → Network Status → IP Settings**).
+4. Sign in to your Samsung account in the browser window that opens to generate your TV's signing certificate (first time only).
+5. The installer downloads, signs, and launches **omegatube-modern** on your TV.
 
-**You need:**
+To **update** later, run the same command again—your certificate, settings, and YouTube account are preserved.
 
-- your Samsung TV and its remote,
-- a computer running **Windows 10/11**, **macOS** or **Linux**, on the **same network** as the TV (same Wi-Fi or box),
-- a **Samsung account** (free, you can create one during the installation).
+---
 
-### 1. Open a terminal
+## Install with Apps2Samsung
 
-- **Windows**: right-click the Start button and choose *Terminal* (or *Windows PowerShell*).
-- **macOS**: open the *Terminal* app (press <kbd>Cmd</kbd> + <kbd>Space</kbd>, type `Terminal`, press Enter).
-- **Linux**: open the *Terminal* app from your applications menu.
+Prefer a graphical installer? **omegatube-modern** can also be installed using [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) (available for Windows, macOS, and Linux):
 
-### 2. Paste this line and press Enter
+1. Download and open **Apps2Samsung** from its [releases page](https://github.com/Apps2Samsung/Apps2Samsung/releases).
+2. Enable **Developer Mode** on your TV using your computer's IP address and restart the TV.
+3. Select your TV in Apps2Samsung, pick **omegatube-modern**, and install.
 
-**Windows:**
+*(Stick to one installer method for updates so the signing certificate stays the same.)*
 
-```powershell
-irm https://raw.githubusercontent.com/selvarajrajkanna/omegatube-modern/main/scripts/install-tv.ps1 | iex
-```
-
-**macOS and Linux:**
-
-```sh
-curl -fsSL https://github.com/selvarajrajkanna/omegatube-modern/releases/latest/download/install.sh | bash
-```
-
-### 3. Follow the instructions
-
-The installer does everything else and tells you when it needs you:
-
-1. It downloads the tools it needs (Java and Samsung's TV tools, the first time only, a few minutes).
-2. It shows **your computer's address** and asks you to turn on **Developer Mode** on the TV:
-   - on the TV, open the **Apps** screen;
-   - on the remote, type **1 2 3 4 5** (no number keys? press the **123** button to show a number pad on screen);
-   - switch *Developer Mode* **On**, enter the computer's address in **Host PC IP** and confirm;
-   - **restart the TV**: hold the remote's power button until the Samsung logo appears again.
-3. It asks for **the TV's address**. You can find it on the TV in **Settings → General → Network → Network Status → IP Settings** (for example `192.168.1.9`).
-4. It **opens a Samsung sign-in page in your browser**: sign in (or create an account). This creates the certificate for *your* TV. You only do this once.
-5. It downloads the latest omegatube-modern, signs it for your TV, installs it and opens it.
-
-When you see **"Done!"**, omegatube-modern is in your TV's app list. In the app, open **Account** to sign in to YouTube by scanning the QR code with your phone.
-
-### Updating
-
-Run the same line again. Your certificate is reused, so there's no Samsung sign-in this time, and your settings and YouTube account are kept. If Developer Mode is still on with your computer's address, just press Enter at that step.
-
-### Where things go
-
-The installer only writes in these folders, which you can delete once omegatube-modern is installed (keep the certificate if you want updates to keep your settings):
-
-| | Samsung's TV tools | Java, downloads, certificate |
-| --- | --- | --- |
-| Windows | `C:\tizen-studio` | `C:\omegatube-modern-installer` (certificate in `certificate\`) |
-| macOS / Linux | `~/tizen-studio` | `~/.omegatube-modern-installer`, certificate in `~/SamsungCertificate/omegatube-modern` |
-
-### Without the one-liner
-
-You can also download `install.ps1` (Windows) or `install.sh` (macOS, Linux) from the [latest release](https://github.com/selvarajrajkanna/omegatube-modern/releases/latest) and run it, optionally with the TV address to skip the questions: `bash install.sh 192.168.1.9`, or in PowerShell `powershell -ExecutionPolicy Bypass -File install.ps1 192.168.1.9`.
-
-## Install it with Apps2Samsung
-
-Prefer an app with buttons over a terminal? omegatube-modern is in the community catalog of [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung), a free installer for Windows, macOS and Linux that handles Developer Mode, the Samsung certificate and the install for you.
-
-1. Download Apps2Samsung from its [releases page](https://github.com/Apps2Samsung/Apps2Samsung/releases) and open it.
-2. Turn on **Developer Mode** on the TV as described in step 3 above, with the address of the computer running Apps2Samsung.
-3. In Apps2Samsung, pick your TV, choose **omegatube-modern** in the app list (category *Streaming*) and install.
-
-The catalog picks up each new omegatube-modern release within a day: install it again from Apps2Samsung to update. Best stick to one installer: each one signs the app with its own certificate, so switching from one to the other may need an uninstall first (see the *signature* error below).
+---
 
 ## Troubleshooting
 
 | Problem | Solution |
 | --- | --- |
-| *"The TV did not answer"* | Check that Developer Mode is **On** with **your computer's** address, that the TV was **fully restarted** afterwards, and that both devices are on the same network. A VPN on the computer can also block the connection. |
-| Windows asks whether to allow *sdb* or *Java* through the firewall | Allow it on private networks: it's how the computer talks to the TV and receives the Samsung sign-in. |
-| A Mac with an Apple chip asks to install *Rosetta* | Accept: Samsung's TV tools are built for Intel Macs and need it. |
-| The browser page doesn't open | Copy the link printed in the terminal into your browser. |
-| Install fails with a *signature* or *certificate* error | An older omegatube-modern signed with another certificate is installed. Uninstall it on the TV (Apps → omegatube-modern → long-press OK → Delete) and run the installer again. |
-| The app disappeared after a few days | This shouldn't happen with Developer Mode on. Run the installer again. |
-| Another tool (e.g. TizenBrew) needs a different *Host PC IP* | You can change it back after installing. omegatube-modern keeps working; the address only matters while installing. |
-| Your Samsung certificate expired (after one year) | Run the installer again to create a new one. If the install is refused, uninstall omegatube-modern first (you will have to sign in to YouTube again). |
-| A video won't play / YouTube changed something | [Report it](#reporting-a-bug) with the video link. Many fixes arrive through `remote-config.json` and need no reinstall. |
-| The app opens, goes black and closes | Update to the latest version and open it again: instead of closing, it now shows what went wrong with a QR code to [report it](#reporting-a-bug). |
+| *"The TV did not answer"* | Confirm Developer Mode is **On** with your computer's IP, the TV was **restarted**, both devices are on the same network, and no VPN is blocking the connection. |
+| Windows firewall prompt for *sdb* or *Java* | Allow access on private networks so the installer can connect to your TV and receive the Samsung sign-in callback. |
+| Signature or certificate error on install | Uninstall any previous version signed with a different certificate on the TV (**Apps → omegatube-modern → long-press OK → Delete**) and run the installer again. |
+| Video won't play after a YouTube change | [Report the issue](#reporting-a-bug) with the video link. Many client fixes roll out via `remote-config.json` without needing an app update. |
 
-## Reporting a bug
+---
 
-omegatube-modern runs on many TV models and Tizen versions that we can't all test, so reports from your TV are very welcome. The app fills them in for you:
+## Reporting a Bug
 
-1. On the TV, open **Settings → About → Report a problem**. After a crash, or when omegatube-modern can't start on your TV, this screen shows up by itself.
-2. Scan the QR code with your phone's camera. It opens a [GitHub issue](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=bug.yml) already filled in with the app version, the TV model, the Tizen version and the error or the end of the log.
-3. Add a few words about what you were doing (and the video link for a playback problem), then send it. You need a free GitHub account.
+1. On your TV, open **Settings → About → Report a problem** (or scan the QR code shown automatically if an error occurs).
+2. Scan the QR code with your phone to open a pre-filled [GitHub issue](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=bug.yml) containing your app version, TV model, Tizen version, and error details.
+3. Add a brief note on what happened and submit.
 
-**Attach the full log** (on the same screen) adds a link to the whole log of this session and the previous one. It is sent to omegatube-modern's own server ([omegatube-logs](https://github.com/IIyn/omegatube-logs), a small Cloudflare Worker) and deleted after 90 days; anyone with the link can read it, so omegatube-modern first removes account tokens, stream links, e-mail and IP addresses, video titles and searches. Nothing is sent unless you press it, and you can ask for a log to be deleted in the issue.
+You can optionally attach the session log from the same screen; sensitive items (account tokens, emails, IP addresses, stream URLs, and titles) are stripped automatically before upload.
 
-No QR code? Open an [issue](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=bug.yml) by hand with your TV model (Settings → Support → About This TV), the Tizen version and what happened.
+---
 
-## Suggesting a feature
+## Contributing
 
-Have an idea for omegatube-modern? Anyone can suggest a new feature, a change to how something works, a different default or any other recommendation: open a [feature request](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=feature.yml).
+Pull requests and feature ideas are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code, and open a [feature request](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=feature.yml) for new ideas.
 
-- One idea per issue, so each one can be discussed on its own.
-- Check the [existing issues](https://github.com/selvarajrajkanna/omegatube-modern/issues) first: if someone already suggested it, add a 👍 or a comment there. Votes help choose what comes next.
-- Explain what it would change for you, not only what to add: the problem behind an idea often matters more than the exact solution.
+For local development, the C++20 core builds natively on Linux (`core/tools` for PC testing) and cross-compiles via Docker (`toolchain/`), while the C# app builds with .NET SDK 8/10 + Tizen workload (`scripts/build-app.sh`).
 
-Want to build it yourself? Say so in the issue, then see [Contributing code](#contributing-code).
+---
 
-## Contributing code
+## Credits and License
 
-Pull requests are welcome, including code written with the help of an AI, as long as you reviewed and tested it yourself. Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it covers the rules for AI-assisted code, the pull request process, the automatic checks (build, `.tpk` for each PR) and how to test a pull request on a TV.
+**omegatube-modern** is free software licensed under the [GNU GPL v3](LICENSE).
 
-## Development
+- Originally forked from [IIyn/omegatube](https://github.com/IIyn/omegatube).
+- Built on the work of [SmartTube](https://github.com/yuliskov/SmartTube), [ytps5-sponsorblock](https://github.com/animatian112/ytps5-sponsorblock), [SponsorBlock](https://sponsor.ajay.app), [Mbed TLS](https://github.com/Mbed-TLS/mbedtls), [zlib](https://zlib.net/), [QuickJS-ng](https://github.com/quickjs-ng/quickjs), and [yt-dlp EJS](https://github.com/yt-dlp/ejs). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full list.
 
-### Requirements
-
-- **Linux** (macOS should work for most steps but isn't tested)
-- **Docker**: cross-compiles the C++ core
-- **.NET SDK 10**: builds the C# app (the Tizen SDK comes from NuGet)
-- **Tizen Studio CLI 6.1** with the **Samsung Certificate Extension** (`cert-add-on`): signs and installs packages. The end-user installer (`scripts/install-tv.sh`) sets it up into `~/tizen-studio`, or do it by hand:
-  ```sh
-  bash web-cli_Tizen_Studio_6.1_ubuntu-64.bin --accept-license ~/tizen-studio
-  ~/tizen-studio/package-manager/package-manager-cli.bin install --accept-license cert-add-on
-  ```
-- **Java 11+** (17 recommended), `curl`, `unzip`, `python3`
-- A Samsung TV in Developer Mode pointing to your PC (see [step 2](#step-2-turn-on-developer-mode-on-the-tv))
-
-### First build
-
-```sh
-scripts/fetch-deps.sh                       # third-party sources -> build/deps (pinned versions)
-scripts/gen-cert.sh <TV DUID> "Your name"   # Samsung certificate + "omegatube-modern" signing profile, once
-scripts/build-app.sh                        # core (Docker) + C# app -> signed .tpk
-TV_IP=192.168.1.9 scripts/deploy.sh         # install + launch on the TV
-```
-
-To get the TV's DUID: `~/tizen-studio/tools/sdb connect <TV IP>:26101 && ~/tizen-studio/tools/sdb shell 0 getduid`.
-
-### Logs from the TV
-
-Retail TVs don't give a usable shell, so the core can mirror its log over UDP to your PC:
-
-```sh
-OMEGA_DEV_LOG=192.168.1.17:5555 scripts/build-app.sh   # your PC's address; writes res/dev.json (git-ignored)
-scripts/serve-test-media.sh                            # prints the TV's log lines (UDP 5555)
-```
-
-Never publish a build made with `OMEGA_DEV_LOG`. A plain `scripts/build-app.sh` removes it.
-
-Every build also writes the log to `omega.log` in the app's data folder (the previous session is kept as `omega.log.prev`); that's what users attach from the [report screen](#reporting-a-bug). The issue form is `.github/ISSUE_TEMPLATE/bug.yml`: its field ids must match the URL built in `app/OmegaTube/BugReport.cs`.
-
-### Testing on the PC
-
-The core builds natively as well, with tools that run the same code as the TV:
-
-```sh
-cmake -S core -B build/host -DOMEGA_HOST_TOOLS=ON && cmake --build build/host -j
-build/host/ytcheck <videoId>               # resolve formats and download through the core's HTTP stack
-build/host/ytcheck --signin                # device-flow sign-in, then home + subscriptions
-build/host/ytcheck --search "query"        # also --captions, --details, --channel, --sb, --playlist...
-build/host/mp4dump <file.mp4|webm> [ms]    # run the demuxers on a local file (optionally from a seek)
-```
-
-The full list of commands is at the top of `core/tools/ytcheck.cpp`. `tools/yt-probe/probe.py` checks which YouTube clients currently return playable streams. `tools/flaky-server/flaky.py` serves a file over a deliberately unreliable connection, to test recovery.
-
-### Project layout
-
-```
-app/OmegaTube/        C# shell: OmegaTube.cs (app + navigation), Ui/ (screens), Data/ (YouTube bindings,
-                      local store), Config/, I18n.cs (translations), NativeCore.cs (P/Invoke), res/
-core/                 C++ core: include/omega/core.h (C API), src/{net,media,player,yt,util}, tools/
-toolchain/            Docker cross toolchain for Tizen 6.0 (armv7, softfp)
-scripts/              fetch-deps, build-core, build-app, deploy, gen-cert, install-tv, serve-test-media
-tools/                samsung-cert (headless certificate generator), yt-probe, flaky-server, and the generators of the
-                      Glorious images (glass-panel, nav-fade, hero-scrims, preview-ring, outline-icons)
-remote-config.json    YouTube client parameters, fetched by the app at startup
-VERSION               the single version number (copied into the manifest and the core at build time)
-```
-
-### Translations
-
-App texts are written in English in the code (`T("Settings")`). The French, Spanish, Czech and Russian tables are in `app/OmegaTube/I18n.cs`. To add a language, add a table there and its code to `I18n.Codes`.
-
-### Releasing
-
-1. Bump `VERSION`, commit, push.
-2. Publish a GitHub release with the tag `v<VERSION>` (e.g. `v1.0.1`).
-3. The [`Release build`](.github/workflows/release.yml) workflow builds the core and the app and attaches `omegatube-modern.tpk`, `install.sh` and `install.ps1` (copies of `scripts/install-tv.sh` / `.ps1`) and `SamsungCert.java` to the release, under these fixed names. The installers download them from `releases/latest/download/`, so they always install the newest release. The Windows one-liner reads `scripts/install-tv.ps1` from `main` (served as text, which `irm | iex` needs), so keep it working on `main`.
-
-The CI package keeps the SDK's test signature: every user signs it for their own TV during installation.
-
-## Credits and license
-
-omegatube-modern is free software under the [GNU GPL v3](LICENSE).
-
-It stands on the shoulders of [SmartTube](https://github.com/yuliskov/SmartTube) (interface and icons), [ytps5-sponsorblock](https://github.com/animatian112/ytps5-sponsorblock) (sign-in, InnerTube and watch history approach), [SponsorBlock](https://sponsor.ajay.app), [Return YouTube Dislike](https://returnyoutubedislike.com), [yt-dlp](https://github.com/yt-dlp/yt-dlp)'s EJS solver and other libraries. The full list and their licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-YouTube is a trademark of Google LLC. omegatube-modern is an independent project, not affiliated with Google, YouTube or Samsung.
+YouTube is a trademark of Google LLC. **omegatube-modern** is an independent project and is not affiliated with Google, YouTube, or Samsung.
