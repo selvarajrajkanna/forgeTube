@@ -268,8 +268,8 @@ namespace OmegaTube.Ui
             AddRightButton(Action.Stats, "stats");
             AddRightButton(Action.Loop, "repeat");
             AddRightButton(Action.Quality, "quality");
-            AddRightButton(Action.Speed, "speed");
             AddRightButton(Action.Audio, "audio_track").Available = false;      // until the video has several
+            AddRightButton(Action.Speed, "speed");
             AddRightButton(Action.Captions, "subtitles").Available = false;     // until the video has some
             AddRightButton(Action.Autoplay, null);
             skipButton = AddSkipButton();
@@ -1985,13 +1985,13 @@ namespace OmegaTube.Ui
                     break;
                 case Action.Audio:
                     title = T("Audio track");
-                    width = 680;
+                    width = 480;
                     foreach (AudioTrack a in info.AudioTracks)
                     {
                         items.Add(new ListPanel.Item
                         {
                             Text = AudioName(a.Id),
-                            Detail = a.Default ? T("Original track") : null,
+                            SubText = a.Default ? T("Original track") : null,
                             Checked = a.Id == info.AudioTrack,
                         });
                     }
