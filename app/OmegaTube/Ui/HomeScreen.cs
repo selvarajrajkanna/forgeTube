@@ -114,6 +114,7 @@ namespace OmegaTube.Ui
                 {
                     continue;
                 }
+                old.SetFocused(false);
                 old.OnHide();
                 embedHost.Remove(old.Root);
                 old.Root.Dispose();
@@ -123,6 +124,7 @@ namespace OmegaTube.Ui
                 {
                     shown = replacement;
                     replacement.OnShow();
+                    replacement.SetFocused(!inRail);
                 }
                 else
                 {
@@ -456,6 +458,7 @@ namespace OmegaTube.Ui
         {
             if (shown != null)
             {
+                shown.SetFocused(false);
                 shown.OnHide();
                 shown.Root.Hide();
                 shown = null;
@@ -495,6 +498,7 @@ namespace OmegaTube.Ui
             rail.SetFocused(inRail && !avatarFocused);
             rail.SetAvatarFocused(inRail && avatarFocused);
             Feed?.SetFocused(!inRail && shown == null);
+            shown?.SetFocused(!inRail);
         }
 
         // Shows the active account's photo on the top-left avatar (default icon when signed out).

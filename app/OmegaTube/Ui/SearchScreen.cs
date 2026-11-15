@@ -57,7 +57,8 @@ namespace OmegaTube.Ui
         private FeedRow results;
         private string query = "";
         private bool syncingField;
-        private Zone zone = Zone.Keyboard;
+        private Zone zone = Zone.Input;
+        private bool focused;
         private int keyRow = 1, keyCol;
         private int suggestionIndex;
         private int suggestGeneration;
@@ -176,8 +177,8 @@ namespace OmegaTube.Ui
         private void UpdateFocus()
         {
             SyncField();
-            inputBox.BackgroundColor = zone == Zone.Input ? Theme.SurfaceFocused : Theme.Surface;
-            if (zone == Zone.Input)
+            inputBox.BackgroundColor = focused && zone == Zone.Input ? Theme.SurfaceFocused : Theme.Surface;
+            if (focused && zone == Zone.Input)
             {
                 FocusManager.Instance.SetCurrentFocusView(queryField);
             }
@@ -189,18 +190,40 @@ namespace OmegaTube.Ui
             {
                 for (int c = 0; c < keyLabels[r].Count; c++)
                 {
-                    bool f = zone == Zone.Keyboard && r == keyRow && c == keyCol;
+                    bool f = focused && zone == Zone.Keyboard && r == keyRow && c == keyCol;
                     keyLabels[r][c].BackgroundColor = f ? Theme.Accent : Theme.Surface;
                 }
             }
             for (int i = 0; i < suggestionLabels.Count; i++)
             {
                 suggestionLabels[i].Text = i < suggestions.Count ? "  " + suggestions[i] : "";
-                suggestionLabels[i].BackgroundColor = zone == Zone.Suggestions && i == suggestionIndex
+                suggestionLabels[i].BackgroundColor = focused && zone == Zone.Suggestions && i == suggestionIndex
                     ? Theme.SurfaceFocused : Color.Transparent;
             }
-            addButton.BackgroundColor = zone == Zone.AddButton ? Theme.Accent : Theme.Surface;
-            results?.SetFocused(zone == Zone.Results);
+            addButton.BackgroundColor = focused && zone == Zone.AddButton ? Theme.Accent : Theme.Surface;
+            results?.SetFocused(focused && zone == Zone.Results);
+        }
+
+        public override void OnShow()
+        {
+            if (focused)
+            {
+                UpdateFocus();
+            }
+        }
+
+        public override void SetFocused(bool focused)
+        {
+            if (this.focused == focused)
+            {
+                return;
+            }
+            this.focused = focused;
+            if (focused)
+            {
+                zone = Zone.Input;
+            }
+            UpdateFocus();
         }
 
         public override void OnHide()

@@ -24,6 +24,10 @@ namespace OmegaTube.Ui
         {
         }
 
+        public virtual void SetFocused(bool focused)
+        {
+        }
+
         // Called when the app goes to background (Home button, other app, another HDMI source): release scarce resources.
         public virtual void OnPause()
         {
