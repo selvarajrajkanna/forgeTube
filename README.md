@@ -41,7 +41,7 @@ Unlike browser-based TV apps that wrap YouTube's heavy web interface, **omegatub
 ## Key Features
 
 ### Picture & Sound Built for Modern TVs
-- **Proper AV1 & 10-bit HDR Support:** Prioritizes **AV1** where supported alongside **VP9** and **H.264**, with full **HDR10** and **HLG** metadata passthrough for vibrant 4K 10-bit playback.
+- **AV1-First & 10-bit HDR Support:** Defaults to **AV1 first** (`av01, vp9, avc1`) with **VP9 first** and **H.264 first** options in Settings, plus full **HDR10** and **HLG** metadata passthrough for vibrant 4K 10-bit playback.
 - **Hardware-Aware Quality Picker:** Automatically filters available resolutions, frame rates (up to 60fps), and HDR badges to match what your TV panel supports.
 - **Multi-Language Audio & Subtitles:** Switch audio tracks on multi-language videos, adjust subtitle size and background, or use auto-translated captions.
 
@@ -82,22 +82,27 @@ Most third-party YouTube apps on Samsung TVs run inside the TV's built-in web br
 | **UI Shell** (`app/OmegaTube`) | C# / .NET 8 (`net8.0-tizen10.0`, API 10.0) | Native `Tizen.NUI` screens, GPU-accelerated animations, remote focus handling, TV IME/voice input, settings, and `.tpk` packaging. |
 | **Media & Network Core** (`core`) | C++20 (`libomegacore.so`) | HTTPS stack, InnerTube API client, MP4/WebM demuxers with HDR10/HLG metadata, SponsorBlock, and Samsung ESPlayer integration (`libesplusplayer.so`). |
 
-### Tizen 10 & C++20 Platform Improvements
+### Native UI & Memory Optimizations
 - **Exclusive Tizen 10 Target:** Legacy Tizen 5.5–9.0 workarounds, software fallbacks, and unused assets were removed, keeping the UI and runtime lean.
 - **ARMv8 Optimized C++20 Core:** Cross-compiled with `-O3` and ARMv8 NEON/crypto acceleration (`-march=armv8-a -mfpu=crypto-neon-fp-armv8`) with statically linked `libstdc++`/`libgcc` for predictable performance.
-- **Native NUI Components:**
+- **Native NUI Components & Card Recycling:**
   - Uses GPU `CornerRadius` shaders and `DesiredWidth`/`DesiredHeight` decode-size capping instead of bitmap alpha masks (`AlphaMaskURL`), cutting texture memory and GPU composition passes.
   - Native vector-drawn icons and indicators inside player controls instead of extra PNG textures.
-  - Reuses focus `Shadow` and `Animation` instances across card navigation, disposes the 1080p loading backdrop texture once the first video frame renders, and runs the subtitle timer only when captions are enabled.
-  - Lazy tab initialization and virtualized card rows keep memory low while browsing large feeds.
+  - Reuses focus `Shadow` and `Animation` instances across card navigation, recycles `Card` instances (and their loaded thumbnails) by video ID across `FeedGrid` and `FeedRow` refreshes, and disposes the 1080p loading backdrop once the first video frame renders.
+  - Pure-C# QR encoder (`Util.Qr.Encode`) used for both sign-in and crash screens—eliminating the duplicate C++ `qrcodegen` dependency and P/Invoke JSON round-trip.
+  - Shared `OnScreenKeyboard` widget and unified `Widgets.WrapLines` text measurement keep UI code compact and allocations low, while frame-budgeted `UiWork` and `SetShown` culling keep D-pad scrolling smooth.
 
 ### Network, Demuxing & Startup Optimizations
-- **Async Startup Warmup:** Root CA certificates (`cacert.pem`) and local watch-position storage initialize on background threads while the splash screen renders immediately.
+- **Non-Blocking Startup & Fast Splash Handoff:** `AppConfig`, `libomegacore.so` loading/P/Invoke binding, `omega_init`, `LocalStore`, and root CA (`cacert.pem`) parsing all run off the UI thread while the splash screen renders immediately (`250 ms` minimum hold so cached Home rows appear right away).
+- **Zero Startup Network Contention:** `remote-config.json` hot-fix refresh waits until **after** the initial Home feed finishes loading, and redundant startup GitHub release polling was removed.
 - **DNS & TLS Caching:** 60-second in-memory DNS cache and Mbed TLS session resumption per `host:port` eliminate repeated lookups and full TLS handshakes.
 - **HTTP Keep-Alive Pool & Gzip Compression:** Persistent connection pooling for `net::fetch()` combined with `Accept-Encoding: gzip` (`zlib` inflate) and pre-allocated response buffers shrinks API payloads and speeds up feed/metadata loads.
-- **Parallel Stream Opening:** Video and audio tracks open, handshake, and parse container headers concurrently at playback start.
+- **Parallel Network & Stream Pipelines:**
+  - `PlayerScreen` fires stream setup, video details, suggestions/playlist, and SponsorBlock lookups concurrently.
+  - `Client::details()` fetches WEB metadata and signed-in TV like/subscription state concurrently on separate threads.
+  - Video and audio tracks open, handshake, and parse container headers concurrently at playback start.
 - **Zero-Allocation Demux Replay:** Container probing replays the initial header bytes from a fixed stack-sized buffer with a zero-overhead fast path for all subsequent reads.
-- **Dynamic Remote Config:** YouTube client parameters live in `remote-config.json` and update automatically at startup so API changes can be resolved without reinstalling.
+- **Dynamic Remote Config:** YouTube client parameters live in `remote-config.json` and update automatically in the background so API changes can be resolved without reinstalling.
 
 ---
 
