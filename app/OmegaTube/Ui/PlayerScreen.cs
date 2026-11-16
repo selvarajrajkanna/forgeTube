@@ -120,6 +120,7 @@ namespace OmegaTube.Ui
         private DateTime pendingSeekAt;
         private long seekingTargetMs = -1;
         private DateTime seekingUntil;
+        private volatile bool seekingInFlight;
         private DateTime seekStartAt;
         private int seekDirection;
         private DateTime lastSysSampleAt;
@@ -1013,7 +1014,11 @@ namespace OmegaTube.Ui
                 long videoAheadMs = Math.Max(0, stats.VideoSubmittedMs - stats.PositionMs) + stats.VideoQueuedMs;
                 long audioAheadMs = Math.Max(0, stats.AudioSubmittedMs - stats.PositionMs) + stats.AudioQueuedMs;
                 bool starved = stats.State != 3 || videoAheadMs < 1000 || audioAheadMs < 1000;
-                if (stats.Reconnecting != 0 && starved)
+                if (seekingInFlight || (seekingTargetMs >= 0 && starved))
+                {
+                    ShowLoading("", opaque: false);
+                }
+                else if (stats.Reconnecting != 0 && starved)
                 {
                     ShowLoading(T("Reconnecting…"), opaque: false);   // over the last frame
                 }
@@ -2301,7 +2306,19 @@ namespace OmegaTube.Ui
             IntPtr p = player;
             if (p != IntPtr.Zero)
             {
-                Task.Run(() => NativeCore.PlayerSeek(p, target));
+                seekingInFlight = true;
+                ShowLoading("", opaque: false);
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        NativeCore.PlayerSeek(p, target);
+                    }
+                    finally
+                    {
+                        seekingInFlight = false;
+                    }
+                });
             }
         }
 
