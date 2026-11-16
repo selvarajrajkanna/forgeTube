@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Threading;
 using System.Threading.Tasks;
 using OmegaTube.Config;
 using OmegaTube.Data;
@@ -1015,7 +1014,7 @@ namespace OmegaTube.Ui
                 long videoAheadMs = Math.Max(0, stats.VideoSubmittedMs - stats.PositionMs) + stats.VideoQueuedMs;
                 long audioAheadMs = Math.Max(0, stats.AudioSubmittedMs - stats.PositionMs) + stats.AudioQueuedMs;
                 bool starved = stats.State != 3 || videoAheadMs < 1000 || audioAheadMs < 1000;
-                if (Volatile.Read(ref seekingInFlight) > 0 || (seekingTargetMs >= 0 && starved))
+                if (System.Threading.Volatile.Read(ref seekingInFlight) > 0 || (seekingTargetMs >= 0 && starved))
                 {
                     ShowLoading("", opaque: false);
                 }
@@ -2307,7 +2306,7 @@ namespace OmegaTube.Ui
             IntPtr p = player;
             if (p != IntPtr.Zero)
             {
-                Interlocked.Increment(ref seekingInFlight);
+                System.Threading.Interlocked.Increment(ref seekingInFlight);
                 ShowLoading("", opaque: false);
                 Task.Run(() =>
                 {
@@ -2317,7 +2316,7 @@ namespace OmegaTube.Ui
                     }
                     finally
                     {
-                        Interlocked.Decrement(ref seekingInFlight);
+                        System.Threading.Interlocked.Decrement(ref seekingInFlight);
                     }
                 });
             }
