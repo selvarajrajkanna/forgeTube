@@ -764,7 +764,53 @@ bool Client::playlist_page(const std::string& playlist_id, const std::string& co
     return true;
 }
 
-bool Client::related(const std::string& video_id, const std::string& continuation, Feed& out, std::string& error) {
+bool Client::related(const std::string& video_id, const std::string& continuation, const std::string& access_token,
+                     Feed& out, std::string& error) {
+    // Signed in: TV "next" gives personalized suggestions (current video + account history).
+    // Read singleColumnWatchNextResults.results in order (not the whole JSON tree), and promote
+    // YouTube's organic autoplay pick to index 0 for Up Next.
+    if (!access_token.empty()) {
+        json tv_params = continuation.empty() ? json{{"videoId", video_id}} : json{{"continuation", continuation}};
+        net::Response tv = post_as_account("next", tv_params, access_token);
+        json t = tv.ok() ? json::parse(tv.body, nullptr, false) : json();
+        if (t.is_object()) {
+            out = Feed{};
+            const json* sc = nullptr;
+            if (continuation.empty()) {
+                try {
+                    sc = &t.at("contents").at("singleColumnWatchNextResults");
+                } catch (const json::exception&) {
+                }
+            }
+            if (sc && sc->contains("results")) {
+                collect((*sc)["results"], out);
+                if (sc->contains("autoplay")) {
+                    if (const json* we = find_key((*sc)["autoplay"], "watchEndpoint")) {
+                        std::string next_id = we->value("videoId", "");
+                        if (!next_id.empty()) {
+                            auto it = std::find_if(out.items.begin(), out.items.end(),
+                                                   [&](const FeedItem& i) { return i.video_id == next_id; });
+                            if (it != out.items.end() && it != out.items.begin()) {
+                                std::rotate(out.items.begin(), it, it + 1);
+                            }
+                        }
+                    }
+                }
+            } else {
+                collect(t, out);
+            }
+            out.items.erase(std::remove_if(out.items.begin(), out.items.end(),
+                                           [&](const FeedItem& i) { return i.video_id == video_id; }),
+                            out.items.end());
+            OLOG("yt: related %s (account%s) -> %zu items", video_id.c_str(),
+                 continuation.empty() ? "" : ", cont", out.items.size());
+            if (!out.items.empty() || !continuation.empty()) return true;
+        } else {
+            error = http_error("tv next", tv);
+            OLOG("yt: related %s: %s", video_id.c_str(), error.c_str());
+            if (!continuation.empty()) return false;
+        }
+    }
     if (!ensure_visitor(error)) return false;
     ClientDef def = client_def("search", visitor_data_, web_client_version_);
     json body = {{"context", {{"client", def.client}}}};
