@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Tizen.NUI;
 using Tizen.NUI.BaseComponents;
 

@@ -45,7 +45,7 @@ namespace OmegaTube.Ui
         private int row = 1, col;
         private bool symbolPage;
 
-        private string[][] Layout => symbolPage ? Symbols
+        private string[][] KeyLayout => symbolPage ? Symbols
                                    : Lang == "fr" ? Azerty : Lang == "es" ? QwertySpanish : Qwerty;
 
         public bool IsActionRow => row == ActionRow;
@@ -93,7 +93,7 @@ namespace OmegaTube.Ui
         public void ToggleSymbols()
         {
             symbolPage = !symbolPage;
-            string[][] layout = Layout;
+            string[][] layout = KeyLayout;
             for (int r = 0; r < CharRows; r++)
             {
                 for (int c = 0; c < 10; c++)
@@ -104,7 +104,7 @@ namespace OmegaTube.Ui
             keys[ActionRow][0].Text = symbolPage ? "abc" : "àç?#";
         }
 
-        public string CurrentChar() => row < CharRows ? Layout[row][col] : null;
+        public string CurrentChar() => row < CharRows ? KeyLayout[row][col] : null;
 
         public bool MoveUp()
         {
@@ -165,7 +165,7 @@ namespace OmegaTube.Ui
 
         private void LabelKeys(string action3Label, string action4Label)
         {
-            string[][] layout = Layout;
+            string[][] layout = KeyLayout;
             for (int r = 0; r < CharRows; r++)
             {
                 for (int c = 0; c < 10; c++)
