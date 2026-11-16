@@ -70,8 +70,6 @@ namespace OmegaTube
             public uint AudioUnderruns;
             public uint Stalls;
             public uint Errors;
-            public double VideoKbps;
-            public double AudioKbps;
             public long DurationMs;
             public int Reconnecting;
             public int Reserved;

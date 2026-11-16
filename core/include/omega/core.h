@@ -46,8 +46,6 @@ typedef struct {
     uint32_t audio_underruns;
     uint32_t stalls;
     uint32_t errors;
-    double video_kbps;
-    double audio_kbps;
     int64_t duration_ms;
     int32_t reconnecting;  // a stream is retrying after a network error
     int32_t reserved;

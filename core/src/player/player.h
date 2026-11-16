@@ -48,7 +48,6 @@ struct PlayerStats {
     uint32_t video_underruns, audio_underruns;
     uint32_t stalls;             // playback clock stopped advancing while PLAYING
     int64_t longest_stall_ms;
-    double video_kbps, audio_kbps;  // download rate
     uint32_t errors;
     int eos;
     int64_t duration_ms;
@@ -138,9 +137,6 @@ private:
     std::mutex refresh_mutex_;
     Clock::time_point last_refresh_{};
     Clock::time_point started_at_;
-    Clock::time_point last_rate_at_{};
-    uint64_t last_video_bytes_ = 0, last_audio_bytes_ = 0;
-    double last_video_kbps_ = 0, last_audio_kbps_ = 0;
 };
 
 }  // namespace omega
