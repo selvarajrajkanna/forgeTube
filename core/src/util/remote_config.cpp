@@ -38,16 +38,6 @@ const json* lookup(const json& root, std::initializer_list<const char*> path) {
     return node;
 }
 
-std::vector<int> version_parts(std::string v) {
-    if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(0, 1);
-    std::vector<int> parts;
-    std::stringstream ss(v);
-    std::string item;
-    while (std::getline(ss, item, '.')) parts.push_back(atoi(item.c_str()));
-    while (parts.size() < 3) parts.push_back(0);
-    return parts;
-}
-
 }  // namespace
 
 void init(const std::string& cache_path) {
@@ -121,31 +111,6 @@ std::string language() {
 std::string region() {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_region;
-}
-
-json check_update(const std::string& current_version) {
-    std::string repo = str({"updates", "repo"});
-    net::Request req;
-    req.url = "https://api.github.com/repos/" + repo + "/releases/latest";
-    req.headers = {{"User-Agent", "omegatube-modern"}, {"Accept", "application/vnd.github+json"}};
-    net::Response res = net::fetch(req);
-    if (res.status == 404) return {{"available", false}};  // no release yet
-    if (!res.ok()) return {{"error", res.error.empty() ? "http " + std::to_string(res.status) : res.error}};
-    json r = json::parse(res.body, nullptr, false);
-    if (!r.is_object()) return {{"error", "invalid json"}};
-    std::string tag = r.value("tag_name", "");
-    bool newer = version_parts(tag) > version_parts(current_version);
-    std::string tpk;
-    for (const json& a : r.value("assets", json::array())) {
-        std::string url = a.value("browser_download_url", "");
-        if (url.size() > 4 && url.compare(url.size() - 4, 4, ".tpk") == 0) tpk = url;
-    }
-    OLOG("update check: latest %s, running %s", tag.c_str(), current_version.c_str());
-    return {{"available", newer},
-            {"version", tag},
-            {"url", r.value("html_url", "")},
-            {"tpk", tpk},
-            {"notes", r.value("body", "")}};
 }
 
 }  // namespace omega::cfg

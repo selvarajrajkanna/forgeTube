@@ -22,7 +22,4 @@ void set_locale(const std::string& language, const std::string& region);
 std::string language();
 std::string region();
 
-// Latest GitHub release vs. this build: {"available":bool,"version","url","notes"} or {"error"}.
-nlohmann::json check_update(const std::string& current_version);
-
 }  // namespace omega::cfg

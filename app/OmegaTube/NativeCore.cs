@@ -97,7 +97,7 @@ namespace OmegaTube
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr CreateYtFn(IntPtr win, int w, int h, [MarshalAs(UnmanagedType.LPUTF8Str)] string videoId, int maxHeight, [MarshalAs(UnmanagedType.LPUTF8Str)] string codecs, long startMs, [MarshalAs(UnmanagedType.LPUTF8Str)] string audioTrack);
 
         // --- Bound function pointers -------------------------------------------------------------------------
-        private static Ip_v _version, _playerLastError, _configRefresh, _updateCheck, _authStatus, _authBegin, _authAccount, _authAccounts;
+        private static Ip_v _version, _playerLastError, _configRefresh, _authStatus, _authBegin, _authAccount, _authAccounts;
         private static I_v _reportAvailable;
         private static V_v _authSignOut;
         private static I_buf _logTail;
@@ -134,7 +134,6 @@ namespace OmegaTube
             _init = Fn<V_s>("omega_init");
             _configRefresh = Fn<Ip_v>("omega_config_refresh");
             _setLocale = Fn<V_ss>("omega_set_locale");
-            _updateCheck = Fn<Ip_v>("omega_update_check");
             _reportAvailable = Fn<I_v>("omega_report_available");
             _reportUpload = Fn<Ip_s>("omega_report_upload");
             _authStatus = Fn<Ip_v>("omega_auth_status");
@@ -181,7 +180,6 @@ namespace OmegaTube
         public static void Init(string dataDir) { EnsureLoaded(); _init(dataDir ?? ""); }
         public static IntPtr ConfigRefresh() => _configRefresh();
         public static void SetLocale(string language, string region) => _setLocale(language ?? "", region ?? "");
-        public static IntPtr UpdateCheck() => _updateCheck();
         public static int ReportAvailable() => _reportAvailable();
         public static IntPtr ReportUpload(string text) => _reportUpload(text ?? "");
         public static IntPtr AuthStatus() => _authStatus();

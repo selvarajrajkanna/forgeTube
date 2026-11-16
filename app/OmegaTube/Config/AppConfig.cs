@@ -111,7 +111,6 @@ namespace OmegaTube.Config
         public string UiLanguage = "en"; // app texts (I18n): en | fr | es
         public string Language = "en";   // InnerTube hl
         public string Region = "US";     // InnerTube gl
-        public bool CheckUpdates = true;
         public bool SponsorBlockEnabled = true;
         public Dictionary<string, SkipMode> SkipModes = new Dictionary<string, SkipMode>();
 
@@ -238,7 +237,6 @@ namespace OmegaTube.Config
             I18n.Lang = UiLanguage;
             Language = Json.Str(root, "language", Language);
             Region = Json.Str(root, "region", Region);
-            CheckUpdates = Json.Bool(root, "checkUpdates", CheckUpdates);
             object sb = Json.Obj(root, "sponsorBlock");
             if (sb != null)
             {
@@ -292,7 +290,6 @@ namespace OmegaTube.Config
                 ["uiLanguage"] = UiLanguage,
                 ["language"] = Language,
                 ["region"] = Region,
-                ["checkUpdates"] = CheckUpdates,
                 ["homeRows"] = rows,
                 ["sponsorBlock"] = new Dictionary<string, object> { ["enabled"] = SponsorBlockEnabled, ["categories"] = cats },
                 ["player"] = new Dictionary<string, object>

@@ -1,3 +1,4 @@
+using System;
 using OmegaTube.Data;
 
 namespace OmegaTube.Ui
@@ -7,6 +8,7 @@ namespace OmegaTube.Ui
     {
         int Count { get; }
         VideoItem FocusedItem { get; }
+        event Action InitialLoadFinished;
         void SetFocused(bool value);
         bool Move(string key);
         void RefreshProgress();

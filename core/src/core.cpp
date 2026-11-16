@@ -561,8 +561,6 @@ void omega_set_locale(const char* language, const char* region) {
     omega::cfg::set_locale(language ? language : "", region ? region : "");
 }
 
-char* omega_update_check(void) { return to_c_json(omega::cfg::check_update(kVersion)); }
-
 namespace {
 std::string form_escape(const std::string& s) {
     std::string out;

@@ -10,7 +10,7 @@ namespace OmegaTube.Ui
     public class Splash : View
     {
         private const int LogoSize = 280;
-        private const int MinMs = 900;        // never just flash
+        private const int MinMs = 250;        // never just flash
         private const int MaxMs = 6000;       // give up waiting for the feed
         private const int SpinnerAfterMs = 1500;
 

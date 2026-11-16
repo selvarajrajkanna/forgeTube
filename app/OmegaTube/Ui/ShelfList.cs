@@ -20,6 +20,8 @@ namespace OmegaTube.Ui
 
         public int Count => rows.Count;
         public VideoItem FocusedItem => rows.Count > 0 ? rows[focus].FocusedItem : null;
+        public event Action InitialLoadFinished;
+        private bool initialLoadNotified;
 
         private readonly int width;
         private readonly int leftInset;
@@ -195,6 +197,11 @@ namespace OmegaTube.Ui
                 return;
             }
             loading = false;
+            if (!initialLoadNotified)
+            {
+                initialLoadNotified = true;
+                InitialLoadFinished?.Invoke();
+            }
             if (page.Error != null)
             {
                 if (rows.Count == 0)

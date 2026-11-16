@@ -64,11 +64,6 @@ namespace OmegaTube.Ui
         private bool inRows;
         private HomeRow moving;            // "Menu": section being moved
         private Animation scroll;
-        private string updateStatus = "";
-        private int aboutCategory;
-        private Layer notesLayer;          // release notes panel, while open
-        private TextLabel notesText;
-        private float notesScroll;
         private bool relabel;              // the app language changed: every part has to be rebuilt
 
         // startCategory / startRow: where to come back after a rebuild (app language change).
@@ -126,8 +121,7 @@ namespace OmegaTube.Ui
             AddCategory(T("Subtitles and audio"), "subtitles", T("Languages and appearance of subtitles"), BuildCaptions, true);
             AddCategory("SponsorBlock", "shield", T("Skipping sponsors and other segments reported by the community"), BuildSponsorBlock);
             AddCategory(T("Menu"), "view_list", T("Sidebar sections (add some from Search)"), BuildMenu);
-            AddCategory(T("General"), "language", T("App language, content language and updates"), BuildGeneral);
-            aboutCategory = categories.Count;
+            AddCategory(T("General"), "language", T("App language and content language"), BuildGeneral);
             AddCategory(T("About"), "info_outline", T("Version, license and credits"), BuildAbout);
             ShowCategory(startCategory);
             if (startRow >= 0 && startRow < rows.Count)
@@ -355,30 +349,11 @@ namespace OmegaTube.Ui
                              App.Config.Region = parts[1];
                              NativeCore.SetLocale(parts[0], parts[1]);
                          }));
-            l.Add(Toggle(T("Updates"), T("Report a new version at startup"),
-                         () => App.Config.CheckUpdates, v => App.Config.CheckUpdates = v));
         }
 
         private void BuildAbout(List<Row> l)
         {
             l.Add(new Row { Title = T("Version"), Value = () => NativeCore.Version });
-            l.Add(new Row
-            {
-                Title = T("Check for updates"),
-                Hint = T("Compares with the latest version published on GitHub"),
-                Value = () => updateStatus,
-                Activate = () => UiGuard.Fire("SettingsScreen.CheckUpdate", CheckUpdate),
-            });
-            if (App.NewRelease != null)
-            {
-                l.Add(new Row
-                {
-                    Title = T("What's new in {0}", Json.Str(App.NewRelease, "version")),
-                    Hint = T("Release notes of the new version"),
-                    Value = () => "",
-                    Activate = OpenNotes,
-                });
-            }
             l.Add(new Row
             {
                 Title = T("Report a problem"),
@@ -391,119 +366,6 @@ namespace OmegaTube.Ui
                             Value = () => "" });
             l.Add(new Row { Title = T("YouTube is a trademark of Google LLC"), Hint = T("omegatube-modern is an independent project, not affiliated with Google"),
                             Value = () => "" });
-        }
-
-        private async Task CheckUpdate()
-        {
-            updateStatus = T("Checking…");
-            Refresh();
-            object update = await Task.Run(() => YouTube.Call(NativeCore.UpdateCheck()));
-            if (Json.Str(update, "error", null) != null)
-            {
-                updateStatus = T("Could not check");
-            }
-            else
-            {
-                bool available = Json.Bool(update, "available");
-                App.NewRelease = available ? update : null;
-                updateStatus = available ? T("Version {0} available", Json.Str(update, "version")) : T("Up to date");
-                if (available)
-                {
-                    App.Home.ShowUpdate(Json.Str(update, "version"), Json.Str(update, "url"));
-                }
-                if (category == aboutCategory)
-                {
-                    BuildRows();   // adds / removes the release notes row
-                    index = Clamp(index, rows.Count);
-                }
-            }
-            Refresh();
-        }
-
-        // ---------------------------------------------------------------- release notes
-
-        // In a layer of its own above the window: drawn over the settings whatever their clipping (the list's
-        // clipped rows would otherwise be drawn over a panel added to Root).
-        private void OpenNotes()
-        {
-            notesLayer = new Layer();
-            Window.Default.AddLayer(notesLayer);
-            var scrim = Widgets.Box(Theme.Scrim, 1920, 1080);
-            notesLayer.Add(scrim);
-            var card = Widgets.Rounded(Theme.Panel, 1200, 900, Theme.PanelRadius);
-            card.Position = new Position(360, 90);
-            scrim.Add(card);
-            var title = Widgets.Label(T("What's new in {0}", Json.Str(App.NewRelease, "version")), Theme.TitleSize, Theme.Text, 1080, 60);
-            title.Position = new Position(60, 40);
-            card.Add(title);
-            var install = Widgets.Label(T("To install it, run the install script again or reinstall by following the README."),
-                                        Theme.SmallSize, Theme.Accent, 1080, 40);
-            install.Position = new Position(60, 104);
-            card.Add(install);
-            var clip = new View { Position = new Position(60, 170), Size = new Size(1080, 640), ClippingMode = ClippingModeType.ClipChildren };
-            card.Add(clip);
-            string notes = PlainNotes(Json.Str(App.NewRelease, "notes"));
-            notesText = Widgets.Label(notes.Length > 0 ? notes : T("No release notes."), Theme.BodySize, Theme.Text, 1080, 20000);
-            notesText.MultiLine = true;
-            notesText.Ellipsis = false;
-            notesText.VerticalAlignment = VerticalAlignment.Top;
-            clip.Add(notesText);
-            var hint = Widgets.Label(T("▲▼ scroll    Back close"), Theme.SmallSize, Theme.TextDim, 1080, 36);
-            hint.Position = new Position(60, 840);
-            card.Add(hint);
-            notesScroll = 0;
-        }
-
-        private void NotesKey(string key)
-        {
-            switch (key)
-            {
-                case "Up":
-                case "Down":
-                    float height = Widgets.EstimateTextHeight(notesText.Text, 1080, Theme.BodySize);
-                    float min = Math.Min(0, 620 - height);
-                    notesScroll = Math.Max(min, Math.Min(0, notesScroll + (key == "Up" ? 300 : -300)));
-                    notesText.PositionY = notesScroll;
-                    break;
-                case "Return":
-                case "XF86Back":
-                case "Escape":
-                    CloseNotes();
-                    break;
-            }
-        }
-
-        private void CloseNotes()
-        {
-            Window.Default.RemoveLayer(notesLayer);
-            notesLayer.Dispose();
-            notesLayer = null;
-        }
-
-        public override void OnHide()
-        {
-            if (notesLayer != null)
-            {
-                CloseNotes();
-            }
-            base.OnHide();
-        }
-
-        // GitHub release body (Markdown) as plain text: headings, emphasis and links simplified, "•" bullets.
-        private static string PlainNotes(string markdown)
-        {
-            var sb = new StringBuilder();
-            foreach (string raw in markdown.Replace("\r", "").Split('\n'))
-            {
-                string t = raw.Trim();
-                string indent = new string(' ', raw.Length - raw.TrimStart().Length);
-                string line = t.StartsWith("#") ? t.TrimStart('#').Trim()
-                            : t.StartsWith("- ") || t.StartsWith("* ") ? indent + "•  " + t.Substring(2)
-                            : indent + t;
-                line = Regex.Replace(line, @"!?\[([^\]]*)\]\([^)]*\)", "$1");
-                sb.Append(line.Replace("**", "").Replace("__", "").Replace("`", "")).Append('\n');
-            }
-            return Regex.Replace(sb.ToString(), @"\n{3,}", "\n\n").Trim();
         }
 
         private static Row Toggle(string title, string hint, Func<bool> get, Action<bool> set)
@@ -585,11 +447,6 @@ namespace OmegaTube.Ui
 
         public override bool OnKey(string key)
         {
-            if (notesLayer != null)
-            {
-                NotesKey(key);
-                return true;
-            }
             bool back = key == "XF86Back" || key == "Escape";
             if (!inRows)
             {

@@ -25,6 +25,8 @@ namespace OmegaTube.Ui
 
         public int Count => items.Count + highlights.Count;
         public VideoItem FocusedItem => inHighlights ? highlights[hlFocus].Item : items.Count > 0 ? items[focus] : null;
+        public event Action InitialLoadFinished;
+        private bool initialLoadNotified;
 
         private readonly int cardW, rowStep, height;
         private readonly View content;
@@ -274,6 +276,11 @@ namespace OmegaTube.Ui
                 return;  // the grid switched to another feed meanwhile
             }
             loading = false;
+            if (!initialLoadNotified)
+            {
+                initialLoadNotified = true;
+                InitialLoadFinished?.Invoke();
+            }
             if (page.Error != null)
             {
                 if (Count == 0)

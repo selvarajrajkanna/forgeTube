@@ -74,6 +74,7 @@ namespace OmegaTube.Ui
             codeBox.Position = new Position(124, 252);
             card.Add(codeBox);
             codeLabel = Widgets.Label("", 84, Theme.Text, 860, 150);
+            codeLabel.Ellipsis = false;
             codeLabel.HorizontalAlignment = HorizontalAlignment.Center;
             codeLabel.VerticalAlignment = VerticalAlignment.Center;
             codeBox.Add(codeLabel);
@@ -354,7 +355,9 @@ namespace OmegaTube.Ui
             }
             string deviceCode = Json.Str(res, "deviceCode");
             urlLabel.Text = Json.Str(res, "verificationUrl").Replace("https://", "").Replace("http://", "");
-            codeLabel.Text = SpacedCode(Json.Str(res, "userCode"));
+            string spaced = SpacedCode(Json.Str(res, "userCode"));
+            codeLabel.PixelSize = Math.Min(84f, 820f / (Math.Max(1, spaced.Length) * 0.62f));
+            codeLabel.Text = spaced;
             DrawQr(Json.Str(res, "qrUrl"));
             ShowSignInStatus(T("Waiting for confirmation on your other device…"), true, false);
 

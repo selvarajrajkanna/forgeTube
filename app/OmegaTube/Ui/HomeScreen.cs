@@ -45,7 +45,6 @@ namespace OmegaTube.Ui
         private View feedView;     // feed on display, if any
         private readonly View embedHost;
         private Rail rail;
-        private TextLabel updateBanner;
         private Screen shown;      // hosted screen on display, if any
         private Timer openTimer, prewarmTimer;
         private string signature;  // sections as last built: rebuild the rail only when they change
@@ -53,6 +52,8 @@ namespace OmegaTube.Ui
         private bool inRail;
         private bool avatarFocused;  // focus is on the top-left profile avatar (above the rail entries)
         private bool dirty = true;
+        private bool initialFeedNotified;
+        public event Action InitialFeedLoaded;
 
         public HomeScreen(App app) : base(app)
         {
@@ -66,25 +67,6 @@ namespace OmegaTube.Ui
                                    ClippingMode = ClippingModeType.ClipChildren };
             embedHost.Hide();
             Root.Add(embedHost);
-        }
-
-        // A newer GitHub release exists: the app cannot install itself, so point to the release page.
-        public void ShowUpdate(string version, string url)
-        {
-            if (updateBanner == null)
-            {
-                updateBanner = Widgets.Label("", Theme.SmallSize, Theme.Text, 0, 0);
-                updateBanner.BackgroundColor = Theme.Accent;
-                Widgets.Round(updateBanner, 6);
-                updateBanner.Position = new Position(1000, 50);
-                Root.Add(updateBanner);
-            }
-            updateBanner.Text = "  " + T("New version {0} available: {1}", version, url.Replace("https://", "")) + "  ";
-            // A Settings built ahead lacks the "What's new" row: built again when next opened.
-            if (embedded.TryGetValue("settings", out Screen settings) && settings != shown)
-            {
-                DropEmbedded("settings");
-            }
         }
 
         private IFeedView Feed => feedView as IFeedView;
@@ -299,7 +281,28 @@ namespace OmegaTube.Ui
                 inRail = !signedIn;
             }
             ShowSection(index);
+            if (!initialFeedNotified)
+            {
+                if (Feed != null && sections[index].Loader != null)
+                {
+                    Feed.InitialLoadFinished += NotifyInitialFeedLoaded;
+                }
+                else
+                {
+                    NotifyInitialFeedLoaded();
+                }
+            }
             return true;
+        }
+
+        private void NotifyInitialFeedLoaded()
+        {
+            if (initialFeedNotified)
+            {
+                return;
+            }
+            initialFeedNotified = true;
+            InitialFeedLoaded?.Invoke();
         }
 
         private void Host(Screen screen)

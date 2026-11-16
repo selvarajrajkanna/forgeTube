@@ -18,8 +18,6 @@ OMEGA_API void omega_init(const char* data_dir);
 OMEGA_API char* omega_config_refresh(void);
 // InnerTube hl / gl, e.g. "fr", "FR".
 OMEGA_API void omega_set_locale(const char* language, const char* region);
-// Network: latest GitHub release vs. this build: {"available","version","url","tpk","notes"} or {"error"}.
-OMEGA_API char* omega_update_check(void);
 // 1 when remote-config.json names a log service (reports.paste): "Attach the full log" is offered.
 OMEGA_API int omega_report_available(void);
 // Network: posts a bug report text to the paste service of the remote config: {"url","partial"} or {"error"}
