@@ -88,6 +88,8 @@ namespace OmegaTube.Ui
 
         public void SetActionLabel(int index, string text) => keys[ActionRow][index].Text = text;
 
+        public void JumpToTopRow() => row = 0;
+
         public void JumpToActionRow() => row = ActionRow;
 
         public void ToggleSymbols()

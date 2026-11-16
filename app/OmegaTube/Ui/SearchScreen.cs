@@ -212,7 +212,7 @@ namespace OmegaTube.Ui
                     if (key == "Down")
                     {
                         zone = Zone.Keyboard;
-                        keyRow = 0;
+                        keyboard.JumpToTopRow();
                     }
                     else if (key == "Right")
                     {
