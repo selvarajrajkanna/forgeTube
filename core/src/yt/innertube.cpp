@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include "util/log.h"
@@ -683,7 +684,7 @@ bool Client::playlist(const std::string& video_id, const std::string& playlist_i
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
-        error = "playlist: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
+        error = "playlist: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
     json r = json::parse(res.body, nullptr, false);
@@ -793,7 +794,7 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
-        error = "next: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
+        error = "next: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
     json r = json::parse(res.body, nullptr, false);
@@ -826,7 +827,16 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
     req.url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
     req.headers = client_headers(def, visitor_data_);
     req.body = body.dump();
+
+    // Fetch the account's like/subscribe state (TV "next") concurrently with the WEB "next" page.
+    net::Response tv;
+    std::thread tv_thread;
+    if (!access_token.empty()) {
+        tv_thread = std::thread([&] { tv = post_as_account("next", {{"videoId", video_id}}, access_token); });
+    }
     net::Response res = net::fetch(req);
+    if (tv_thread.joinable()) tv_thread.join();
+
     if (!res.ok()) {
         error = http_error("next", res);
         return false;
@@ -869,9 +879,8 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
     }
     if (out.like_count.find_first_of("0123456789") == std::string::npos) out.like_count.clear();
 
-    // The account's state: only the TV "next" answer (with the Bearer token) knows it.
+    // Parse the account's like/subscribe state fetched above.
     if (!access_token.empty()) {
-        net::Response tv = post_as_account("next", {{"videoId", video_id}}, access_token);
         json t = tv.ok() ? json::parse(tv.body, nullptr, false) : json();
         if (t.is_object()) {
             if (const json* like = find_key(t, "likeStatus"))
