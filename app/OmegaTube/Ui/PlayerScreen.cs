@@ -118,6 +118,8 @@ namespace OmegaTube.Ui
         private DateTime toastUntil;
         private long pendingSeekMs = -1;   // accumulated target while the user holds Left/Right
         private DateTime pendingSeekAt;
+        private long seekingTargetMs = -1;
+        private DateTime seekingUntil;
         private DateTime seekStartAt;
         private int seekDirection;
         private DateTime lastSysSampleAt;
@@ -249,6 +251,7 @@ namespace OmegaTube.Ui
             track.Add(progressFill);
             playhead = Widgets.Rounded(Theme.Accent, 14, 14, 7);
             playhead.Position = new Position(ProgressX - 7, TrackY - 5);
+            playhead.Hide();
             chrome.Add(playhead);
             timeLabel = Widgets.Label("", Theme.SmallSize - 1, Theme.Text, 400);
             timeLabel.Position = new Position(ProgressX, TrackY + 10);
@@ -1003,6 +1006,10 @@ namespace OmegaTube.Ui
             if (player != IntPtr.Zero)
             {
                 NativeCore.PlayerGetStats(player, out stats);
+                if (seekingTargetMs >= 0 && (Math.Abs(stats.PositionMs - seekingTargetMs) < 3000 || now > seekingUntil))
+                {
+                    seekingTargetMs = -1;
+                }
                 long videoAheadMs = Math.Max(0, stats.VideoSubmittedMs - stats.PositionMs) + stats.VideoQueuedMs;
                 long audioAheadMs = Math.Max(0, stats.AudioSubmittedMs - stats.PositionMs) + stats.AudioQueuedMs;
                 bool starved = stats.State != 3 || videoAheadMs < 1000 || audioAheadMs < 1000;
@@ -1209,7 +1216,7 @@ namespace OmegaTube.Ui
                 durationLabel.Text = "";
                 return;
             }
-            long pos = pendingSeekMs >= 0 ? pendingSeekMs : stats.PositionMs;
+            long pos = pendingSeekMs >= 0 ? pendingSeekMs : seekingTargetMs >= 0 ? seekingTargetMs : stats.PositionMs;
             long dur = Math.Max(stats.DurationMs, 1);
             float fill = (float)(ProgressWidth * Math.Min(1.0, pos / (double)dur));
             progressFill.SizeWidth = fill;
@@ -1529,6 +1536,7 @@ namespace OmegaTube.Ui
             // Focused seek bar: bigger playhead and a thicker track.
             RefreshChips();
             bool onTimeline = focus == Focus.Timeline;
+            Widgets.SetVisible(playhead, onTimeline);
             playhead.Scale = onTimeline ? new Vector3(1.5f, 1.5f, 1f) : Vector3.One;
             track.SizeHeight = onTimeline ? 8 : 4;
             progressFill.SizeHeight = track.SizeHeight;
@@ -2265,7 +2273,8 @@ namespace OmegaTube.Ui
                 step = Math.Min(baseStep * tier, maxStep);
             }
             step *= direction;
-            long basePos = pendingSeekMs >= 0 ? pendingSeekMs : stats.PositionMs;
+            long basePos = pendingSeekMs >= 0 ? pendingSeekMs : seekingTargetMs >= 0 ? seekingTargetMs : stats.PositionMs;
+            seekingTargetMs = -1;
             pendingSeekMs = Math.Max(0, Math.Min(basePos + step, Math.Max(0, stats.DurationMs - 1000)));
             pendingSeekAt = now;
             UpdateChrome(now);
@@ -2285,7 +2294,10 @@ namespace OmegaTube.Ui
             {
                 return;
             }
+            seekingTargetMs = target;
+            seekingUntil = DateTime.Now.AddMilliseconds(1500);
             noSkipUntil = DateTime.Now.AddSeconds(1.5);
+            UpdateChrome(DateTime.Now);
             IntPtr p = player;
             if (p != IntPtr.Zero)
             {
