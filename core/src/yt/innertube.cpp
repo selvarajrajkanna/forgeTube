@@ -396,32 +396,40 @@ bool contains_any(const std::string& s, std::initializer_list<const char*> words
 }  // namespace
 
 bool Client::ensure_visitor(std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> inst_lock(mutex_);
     if (!visitor_data_.empty()) return true;
-    net::Request req;
-    req.url = "https://www.youtube.com/";
-    req.headers = {{"User-Agent", cfg::str({"innertube", "search", "userAgent"})}, {"Accept-Language", "en-US"}};
-    net::Response res = net::fetch(req);
-    if (!res.ok()) {
-        error = "youtube.com: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
-        return false;
+    static std::mutex g_visitor_mutex;
+    static std::string g_visitor_data;
+    static std::string g_web_client_version;
+    std::lock_guard<std::mutex> lock(g_visitor_mutex);
+    if (g_visitor_data.empty()) {
+        net::Request req;
+        req.url = "https://www.youtube.com/";
+        req.headers = {{"User-Agent", cfg::str({"innertube", "search", "userAgent"})}, {"Accept-Language", "en-US"}};
+        net::Response res = net::fetch(req);
+        if (!res.ok()) {
+            error = "youtube.com: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
+            return false;
+        }
+        const std::string key = "\"VISITOR_DATA\":\"";
+        size_t at = res.body.find(key);
+        if (at == std::string::npos) {
+            error = "VISITOR_DATA not found";
+            return false;
+        }
+        at += key.size();
+        g_visitor_data = res.body.substr(at, res.body.find('"', at) - at);
+        const std::string ver_key = "\"INNERTUBE_CLIENT_VERSION\":\"";
+        size_t v = res.body.find(ver_key);
+        if (v != std::string::npos) {
+            v += ver_key.size();
+            g_web_client_version = res.body.substr(v, res.body.find('"', v) - v);
+        }
+        if (g_web_client_version.empty()) g_web_client_version = cfg::str({"innertube", "search", "clientVersion"});
+        OLOG("yt: visitorData %zu chars, web client %s", g_visitor_data.size(), g_web_client_version.c_str());
     }
-    const std::string key = "\"VISITOR_DATA\":\"";
-    size_t at = res.body.find(key);
-    if (at == std::string::npos) {
-        error = "VISITOR_DATA not found";
-        return false;
-    }
-    at += key.size();
-    visitor_data_ = res.body.substr(at, res.body.find('"', at) - at);
-    const std::string ver_key = "\"INNERTUBE_CLIENT_VERSION\":\"";
-    size_t v = res.body.find(ver_key);
-    if (v != std::string::npos) {
-        v += ver_key.size();
-        web_client_version_ = res.body.substr(v, res.body.find('"', v) - v);
-    }
-    if (web_client_version_.empty()) web_client_version_ = cfg::str({"innertube", "search", "clientVersion"});
-    OLOG("yt: visitorData %zu chars, web client %s", visitor_data_.size(), web_client_version_.c_str());
+    visitor_data_ = g_visitor_data;
+    web_client_version_ = g_web_client_version;
     return true;
 }
 
