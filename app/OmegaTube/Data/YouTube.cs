@@ -28,6 +28,7 @@ namespace OmegaTube.Data
     {
         public int Width, Height, Fps;
         public string Codec;   // avc1 | vp9 | av01
+        public long Bitrate;
         public bool Hdr;
         public string HdrMode; // HDR10 | HLG | None
     }
@@ -60,6 +61,7 @@ namespace OmegaTube.Data
         public List<AudioTrack> AudioTracks = new List<AudioTrack>();     // empty: single-language video
         public string AudioTrack = "";                                    // playing track id
         public string AudioCodec = "";                                    // e.g. mp4a.40.2, opus
+        public long AudioBitrate;
         public List<CaptionTrack> Captions = new List<CaptionTrack>();
         public Dictionary<string, string> Translations = new Dictionary<string, string>();  // code -> name
     }
@@ -365,6 +367,7 @@ namespace OmegaTube.Data
                 ChannelId = Json.Str(root, "channelId"),
                 AudioTrack = Json.Str(root, "audioTrack"),
                 AudioCodec = Json.Str(root, "audioCodec"),
+                AudioBitrate = (long)Json.Num(root, "audioBitrate"),
             };
             object cur = Json.Obj(root, "current");
             info.Current = cur != null ? ToQuality(cur) : null;
@@ -450,6 +453,7 @@ namespace OmegaTube.Data
                 Height = (int)Json.Num(o, "height"),
                 Fps = (int)Json.Num(o, "fps"),
                 Codec = Json.Str(o, "codec"),
+                Bitrate = (long)Json.Num(o, "bitrate"),
                 Hdr = Json.Bool(o, "hdr"),
                 HdrMode = Json.Str(o, "hdr_mode")
             };

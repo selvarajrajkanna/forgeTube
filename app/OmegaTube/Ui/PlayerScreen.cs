@@ -1052,11 +1052,13 @@ namespace OmegaTube.Ui
             if (statsLabel.Visibility && player != IntPtr.Zero)
             {
                 SampleSystemStats(now);
+                string vRate = info.Current != null && info.Current.Bitrate > 0 ? $" · {info.Current.Bitrate / 1000} kb/s" : "";
+                string aRate = info.AudioBitrate > 0 ? $" · {info.AudioBitrate / 1000} kb/s" : "";
                 statsLabel.Text =
-                    $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | {stats.VideoKbps:F0}/{stats.AudioKbps:F0} kb/s\n" +
+                    $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | dl {stats.VideoKbps:F0}/{stats.AudioKbps:F0} kb/s\n" +
                     $"  stalls {stats.Stalls} ({stats.LongestStallMs}ms) | drop v{stats.VideoUnderruns}/a{stats.AudioUnderruns} err {stats.Errors}\n" +
-                    "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") +
-                    (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}" : "") +
+                    "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
+                    (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}" : "") +
                     $" {sessionSpeed:0.##}x" +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") +
                     $" | v{BugReport.AppVersion}" +

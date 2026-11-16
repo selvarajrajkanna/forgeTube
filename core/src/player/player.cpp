@@ -604,9 +604,21 @@ PlayerStats Player::stats() {
     s.audio_underruns = audio_.underruns;
     s.stalls = stalls_;
     s.longest_stall_ms = longest_stall_ms_;
-    double secs = prepared_ ? std::max<int64_t>(ms_since(started_at_), 1) / 1000.0 : 1.0;
-    s.video_kbps = video_.bytes * 8.0 / 1000.0 / secs;
-    s.audio_kbps = audio_.bytes * 8.0 / 1000.0 / secs;
+    Clock::time_point now = Clock::now();
+    if (last_rate_at_ == Clock::time_point{}) last_rate_at_ = prepared_ ? started_at_ : now;
+    int64_t dt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_rate_at_).count();
+    if (dt_ms >= 1000) {
+        uint64_t vb = video_.bytes.load();
+        uint64_t ab = audio_.bytes.load();
+        double dt_s = dt_ms / 1000.0;
+        last_video_kbps_ = (vb >= last_video_bytes_ ? vb - last_video_bytes_ : 0) * 8.0 / 1000.0 / dt_s;
+        last_audio_kbps_ = (ab >= last_audio_bytes_ ? ab - last_audio_bytes_ : 0) * 8.0 / 1000.0 / dt_s;
+        last_video_bytes_ = vb;
+        last_audio_bytes_ = ab;
+        last_rate_at_ = now;
+    }
+    s.video_kbps = last_video_kbps_;
+    s.audio_kbps = last_audio_kbps_;
     s.errors = errors_;
     s.eos = eos_ ? 1 : 0;
     s.duration_ms = duration_ms_;

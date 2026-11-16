@@ -138,6 +138,9 @@ private:
     std::mutex refresh_mutex_;
     Clock::time_point last_refresh_{};
     Clock::time_point started_at_;
+    Clock::time_point last_rate_at_{};
+    uint64_t last_video_bytes_ = 0, last_audio_bytes_ = 0;
+    double last_video_kbps_ = 0, last_audio_kbps_ = 0;
 };
 
 }  // namespace omega

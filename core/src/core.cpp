@@ -210,6 +210,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                         {"height", f->height},
                         {"fps", f->fps},
                         {"codec", f->video_codec()},
+                        {"bitrate", f->bitrate},
                         {"hdr", f->hdr_mode != omega::yt::HdrMode::None},
                         {"hdr_mode", f->hdr_mode == omega::yt::HdrMode::HDR10 ? "HDR10" : (f->hdr_mode == omega::yt::HdrMode::HLG ? "HLG" : "None")}};
                 };
@@ -225,7 +226,8 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                 p->formats = {{"current", entry(video)},  {"available", available}, {"live", info.is_live},
                               {"title", info.title}, {"author", info.author}, {"description", info.description},
                               {"views", info.views}, {"channelId", info.channel_id}, {"audioTrack", audio->audio_track_id},
-                              {"audioCodec", audio ? audio->codecs : ""}};
+                              {"audioCodec", audio ? audio->codecs : ""},
+                              {"audioBitrate", audio ? audio->bitrate : 0}};
                 p->formats["audioTracks"] = audio_tracks_json(info);
                 nlohmann::json captions = nlohmann::json::array(), translations = nlohmann::json::array();
                 for (const auto& c : info.captions)
