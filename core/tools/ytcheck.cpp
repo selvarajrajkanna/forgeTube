@@ -79,15 +79,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc >= 3 && strcmp(argv[1], "--next") == 0) {
-        // With the token of a previous --signin: the account's suggestions (ANON=1 for the anonymous ones).
-        omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
         std::string error;
-        std::string token = auth.signed_in() && !getenv("ANON") ? auth.access_token(error) : "";
-        error.clear();
         omega::yt::Client client;
         omega::yt::Feed feed;
-        if (!client.related(argv[2], "", token, feed, error)) {
+        if (!client.related(argv[2], "", feed, error)) {
             printf("next failed: %s\n", error.c_str());
             return 1;
         }
@@ -95,7 +90,7 @@ int main(int argc, char** argv) {
             printf("%s | %s | %s | %s | %s | %s%s%s\n", it.video_id.c_str(), it.title.c_str(), it.channel.c_str(),
                    it.duration.c_str(), it.views.c_str(), it.published.c_str(),
                    it.playlist_id.empty() ? "" : (" | " + it.kind + " ").c_str(), it.playlist_id.c_str());
-        printf("%zu related%s\n", feed.items.size(), token.empty() ? " (anonymous)" : " (account)");
+        printf("%zu related\n", feed.items.size());
         return 0;
     }
     if (argc >= 4 && strcmp(argv[1], "--playlist") == 0) {
