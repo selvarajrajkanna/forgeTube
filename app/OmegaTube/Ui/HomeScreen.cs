@@ -71,8 +71,8 @@ namespace OmegaTube.Ui
 
         private IFeedView Feed => feedView as IFeedView;
 
-        // Something to look at: rows of the open feed, or a hosted screen (the launch screen waits for this).
-        public bool HasContent => Feed == null || Feed.Count > 0;
+        // Something to look at: rows of the open feed, placeholders while loading, or a hosted screen.
+        public bool HasContent => Feed == null || Feed.Count > 0 || (feedView is ShelfList sl && sl.ShowingPlaceholders);
 
         private void DropEmbedded(string key)
         {
@@ -182,7 +182,7 @@ namespace OmegaTube.Ui
             {
                 new Section
                 {
-                    Key = "home", Title = T("Home"), Icon = "home", CacheKey = "home-shelves", Shelves = true, RefreshOnOpen = true,
+                    Key = "home", Title = T("Home"), Icon = "home", Shelves = true, RefreshOnOpen = true,
                     Loader = signedIn ? (Func<string, Task<FeedPage>>)(c => YouTube.Browse("FEwhat_to_watch", c)) : null,
                     EmptyText = T("Sign in to your account (Account menu) to see your recommendations, or use Search and the menu sections."),
                 },

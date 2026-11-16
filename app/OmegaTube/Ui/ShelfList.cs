@@ -19,6 +19,7 @@ namespace OmegaTube.Ui
         private static readonly int[] FillOrder = { 0, 1, -1, 2, 3, -2 };   // offsets from the focused row
 
         public int Count => rows.Count;
+        public bool ShowingPlaceholders => placeholderView != null;
         public VideoItem FocusedItem => rows.Count > 0 ? rows[focus].FocusedItem : null;
         public event Action InitialLoadFinished;
         private bool initialLoadNotified;
@@ -28,6 +29,7 @@ namespace OmegaTube.Ui
         private readonly View content;
         private readonly TextLabel status;
         private readonly List<FeedRow> rows = new List<FeedRow>();
+        private View placeholderView;
         private Func<string, Task<FeedPage>> loader;
         private string cacheKey, continuation = "";
         private bool fresh, loading, focused;
@@ -75,12 +77,62 @@ namespace OmegaTube.Ui
             loading = false;
             focus = 0;
             content.PositionY = 0;
-            status.Text = T("Loading…");
+            status.Text = newCacheKey == null && newLoader != null ? "" : T("Loading…");
             if (cacheKey != null)
             {
                 UiGuard.Fire("ShelfList.ShowCached", () => ShowCached(cacheKey, generation));
             }
+            else if (loader != null)
+            {
+                ShowPlaceholders();
+            }
             UiGuard.Fire("ShelfList.Load", Load);
+        }
+
+        private void ShowPlaceholders()
+        {
+            ClearPlaceholders();
+            placeholderView = new View { Size = new Size(width, 2 * Theme.RowHeight) };
+            int thumbH = Theme.ThumbHeight(Theme.CardWidth);
+            int step = Theme.CardWidth + Theme.CardGap;
+            int cols = Math.Max(1, (width - leftInset + Theme.CardGap) / step);
+            for (int r = 0; r < 2; r++)
+            {
+                int y = r * Theme.RowHeight;
+                var titleBar = Widgets.Rounded(Theme.Surface, 260, 26, 8);
+                titleBar.Position = new Position(leftInset, y + 12);
+                placeholderView.Add(titleBar);
+                for (int c = 0; c < cols; c++)
+                {
+                    int x = leftInset + c * step;
+                    int cardY = y + 64;
+                    var thumb = Widgets.Rounded(Theme.Surface, Theme.CardWidth, thumbH + Theme.CardRadius, Theme.CardRadius);
+                    thumb.Position = new Position(x, cardY);
+                    placeholderView.Add(thumb);
+
+                    var info = Widgets.Box(Theme.CardInfo, Theme.CardWidth, Theme.CardInfoHeight);
+                    info.Position = new Position(x, cardY + thumbH);
+                    placeholderView.Add(info);
+
+                    var line1 = Widgets.Rounded(Theme.Surface, Theme.CardWidth - 40, 18, 6);
+                    line1.Position = new Position(14, 18);
+                    info.Add(line1);
+                    var line2 = Widgets.Rounded(Theme.Surface, (Theme.CardWidth - 40) * 2 / 3, 14, 6);
+                    line2.Position = new Position(14, 52);
+                    info.Add(line2);
+                }
+            }
+            content.Add(placeholderView);
+        }
+
+        private void ClearPlaceholders()
+        {
+            if (placeholderView != null)
+            {
+                content.Remove(placeholderView);
+                placeholderView.Dispose();
+                placeholderView = null;
+            }
         }
 
         // The cached rows, read and parsed off the UI thread, shown unless the network was faster.
@@ -143,6 +195,7 @@ namespace OmegaTube.Ui
 
         private void Clear()
         {
+            ClearPlaceholders();
             foreach (FeedRow r in rows)
             {
                 content.Remove(r);
@@ -213,12 +266,14 @@ namespace OmegaTube.Ui
             }
             if (page.Error != null)
             {
+                ClearPlaceholders();
                 if (rows.Count == 0)
                 {
                     status.Text = T("Error: {0}", page.Error);
                 }
                 return;
             }
+            ClearPlaceholders();
             List<FeedRow> reuse = null;
             if (!fresh)
             {
