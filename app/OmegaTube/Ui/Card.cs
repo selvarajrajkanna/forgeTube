@@ -26,6 +26,7 @@ namespace OmegaTube.Ui
         private TextLabel title, meta;
         private Animation zoom;
         private bool focused;
+        private bool thumbLoaded;
 
         public Card(VideoItem item, int width = Theme.CardWidth)
         {
@@ -37,10 +38,9 @@ namespace OmegaTube.Ui
             PivotPoint = Tizen.NUI.PivotPoint.Center;
             PositionUsesPivotPoint = false;  // positions stay top-left based
 
-            // The thumbnail is clipped by a rounded-rect alpha mask; the info box is a white
-            // rounded-rect nine-patch tinted to the panel colour (fixed corners at any width).
-            // The thumbnail extends a radius under the box and a square patch hides the box's rounded top corners.
-            thumb = new ImageView { Size = new Size(width, thumbH + Theme.CardRadius) };
+            // Native Tizen 10 GPU-rounded placeholder surface while the thumbnail is deferred or loading.
+            thumb = new ImageView { Size = new Size(width, thumbH + Theme.CardRadius), BackgroundColor = Theme.Surface };
+            Widgets.Round(thumb, Theme.CardRadius);
             Add(thumb);
 
             info = new ImageView
@@ -104,6 +104,7 @@ namespace OmegaTube.Ui
 
             if (!string.IsNullOrEmpty(Item.Thumbnail))
             {
+                thumbLoaded = true;
                 Widgets.RoundedImage(thumb, Item.Thumbnail, Theme.CardRadius, width, (int)thumb.SizeHeight);
             }
         }
@@ -116,6 +117,11 @@ namespace OmegaTube.Ui
             {
                 title.Text = item.Title;
                 meta.Text = MetaLine(item);
+                if (!thumbLoaded && !string.IsNullOrEmpty(item.Thumbnail))
+                {
+                    thumbLoaded = true;
+                    Widgets.RoundedImage(thumb, item.Thumbnail, Theme.CardRadius, width, (int)thumb.SizeHeight);
+                }
             }
             UpdateProgress();
         }

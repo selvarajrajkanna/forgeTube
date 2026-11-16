@@ -91,6 +91,15 @@ namespace OmegaTube.Ui
             {
                 return;
             }
+            // Cached home rows are replaced as soon as the fresh browse arrives: show placeholder thumbnails
+            // instead of fetching image URLs that are about to be discarded.
+            foreach (Shelf s in cached.Shelves)
+            {
+                foreach (VideoItem it in s.Items)
+                {
+                    it.Thumbnail = "";
+                }
+            }
             AddShelves(cached.Shelves, seedContinuations: false);
             status.Text = "";
             AfterChange();

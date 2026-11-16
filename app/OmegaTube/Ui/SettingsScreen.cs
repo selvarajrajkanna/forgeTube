@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using OmegaTube.Config;
 using OmegaTube.Data;
@@ -16,7 +14,6 @@ namespace OmegaTube.Ui
     //  - categories: ▲▼ choose, ▶ / OK enter, Retour leaves;
     //  - options: ▲▼ move, ◀ ▶ change (or flip a switch), OK flips / activates, Retour back to the categories.
     //  The "Menu" category reorders the rail sections: OK picks a section up, ▲▼ move it, OK drops it.
-    //  "About" shows the release notes of a newer version (startup or manual check) in a scrolling panel.
     public class SettingsScreen : Screen
     {
         private class Row
