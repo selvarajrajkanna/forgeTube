@@ -71,11 +71,6 @@ namespace OmegaTube.Ui
             return new View { BackgroundColor = color, Size = new Size(width, height) };
         }
 
-        public static View Panel(Color flat, int width, int height, float radius)
-        {
-            return Rounded(flat, width, height, radius);
-        }
-
         public static void SetVisible(View view, bool visible)
         {
             if (visible)
@@ -189,35 +184,64 @@ namespace OmegaTube.Ui
         }
 
         // Greedy word wrap to lines of at most `max` characters (subtitles: the label sizes to its text).
-        public static string Wrap(string text, int max)
+        public static int CharsPerLine(int width, float pixelSize) => Math.Max(10, (int)(width / (pixelSize * 0.55f)));
+
+        public static float EstimateTextWidth(string text, float pixelSize) => (text?.Length ?? 0) * pixelSize * 0.55f;
+
+        public static List<string> WrapLines(string text, int max)
         {
-            var sb = new System.Text.StringBuilder();
-            foreach (string paragraph in text.Split('\n'))
+            var lines = new List<string>();
+            if (string.IsNullOrEmpty(text))
             {
-                int line = 0;
-                foreach (string word in paragraph.Split(' '))
+                lines.Add("");
+                return lines;
+            }
+            max = Math.Max(1, max);
+            foreach (string paragraph in text.Replace("\r", "").Split('\n'))
+            {
+                var line = new System.Text.StringBuilder();
+                foreach (string raw in paragraph.Split(' '))
                 {
+                    string word = raw;
+                    while (word.Length > max)
+                    {
+                        if (line.Length > 0)
+                        {
+                            lines.Add(line.ToString());
+                            line.Clear();
+                        }
+                        lines.Add(word.Substring(0, max));
+                        word = word.Substring(max);
+                    }
                     if (word.Length == 0)
                     {
                         continue;
                     }
-                    if (line > 0 && line + 1 + word.Length > max)
+                    if (line.Length > 0 && line.Length + 1 + word.Length > max)
                     {
-                        sb.Append('\n');
-                        line = 0;
+                        lines.Add(line.ToString());
+                        line.Clear();
                     }
-                    else if (line > 0)
+                    if (line.Length > 0)
                     {
-                        sb.Append(' ');
-                        line++;
+                        line.Append(' ');
                     }
-                    sb.Append(word);
-                    line += word.Length;
+                    line.Append(word);
                 }
-                sb.Append('\n');
+                lines.Add(line.ToString());
             }
-            return sb.ToString().TrimEnd('\n');
+            while (lines.Count > 1 && lines[lines.Count - 1].Length == 0)
+            {
+                lines.RemoveAt(lines.Count - 1);
+            }
+            return lines;
         }
+
+        // Manual word-wrapping for NUI labels whose height is sized from the line count up front.
+        public static string Wrap(string text, int max) => string.Join("\n", WrapLines(text, max));
+
+        public static float EstimateTextHeight(string text, int width, float pixelSize) =>
+            WrapLines(text, CharsPerLine(width, pixelSize)).Count * pixelSize * 1.35f;
 
         private static int qrSerial;
 

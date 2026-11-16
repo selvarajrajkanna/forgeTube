@@ -11,7 +11,6 @@
 #include <thread>
 
 #include <nlohmann/json.hpp>
-#include <qrcodegen/qrcodegen.hpp>
 
 #include "net/http.h"
 #include "player/player.h"
@@ -184,16 +183,6 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
         return nullptr;
     }
     std::vector<std::string> prefs = omega::yt::parse_codec_list(codecs && *codecs ? codecs : "av01,vp9,avc1");
-    if (std::find(prefs.begin(), prefs.end(), "av01") == prefs.end()) {
-        prefs.insert(prefs.begin(), "av01");
-    } else {
-        auto it = std::find(prefs.begin(), prefs.end(), "av01");
-        if (it != prefs.begin()) {
-            std::string c = *it;
-            prefs.erase(it);
-            prefs.insert(prefs.begin(), std::move(c));
-        }
-    }
     // Clients whose streams googlevideo refused (403 even with fresh URLs: our IP flagged as a bot).
     std::vector<std::string> skipped_clients;
     for (;;) {
@@ -477,7 +466,7 @@ namespace {
 nlohmann::json comment_json(const omega::yt::Comment& c) {
     return {{"id", c.id},           {"author", c.author}, {"avatar", c.avatar},   {"text", c.text},
             {"published", c.published}, {"likes", c.likes}, {"replies", c.replies}, {"pinned", c.pinned},
-            {"creator", c.creator}, {"hearted", c.hearted}, {"replyToken", c.reply_token},
+            {"creator", c.creator}, {"replyToken", c.reply_token},
             {"liked", c.liked}, {"disliked", c.disliked}};
 }
 
@@ -679,21 +668,6 @@ char* omega_auth_accounts(void) {
 char* omega_auth_switch(const char* id) {
     if (!omega::yt::shared_auth().switch_to(id ? id : "")) return to_c_json({{"error", "no such account"}});
     return to_c_json({{"ok", true}});
-}
-
-char* omega_qr_encode(const char* text) {
-    try {
-        qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(text ? text : "", qrcodegen::QrCode::Ecc::MEDIUM);
-        nlohmann::json rows = nlohmann::json::array();
-        for (int y = 0; y < qr.getSize(); ++y) {
-            std::string row;
-            for (int x = 0; x < qr.getSize(); ++x) row += qr.getModule(x, y) ? '1' : '0';
-            rows.push_back(row);
-        }
-        return to_c_json({{"size", qr.getSize()}, {"rows", rows}});
-    } catch (const std::exception& e) {
-        return to_c_json({{"error", e.what()}});
-    }
 }
 
 char* omega_yt_suggest(const char* query) {

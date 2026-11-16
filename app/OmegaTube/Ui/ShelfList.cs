@@ -155,7 +155,7 @@ namespace OmegaTube.Ui
                 else
                 {
                     // Items beyond the shelf's first ones: the same browse call with the row's continuation.
-                    row = new FeedRow(title, s.Loader ?? (c => YouTube.Browse("", c)), width,
+                    row = new FeedRow(title, c => YouTube.Browse("", c), width,
                                       Theme.CardWidth, leftInset, Theme.RowHeight, Theme.CardGap)
                     {
                         Position = new Position(0, RowTop(i)),

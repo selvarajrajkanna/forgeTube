@@ -181,5 +181,43 @@ namespace OmegaTube.Ui
                 meta.TextColor = focused ? Theme.CardTextFocused : Theme.TextDim;
             }
         }
+
+        // Card-recycling helpers for FeedGrid and FeedRow: keep cards whose video is still in the new feed.
+        internal static Dictionary<string, Card> IndexById(List<Card> list)
+        {
+            var d = new Dictionary<string, Card>();
+            foreach (Card c in list)
+            {
+                string id = c.Item.Id ?? "";
+                if (d.TryGetValue(id, out Card twin))
+                {
+                    twin.GetParent()?.Remove(twin);
+                    twin.Dispose();
+                }
+                d[id] = c;
+            }
+            return d;
+        }
+
+        internal static Card Take(Dictionary<string, Card> pool, VideoItem item)
+        {
+            string id = item.Id ?? "";
+            if (!pool.TryGetValue(id, out Card card))
+            {
+                return null;
+            }
+            pool.Remove(id);
+            card.Rebind(item);
+            return card;
+        }
+
+        internal static void Drop(Dictionary<string, Card> pool)
+        {
+            foreach (Card c in pool.Values)
+            {
+                c.GetParent()?.Remove(c);
+                c.Dispose();
+            }
+        }
     }
 }

@@ -133,7 +133,7 @@ namespace OmegaTube.Ui
             {
                 int panelW = Math.Min(width - 2 * Pad, 1040);
                 const int panelH = 360;
-                emptyView = Widgets.Panel(Theme.Panel, panelW, panelH, Theme.PanelRadius + 4);
+                emptyView = Widgets.Rounded(Theme.Panel, panelW, panelH, Theme.PanelRadius + 4);
                 emptyView.Position = new Position((width - panelW) / 2, Math.Max(Pad, (height - panelH) / 2 - 30));
 
                 var circle = new ImageView { ResourceUrl = Theme.Image("circle_mask"), Color = Theme.SurfaceHigh,
@@ -194,11 +194,11 @@ namespace OmegaTube.Ui
         // Cards of videos already shown are kept (network page after the cached one).
         private void SetHighlights(List<VideoItem> newItems)
         {
-            Dictionary<string, Card> old = ById(highlights);
+            Dictionary<string, Card> old = Card.IndexById(highlights);
             highlights.Clear();
             foreach (VideoItem item in newItems)
             {
-                Card card = Take(old, item) ?? new Card(item, cardW);
+                Card card = Card.Take(old, item) ?? new Card(item, cardW);
                 card.Position = new Position(Pad + highlights.Count * (cardW + GapX), 0);
                 if (card.GetParent() == null)
                 {
@@ -206,7 +206,7 @@ namespace OmegaTube.Ui
                 }
                 highlights.Add(card);
             }
-            Drop(old);
+            Card.Drop(old);
             bool any = highlights.Count > 0;
             foreach (View v in new View[] { hlHeading, hlStrip, gridHeading })
             {
@@ -220,14 +220,14 @@ namespace OmegaTube.Ui
         // New items in place of the current ones, keeping the cards of videos still there (and their thumbnail).
         private void ReplaceItems(List<VideoItem> newItems)
         {
-            Dictionary<string, Card> old = ById(cards);
+            Dictionary<string, Card> old = Card.IndexById(cards);
             int built = cards.Count;
             cards.Clear();
             items.Clear();
             items.AddRange(newItems);
             for (int i = 0; i < Math.Min(built, items.Count); i++)
             {
-                Card card = Take(old, items[i]) ?? new Card(items[i], cardW);
+                Card card = Card.Take(old, items[i]) ?? new Card(items[i], cardW);
                 card.Position = CardPosition(i);
                 if (card.GetParent() == null)
                 {
@@ -235,42 +235,7 @@ namespace OmegaTube.Ui
                 }
                 cards.Add(card);
             }
-            Drop(old);
-        }
-
-        private static Dictionary<string, Card> ById(List<Card> list)
-        {
-            var d = new Dictionary<string, Card>();
-            foreach (Card c in list)
-            {
-                if (d.TryGetValue(c.Item.Id ?? "", out Card twin))
-                {
-                    twin.GetParent()?.Remove(twin);   // the same video twice: one card kept for reuse
-                    twin.Dispose();
-                }
-                d[c.Item.Id ?? ""] = c;
-            }
-            return d;
-        }
-
-        private static Card Take(Dictionary<string, Card> old, VideoItem item)
-        {
-            if (!old.TryGetValue(item.Id ?? "", out Card card))
-            {
-                return null;
-            }
-            old.Remove(item.Id ?? "");
-            card.Rebind(item);
-            return card;
-        }
-
-        private static void Drop(Dictionary<string, Card> old)
-        {
-            foreach (Card c in old.Values)
-            {
-                c.GetParent()?.Remove(c);
-                c.Dispose();
-            }
+            Card.Drop(old);
         }
 
         private Position CardPosition(int i) => new Position(Pad + (i % Columns) * (cardW + GapX), gridTop + (i / Columns) * rowStep);

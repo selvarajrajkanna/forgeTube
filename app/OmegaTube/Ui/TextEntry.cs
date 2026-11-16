@@ -12,7 +12,6 @@ namespace OmegaTube.Ui
     public class TextEntry : View
     {
         private enum KeyAction { Page, Space, Delete, Cancel, Send }
-        private const int CharRows = 4, ActionRow = 4, ActionKeys = 5;
         private const int KeyW = 104, KeyH = 76, KeyGap = 10;
         private const int PanelW = 1240, BoxW = PanelW - 120, BoxLines = 5;
         private const float BoxSize = Theme.BodySize + 4;
@@ -22,16 +21,11 @@ namespace OmegaTube.Ui
 
         private readonly TextLabel box;
         private readonly TextLabel counter;
-        private readonly List<List<TextLabel>> keys = new List<List<TextLabel>>();
+        private readonly OnScreenKeyboard keyboard;
         private readonly string placeholder;
         private readonly int maxLength;
         private string text;
-        private int row = 1, col;
-        private bool symbols;
         private bool busy;
-
-        private string[][] KeyLayout => symbols ? SearchScreen.Symbols
-                                   : Lang == "fr" ? SearchScreen.Azerty : Lang == "es" ? SearchScreen.QwertySpanish : SearchScreen.Qwerty;
 
         public string Text => text;
 
@@ -70,26 +64,10 @@ namespace OmegaTube.Ui
 
             int kbX = (PanelW - (10 * (KeyW + KeyGap) - KeyGap)) / 2;
             int kbY = 100 + boxH + 50;
-            for (int r = 0; r <= ActionRow; r++)
-            {
-                var line = new List<TextLabel>();
-                int x = kbX;
-                int count = r == ActionRow ? ActionKeys : 10;
-                for (int c = 0; c < count; c++)
-                {
-                    int w = r == ActionRow ? (10 * (KeyW + KeyGap) - KeyGap - (ActionKeys - 1) * KeyGap) / ActionKeys : KeyW;
-                    var key = Widgets.Label("", r == ActionRow ? Theme.BodySize : Theme.BodySize + 4, Theme.Text, w, KeyH);
-                    key.HorizontalAlignment = HorizontalAlignment.Center;
-                    key.VerticalAlignment = VerticalAlignment.Center;
-                    Widgets.Round(key, 10);
-                    key.Position = new Position(x, kbY + r * (KeyH + KeyGap));
-                    panel.Add(key);
-                    line.Add(key);
-                    x += w + KeyGap;
-                }
-                keys.Add(line);
-            }
-            LabelKeys();
+            keyboard = new OnScreenKeyboard(KeyW, KeyH, KeyGap, Theme.BodySize, roundKeys: true,
+                                            T("Cancel"), T("Send"), (int)KeyAction.Send);
+            keyboard.Position = new Position(kbX, kbY);
+            panel.Add(keyboard);
             Refresh();
         }
 
@@ -97,30 +75,12 @@ namespace OmegaTube.Ui
         public void SetBusy(bool value)
         {
             busy = value;
-            keys[ActionRow][(int)KeyAction.Send].Text = value ? T("Sending…") : T("Send");
-        }
-
-        private void LabelKeys()
-        {
-            string[][] layout = KeyLayout;
-            for (int r = 0; r < CharRows; r++)
-            {
-                for (int c = 0; c < 10; c++)
-                {
-                    keys[r][c].Text = layout[r][c];
-                }
-            }
-            List<TextLabel> actions = keys[ActionRow];
-            actions[(int)KeyAction.Page].Text = symbols ? "abc" : "àç?#";
-            actions[(int)KeyAction.Space].Text = T("Space");
-            actions[(int)KeyAction.Delete].Text = "← " + T("Delete");
-            actions[(int)KeyAction.Cancel].Text = T("Cancel");
-            actions[(int)KeyAction.Send].Text = busy ? T("Sending…") : T("Send");
+            keyboard.SetActionLabel((int)KeyAction.Send, value ? T("Sending…") : T("Send"));
         }
 
         private void Refresh()
         {
-            int perLine = Math.Max(10, (int)((BoxW - 40) / (BoxSize * 0.55f)));
+            int perLine = Widgets.CharsPerLine(BoxW - 40, BoxSize);
             if (text.Length == 0)
             {
                 box.Text = placeholder;
@@ -129,21 +89,13 @@ namespace OmegaTube.Ui
             else
             {
                 // Last lines only, so the cursor stays in view.
-                string[] lines = Widgets.Wrap(text, perLine).Split('\n');
-                int from = Math.Max(0, lines.Length - BoxLines);
-                box.Text = string.Join("\n", lines, from, lines.Length - from) + "_";
+                List<string> lines = Widgets.WrapLines(text, perLine);
+                int from = Math.Max(0, lines.Count - BoxLines);
+                box.Text = string.Join("\n", lines.GetRange(from, lines.Count - from)) + "_";
                 box.TextColor = Theme.Text;
             }
             counter.Text = text.Length + " / " + maxLength;
-            for (int r = 0; r < keys.Count; r++)
-            {
-                for (int c = 0; c < keys[r].Count; c++)
-                {
-                    bool f = r == row && c == col;
-                    bool send = r == ActionRow && c == (int)KeyAction.Send;
-                    keys[r][c].BackgroundColor = f ? Theme.Accent : send ? Theme.SurfaceHigh : Theme.Surface;
-                }
-            }
+            keyboard.Paint(focused: true);
         }
 
         public void Key(string key)
@@ -155,32 +107,24 @@ namespace OmegaTube.Ui
             switch (key)
             {
                 case "Up":
-                    if (row > 0)
-                    {
-                        col = row == ActionRow ? Math.Min(9, col * 10 / ActionKeys) : col;
-                        row--;
-                    }
+                    keyboard.MoveUp();
                     break;
                 case "Down":
-                    if (row < ActionRow)
-                    {
-                        row++;
-                        col = row == ActionRow ? Math.Min(ActionKeys - 1, col * ActionKeys / 10) : col;
-                    }
+                    keyboard.MoveDown();
                     break;
                 case "Left":
-                    col = Math.Max(0, col - 1);
+                    keyboard.MoveLeft();
                     break;
                 case "Right":
-                    col = Math.Min(keys[row].Count - 1, col + 1);
+                    keyboard.MoveRight();
                     break;
                 case "Return":
-                    if (row == ActionRow)
+                    if (keyboard.IsActionRow)
                     {
-                        Press((KeyAction)col);
+                        Press((KeyAction)keyboard.ActionIndex);
                         return;
                     }
-                    Type(KeyLayout[row][col]);
+                    Type(keyboard.CurrentChar());
                     break;
                 case "XF86Back":
                 case "Escape":
@@ -210,8 +154,7 @@ namespace OmegaTube.Ui
             switch (action)
             {
                 case KeyAction.Page:
-                    symbols = !symbols;
-                    LabelKeys();
+                    keyboard.ToggleSymbols();
                     break;
                 case KeyAction.Space:
                     if (text.Length > 0 && !text.EndsWith(" "))

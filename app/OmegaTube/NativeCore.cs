@@ -109,7 +109,7 @@ namespace OmegaTube
         private static I_ipl _playerSeek;
         private static I_ipd _playerSetRate;
         private static V_ipStats _playerGetStats;
-        private static Ip_s _ytSuggest, _reportUpload, _authPoll, _qrEncode, _ytDetails, _sbSegments, _authSwitch;
+        private static Ip_s _ytSuggest, _reportUpload, _authPoll, _ytDetails, _sbSegments, _authSwitch;
         private static Ip_ss _ytSearch, _ytBrowse, _ytPlaylist, _ytPlaylistPage, _ytRelated, _ytCaptions, _ytRate, _ytChannel, _ytComments, _ytPostComment;
         private static Ip_sss _ytPostReply, _ytCommentAction;
         private static Ip_si _ytSubscribe;
@@ -141,7 +141,6 @@ namespace OmegaTube
             _authBegin = Fn<Ip_v>("omega_auth_begin");
             _authPoll = Fn<Ip_s>("omega_auth_poll");
             _authSignOut = Fn<V_v>("omega_auth_sign_out");
-            _qrEncode = Fn<Ip_s>("omega_qr_encode");
             _ytPlaylist = Fn<Ip_ss>("omega_yt_playlist");
             _ytPlaylistPage = Fn<Ip_ss>("omega_yt_playlist_page");
             _ytRelated = Fn<Ip_ss>("omega_yt_related");
@@ -189,7 +188,6 @@ namespace OmegaTube
         public static IntPtr AuthBegin() => _authBegin();
         public static IntPtr AuthPoll(string deviceCode) => _authPoll(deviceCode ?? "");
         public static void AuthSignOut() => _authSignOut();
-        public static IntPtr QrEncode(string text) => _qrEncode(text ?? "");
         public static IntPtr YtPlaylist(string videoId, string playlistId) => _ytPlaylist(videoId ?? "", playlistId ?? "");
         public static IntPtr YtPlaylistPage(string playlistId, string continuation) => _ytPlaylistPage(playlistId ?? "", continuation ?? "");
         public static IntPtr YtRelated(string videoId, string continuation = "") => _ytRelated(videoId ?? "", continuation ?? "");

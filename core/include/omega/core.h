@@ -148,9 +148,6 @@ OMEGA_API char* omega_auth_accounts(void);
 // Makes the account with this id active: {"ok":true} or {"error"}.
 OMEGA_API char* omega_auth_switch(const char* id);
 
-// QR code of `text` (ECC medium): {"size":N,"rows":["0101...", ...]} ("1" = dark module).
-OMEGA_API char* omega_qr_encode(const char* text);
-
 #ifdef __cplusplus
 }
 #endif

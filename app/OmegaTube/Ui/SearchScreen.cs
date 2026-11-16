@@ -12,36 +12,7 @@ namespace OmegaTube.Ui
     public class SearchScreen : Screen
     {
         // Four rows of ten characters per layout; the action row comes below.
-        internal static readonly string[][] Qwerty =
-        {
-            new[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            new[] { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" },
-            new[] { "a", "s", "d", "f", "g", "h", "j", "k", "l", "'" },
-            new[] { "z", "x", "c", "v", "b", "n", "m", ",", ".", "-" },
-        };
-        internal static readonly string[][] Azerty =
-        {
-            new[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            new[] { "a", "z", "e", "r", "t", "y", "u", "i", "o", "p" },
-            new[] { "q", "s", "d", "f", "g", "h", "j", "k", "l", "m" },
-            new[] { "w", "x", "c", "v", "b", "n", "é", "'", ".", "-" },
-        };
-        internal static readonly string[][] QwertySpanish =
-        {
-            new[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            new[] { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" },
-            new[] { "a", "s", "d", "f", "g", "h", "j", "k", "l", "ñ" },
-            new[] { "z", "x", "c", "v", "b", "n", "m", ",", ".", "-" },
-        };
-        internal static readonly string[][] Symbols =
-        {
-            new[] { "à", "â", "ä", "á", "é", "è", "ê", "ë", "í", "î" },
-            new[] { "ï", "ó", "ô", "ö", "ú", "ù", "û", "ü", "ç", "ñ" },
-            new[] { "œ", "æ", "ß", "¿", "¡", "?", "!", "&", "#", "@" },
-            new[] { ":", ";", "/", "+", "=", "(", ")", "\"", "'", "_" },
-        };
         private enum KeyAction { Page, Space, Delete, Clear, Search }
-        private const int CharRows = 4, ActionRow = 4, ActionKeys = 5;
         private const int KeyW = 86, KeyH = 72, KeyGap = 8;
         private const int KbX = 80, KbY = 190;
 
@@ -50,7 +21,7 @@ namespace OmegaTube.Ui
         private readonly View inputBox;
         private readonly TextField queryField;
         private readonly TextLabel addButton;
-        private readonly List<List<TextLabel>> keyLabels = new List<List<TextLabel>>();
+        private readonly OnScreenKeyboard keyboard;
         private readonly List<TextLabel> suggestionLabels = new List<TextLabel>();
         private readonly View resultsHost;
         private List<string> suggestions = new List<string>();
@@ -59,12 +30,8 @@ namespace OmegaTube.Ui
         private bool syncingField;
         private Zone zone = Zone.Input;
         private bool focused;
-        private int keyRow = 1, keyCol;
         private int suggestionIndex;
         private int suggestGeneration;
-        private bool symbolPage;
-        private string[][] Layout => symbolPage ? Symbols
-                                   : Lang == "fr" ? Azerty : Lang == "es" ? QwertySpanish : Qwerty;
 
         public SearchScreen(App app) : base(app)
         {
@@ -103,27 +70,10 @@ namespace OmegaTube.Ui
             addButton.Hide();
             Root.Add(addButton);
 
-            for (int r = 0; r <= ActionRow; r++)
-            {
-                var line = new List<TextLabel>();
-                int x = KbX;
-                int count = r == ActionRow ? ActionKeys : 10;
-                for (int c = 0; c < count; c++)
-                {
-                    // The action row has 5 wide keys spanning the 10 columns.
-                    int w = r == ActionRow ? (10 * (KeyW + KeyGap) - KeyGap - (ActionKeys - 1) * KeyGap) / ActionKeys : KeyW;
-                    var key = Widgets.Label("", r == ActionRow ? Theme.BodySize + 1 : Theme.BodySize + 4, Theme.Text, w, KeyH);
-                    key.HorizontalAlignment = HorizontalAlignment.Center;
-                    key.VerticalAlignment = VerticalAlignment.Center;
-                    key.BackgroundColor = Theme.Surface;
-                    key.Position = new Position(x, KbY + r * (KeyH + KeyGap));
-                    Root.Add(key);
-                    line.Add(key);
-                    x += w + KeyGap;
-                }
-                keyLabels.Add(line);
-            }
-            LabelKeys();
+            keyboard = new OnScreenKeyboard(KeyW, KeyH, KeyGap, Theme.BodySize + 1, roundKeys: false,
+                                            T("Clear"), T("Search"));
+            keyboard.Position = new Position(KbX, KbY);
+            Root.Add(keyboard);
 
             var sugTitle = Widgets.Label(T("Suggestions"), Theme.BodySize, Theme.TextDim, 700);
             sugTitle.Position = new Position(1060, 190);
@@ -141,24 +91,6 @@ namespace OmegaTube.Ui
                                      ClippingMode = ClippingModeType.ClipChildren };
             Root.Add(resultsHost);
             UpdateFocus();
-        }
-
-        private void LabelKeys()
-        {
-            string[][] layout = Layout;
-            for (int r = 0; r < CharRows; r++)
-            {
-                for (int c = 0; c < 10; c++)
-                {
-                    keyLabels[r][c].Text = layout[r][c];
-                }
-            }
-            List<TextLabel> actions = keyLabels[ActionRow];
-            actions[(int)KeyAction.Page].Text = symbolPage ? "abc" : "àç?#";
-            actions[(int)KeyAction.Space].Text = T("Space");
-            actions[(int)KeyAction.Delete].Text = "← " + T("Delete");
-            actions[(int)KeyAction.Clear].Text = T("Clear");
-            actions[(int)KeyAction.Search].Text = T("Search");
         }
 
         private int SuggestionCount => System.Math.Min(suggestions.Count, suggestionLabels.Count);
@@ -186,14 +118,7 @@ namespace OmegaTube.Ui
             {
                 FocusManager.Instance.ClearFocus();
             }
-            for (int r = 0; r < keyLabels.Count; r++)
-            {
-                for (int c = 0; c < keyLabels[r].Count; c++)
-                {
-                    bool f = focused && zone == Zone.Keyboard && r == keyRow && c == keyCol;
-                    keyLabels[r][c].BackgroundColor = f ? Theme.Accent : Theme.Surface;
-                }
-            }
+            keyboard.Paint(focused && zone == Zone.Keyboard);
             for (int i = 0; i < suggestionLabels.Count; i++)
             {
                 suggestionLabels[i].Text = i < suggestions.Count ? "  " + suggestions[i] : "";
@@ -363,7 +288,7 @@ namespace OmegaTube.Ui
                     if (key == "Up" || key == "XF86Back" || key == "Escape")
                     {
                         zone = Zone.Keyboard;
-                        keyRow = ActionRow;
+                        keyboard.JumpToActionRow();
                     }
                     else if (key == "Left")
                     {
@@ -388,61 +313,38 @@ namespace OmegaTube.Ui
             switch (key)
             {
                 case "Up":
-                    if (keyRow == 0)
+                    if (!keyboard.MoveUp())
                     {
                         zone = Zone.Input;
                     }
-                    else
-                    {
-                        // From the action row, back onto the 10 columns under the wide key.
-                        keyCol = keyRow == ActionRow ? System.Math.Min(9, keyCol * 10 / ActionKeys) : keyCol;
-                        keyRow--;
-                    }
                     break;
                 case "Down":
-                    if (keyRow == ActionRow)
+                    if (!keyboard.MoveDown() && results != null && results.Count > 0)
                     {
-                        if (results != null && results.Count > 0)
-                        {
-                            zone = Zone.Results;
-                        }
-                    }
-                    else
-                    {
-                        keyRow++;
-                        // Map the 10 columns onto the wide keys of the action row.
-                        keyCol = keyRow == ActionRow ? System.Math.Min(ActionKeys - 1, keyCol * ActionKeys / 10) : keyCol;
+                        zone = Zone.Results;
                     }
                     break;
                 case "Left":
-                    if (keyCol == 0)
+                    if (!keyboard.MoveLeft())
                     {
                         return false;   // back to the home rail
                     }
-                    keyCol--;
                     break;
                 case "Right":
-                    if (keyCol == keyLabels[keyRow].Count - 1)
+                    if (!keyboard.MoveRight() && SuggestionCount > 0)
                     {
-                        if (SuggestionCount > 0)
-                        {
-                            zone = Zone.Suggestions;
-                            suggestionIndex = 0;
-                        }
-                    }
-                    else
-                    {
-                        keyCol++;
+                        zone = Zone.Suggestions;
+                        suggestionIndex = 0;
                     }
                     break;
                 case "Return":
-                    if (keyRow == ActionRow)
+                    if (keyboard.IsActionRow)
                     {
-                        PressAction((KeyAction)keyCol);
+                        PressAction((KeyAction)keyboard.ActionIndex);
                     }
                     else
                     {
-                        query += Layout[keyRow][keyCol];
+                        query += keyboard.CurrentChar();
                         UiGuard.Fire("SearchScreen.RefreshSuggestions", RefreshSuggestions);
                     }
                     break;
@@ -458,8 +360,7 @@ namespace OmegaTube.Ui
             switch (action)
             {
                 case KeyAction.Page:
-                    symbolPage = !symbolPage;
-                    LabelKeys();
+                    keyboard.ToggleSymbols();
                     return;
                 case KeyAction.Space:
                     query += " ";

@@ -50,8 +50,8 @@ namespace OmegaTube.Ui
 
         private static readonly int[] SeekSteps = { 5, 10, 15, 20, 30, 60 };
         private static readonly int[] Heights = { 720, 1080, 1440, 2160 };
-        private static readonly string[] CodecSets = { "avc1,vp9", "vp9,avc1", "avc1,vp9,av01" };
-        private static readonly string[] CodecSetLabels = { "H.264, VP9 above 1080p", "VP9 first", "H.264 / VP9 / AV1" };
+        private static readonly string[] CodecSets = { "av01,vp9,avc1", "vp9,av01,avc1", "avc1,vp9,av01" };
+        private static readonly string[] CodecSetLabels = { "AV1 first", "VP9 first", "H.264 first" };
         private static readonly string[] Locales = { "fr-FR", "fr-BE", "fr-CA", "fr-CH", "en-US", "en-GB", "de-DE", "es-ES", "it-IT", "cs-CZ", "ru-RU" };
 
         private readonly List<Category> categories = new List<Category>();
@@ -460,7 +460,7 @@ namespace OmegaTube.Ui
             {
                 case "Up":
                 case "Down":
-                    float height = PlayerScreen.EstimateTextHeight(notesText.Text, 1080, Theme.BodySize);
+                    float height = Widgets.EstimateTextHeight(notesText.Text, 1080, Theme.BodySize);
                     float min = Math.Min(0, 620 - height);
                     notesScroll = Math.Max(min, Math.Min(0, notesScroll + (key == "Up" ? 300 : -300)));
                     notesText.PositionY = notesScroll;

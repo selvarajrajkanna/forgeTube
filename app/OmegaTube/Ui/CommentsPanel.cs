@@ -218,8 +218,8 @@ namespace OmegaTube.Ui
             list.Hide();
             descView.Show();
 
-            int titleChars = CharsPerLine(ContentWidth, BodyFont + 2);
-            List<string> titleLines = WrapLines(videoTitle ?? "", titleChars);
+            int titleChars = Widgets.CharsPerLine(ContentWidth, BodyFont + 2);
+            List<string> titleLines = Widgets.WrapLines(videoTitle ?? "", titleChars);
             descTitleLabel.Text = string.Join("\n", titleLines);
             float titleH = Math.Max(1, titleLines.Count) * (BodyFont + 2) * LineFactor + 6;
             descTitleLabel.SizeHeight = titleH;
@@ -239,8 +239,8 @@ namespace OmegaTube.Ui
             }
 
             string bodyText = !string.IsNullOrWhiteSpace(description) ? description.Trim() : T("No description.");
-            int bodyChars = CharsPerLine(ContentWidth, BodyFont);
-            List<string> bodyLines = WrapLines(bodyText, bodyChars);
+            int bodyChars = Widgets.CharsPerLine(ContentWidth, BodyFont);
+            List<string> bodyLines = Widgets.WrapLines(bodyText, bodyChars);
             descBodyLabel.Text = string.Join("\n", bodyLines);
             descBodyLabel.TextColor = !string.IsNullOrWhiteSpace(description) ? Theme.Text : Theme.TextDim;
             float bodyH = Math.Max(1, bodyLines.Count) * BodyFont * LineFactor + 12;
@@ -461,7 +461,7 @@ namespace OmegaTube.Ui
             {
                 author.BackgroundColor = Theme.SurfaceHigh;
                 Widgets.Round(author, 10);
-                author.SizeWidth = Math.Min(w - TextX, EstimateWidth(who, MetaFont) + 20);
+                author.SizeWidth = Math.Min(w - TextX, Widgets.EstimateTextWidth(who, MetaFont) + 20);
                 author.Text = "  " + who + "  ";
             }
             author.Position = new Position(TextX, y);
@@ -542,7 +542,7 @@ namespace OmegaTube.Ui
             }
             if (!string.IsNullOrEmpty(text))
             {
-                float wText = EstimateWidth(text, MetaFont) + 10;
+                float wText = Widgets.EstimateTextWidth(text, MetaFont) + 10;
                 t.Label = Widgets.Label(text, MetaFont, Theme.Text, (int)Math.Ceiling(wText), ToolH);
                 t.Label.VerticalAlignment = VerticalAlignment.Center;
                 t.Label.Position = new Position(innerX, 0);
@@ -578,8 +578,8 @@ namespace OmegaTube.Ui
         private void FillEntry(Entry e)
         {
             float textTop = e.Top;
-            int perLine = CharsPerLine(ContentWidth - TextX - e.Indent - 12, BodyFont);
-            List<string> lines = WrapLines(e.Comment.Text, perLine);
+            int perLine = Widgets.CharsPerLine(ContentWidth - TextX - e.Indent - 12, BodyFont);
+            List<string> lines = Widgets.WrapLines(e.Comment.Text, perLine);
             e.Truncated = lines.Count > CommentLines;
             int shown = e.Expanded || !e.Truncated ? lines.Count : CommentLines;
             e.Text.Text = string.Join("\n", lines.GetRange(0, shown));
@@ -1123,53 +1123,6 @@ namespace OmegaTube.Ui
             Reveal(+1);
             Refresh();
             Toast?.Invoke(target == null ? T("Comment posted") : T("Reply posted"));
-        }
-
-        private static int CharsPerLine(int width, float pixelSize) => Math.Max(10, (int)(width / (pixelSize * 0.55f)));
-
-        private static float EstimateWidth(string text, float pixelSize) => text.Length * pixelSize * 0.55f;
-
-        private static List<string> WrapLines(string text, int max)
-        {
-            var lines = new List<string>();
-            foreach (string paragraph in text.Replace("\r", "").Split('\n'))
-            {
-                var line = new System.Text.StringBuilder();
-                foreach (string raw in paragraph.Split(' '))
-                {
-                    string word = raw;
-                    while (word.Length > max)
-                    {
-                        if (line.Length > 0)
-                        {
-                            lines.Add(line.ToString());
-                            line.Clear();
-                        }
-                        lines.Add(word.Substring(0, max));
-                        word = word.Substring(max);
-                    }
-                    if (word.Length == 0)
-                    {
-                        continue;
-                    }
-                    if (line.Length > 0 && line.Length + 1 + word.Length > max)
-                    {
-                        lines.Add(line.ToString());
-                        line.Clear();
-                    }
-                    if (line.Length > 0)
-                    {
-                        line.Append(' ');
-                    }
-                    line.Append(word);
-                }
-                lines.Add(line.ToString());
-            }
-            while (lines.Count > 1 && lines[lines.Count - 1].Length == 0)
-            {
-                lines.RemoveAt(lines.Count - 1);
-            }
-            return lines;
         }
     }
 }

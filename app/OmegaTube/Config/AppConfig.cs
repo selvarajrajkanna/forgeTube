@@ -37,7 +37,7 @@ namespace OmegaTube.Config
         public bool ShowStats = false;      // technical overlay (buffer, bitrate, stalls)
         public int MaxHeight = 1080;
         // Video codec preference for the core ("avc1" H.264, "vp9", "av01" AV1). Above 1080p YouTube has no H.264.
-        public string Codecs = "avc1,vp9";
+        public string Codecs = "av01,vp9,avc1";
         public bool Autoplay = true;        // at the end of a video, play the first suggestion (after a countdown)
         // Subtitles: language turned on automatically ("" off). Choosing a track in the player updates it.
         public string CaptionLang = "";

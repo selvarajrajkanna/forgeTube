@@ -2132,16 +2132,8 @@ namespace OmegaTube.Ui
             ShowChrome(Focus.Hidden);
         }
 
-        public static float EstimateTextHeight(string text, int width, float pixelSize)
-        {
-            int perLine = Math.Max(1, (int)(width / (pixelSize * 0.52f)));
-            int lines = 0;
-            foreach (string l in text.Split('\n'))
-            {
-                lines += Math.Max(1, (l.Length + perLine - 1) / perLine);
-            }
-            return lines * pixelSize * 1.35f;
-        }
+        // Approximate width for centering and single-line clipping: NUI does not compute NaturalSize.Height
+        // synchronously for wrapped text.
 
         // ---------------------------------------------------------------- up next
 

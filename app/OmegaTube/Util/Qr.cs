@@ -5,8 +5,8 @@ using System.Text;
 namespace OmegaTube.Util
 {
     // Managed QR code encoder (byte mode, ECC low or medium), a port of the encoding steps of Nayuki's
-    // qrcodegen (MIT). The bug report screen needs it when libomegacore.so itself fails to load, so it
-    // cannot go through NativeCore.QrEncode.
+    // qrcodegen (MIT). Used by both the sign-in screen and the bug report screen (which also runs when
+    // libomegacore.so fails to load).
     public static class Qr
     {
         // [low, medium][version]
@@ -22,7 +22,7 @@ namespace OmegaTube.Util
         };
         private static readonly int[] FormatEcc = { 1, 0 };  // format bits of low, medium
 
-        // Rows of '1' (dark) / '0', like YouTube.Qr. Empty when the text does not fit in version 40.
+        // Rows of '1' (dark) / '0'. Empty when the text does not fit in version 40.
         public static List<string> Encode(string text, bool medium = false)
         {
             var rows = new List<string>();

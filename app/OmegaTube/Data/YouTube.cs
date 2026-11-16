@@ -129,7 +129,6 @@ namespace OmegaTube.Data
         public string Title = "";
         public List<VideoItem> Items = new List<VideoItem>();
         public string Continuation = "";
-        public Func<string, Task<FeedPage>> Loader;   // more items of this row; null: YouTube.Browse("", Continuation)
     }
 
     // Async wrappers over the native core's YouTube data calls (network runs on the thread pool,
@@ -341,17 +340,6 @@ namespace OmegaTube.Data
             Task.Run(() => Json.Str(Call(NativeCore.AuthPoll(deviceCode)), "status", "failed"));
 
         public static void SignOut() => NativeCore.AuthSignOut();
-
-        // QR modules as rows of '0'/'1'.
-        public static List<string> Qr(string text)
-        {
-            var rows = new List<string>();
-            foreach (object o in Json.Arr(Call(NativeCore.QrEncode(text)), "rows") ?? new List<object>())
-            {
-                rows.Add(o as string ?? "");
-            }
-            return rows;
-        }
 
         // Why the last PlayerCreateYouTube failed. No network call.
         public static PlayError LastPlayError()

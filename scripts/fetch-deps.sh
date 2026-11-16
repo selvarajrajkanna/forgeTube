@@ -5,7 +5,6 @@ cd "$(dirname "$0")/.."
 
 MBEDTLS_VERSION=3.6.7
 JSON_VERSION=3.12.0
-QRCODEGEN_VERSION=1.8.0
 QUICKJS_VERSION=0.17.0
 EJS_VERSION=0.8.0
 ZLIB_VERSION=1.3.1
@@ -19,13 +18,6 @@ fi
 if [ ! -f "$DEPS/nlohmann/json.hpp" ]; then
   mkdir -p "$DEPS/nlohmann"
   curl -sfL -o "$DEPS/nlohmann/json.hpp" "https://github.com/nlohmann/json/releases/download/v$JSON_VERSION/json.hpp"
-fi
-# Nayuki's QR Code generator (MIT), for the sign-in QR code.
-if [ ! -f "$DEPS/qrcodegen/qrcodegen.cpp" ]; then
-  mkdir -p "$DEPS/qrcodegen"
-  for f in qrcodegen.cpp qrcodegen.hpp; do
-    curl -sfL -o "$DEPS/qrcodegen/$f" "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v$QRCODEGEN_VERSION/cpp/$f"
-  done
 fi
 # QuickJS-ng (MIT): runs YouTube's player JS to decipher stream URLs of the fallback client.
 if [ ! -d "$DEPS/quickjs-$QUICKJS_VERSION" ]; then

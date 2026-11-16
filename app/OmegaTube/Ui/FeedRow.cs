@@ -102,41 +102,22 @@ namespace OmegaTube.Ui
             {
                 cards[FocusIndex].SetFocused(false);   // its video may land elsewhere; UpdateVisible refocuses
             }
-            var old = new Dictionary<string, Card>();
-            foreach (Card c in cards)
-            {
-                if (old.TryGetValue(c.Item.Id ?? "", out Card twin))
-                {
-                    strip.Remove(twin);   // the same video twice: one card kept for reuse
-                    twin.Dispose();
-                }
-                old[c.Item.Id ?? ""] = c;
-            }
+            Dictionary<string, Card> old = Card.IndexById(cards);
             int built = cards.Count;
             cards.Clear();
             items.Clear();
             items.AddRange(newItems);
             for (int i = 0; i < Math.Min(built, items.Count); i++)
             {
-                string id = items[i].Id ?? "";
-                if (old.TryGetValue(id, out Card card))
+                Card card = Card.Take(old, items[i]) ?? new Card(items[i], cardWidth);
+                card.Position = new Position(i * Step, 16);
+                if (card.GetParent() == null)
                 {
-                    old.Remove(id);
-                    card.Rebind(items[i]);
-                    card.Position = new Position(i * Step, 16);
-                }
-                else
-                {
-                    card = new Card(items[i], cardWidth) { Position = new Position(i * Step, 16) };
                     strip.Add(card);
                 }
                 cards.Add(card);
             }
-            foreach (Card c in old.Values)
-            {
-                strip.Remove(c);
-                c.Dispose();
-            }
+            Card.Drop(old);
             FocusIndex = Math.Min(FocusIndex, Math.Max(0, items.Count - 1));
             slide = Widgets.Slide(strip, SlideX, StripY, slide);
         }

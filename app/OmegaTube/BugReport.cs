@@ -75,33 +75,9 @@ namespace OmegaTube
             if (e is DllNotFoundException || e is BadImageFormatException)
             {
                 // The loader's own reason right after the message: the issue URL keeps a crash's first lines.
-                return $"{time} {e.GetType()}: {e.Message}\ncore load route: {NativeCore.LoadRoute}\n{CoreLoadError()}\n{e.StackTrace}";
+                return $"{time} {e.GetType()}: {e.Message}\ncore load route: {NativeCore.LoadRoute}\n{e.StackTrace}";
             }
             return $"{time} {(e != null ? e.ToString() : "unknown error")}";
-        }
-
-        // Probe libomegacore.so via .NET 8 NativeLibrary so any missing dependency/ABI mismatch shows verbatim.
-        public static string CoreLoadError()
-        {
-            try
-            {
-                string path = NativeCore.CorePath();
-                if (!File.Exists(path))
-                {
-                    return "native load: " + path + " is missing";
-                }
-                if (NativeLibrary.TryLoad(path, out IntPtr handle))
-                {
-                    NativeLibrary.Free(handle);
-                    return "native load: " + path + " loads fine";
-                }
-                NativeLibrary.Load(path);
-                return "native load: unknown error";
-            }
-            catch (Exception e)
-            {
-                return "native load: " + e.Message;
-            }
         }
 
         public static string AppVersion
