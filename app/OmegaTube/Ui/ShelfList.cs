@@ -31,7 +31,7 @@ namespace OmegaTube.Ui
         private readonly List<FeedRow> rows = new List<FeedRow>();
         private View placeholderView;
         private Func<string, Task<FeedPage>> loader;
-        private string cacheKey, continuation = "";
+        private string continuation = "";
         private bool fresh, loading, focused;
         private int focus;
         private int generation;
@@ -65,24 +65,19 @@ namespace OmegaTube.Ui
             }
         }
 
-        // loader("") gives the first rows, loader(continuation) the next ones. cacheKey: shown meanwhile.
-        public void Show(Func<string, Task<FeedPage>> newLoader, string newCacheKey)
+        // loader("") gives the first rows, loader(continuation) the next ones.
+        public void Show(Func<string, Task<FeedPage>> newLoader)
         {
             generation++;
             Clear();
             loader = newLoader;
-            cacheKey = newCacheKey;
             continuation = "";
             fresh = false;
             loading = false;
             focus = 0;
             content.PositionY = 0;
-            status.Text = newCacheKey == null && newLoader != null ? "" : T("Loading…");
-            if (cacheKey != null)
-            {
-                UiGuard.Fire("ShelfList.ShowCached", () => ShowCached(cacheKey, generation));
-            }
-            else if (loader != null)
+            status.Text = "";
+            if (loader != null)
             {
                 ShowPlaceholders();
             }
@@ -93,7 +88,6 @@ namespace OmegaTube.Ui
         {
             ClearPlaceholders();
             placeholderView = new View { Size = new Size(width, 2 * Theme.RowHeight) };
-            int thumbH = Theme.ThumbHeight(Theme.CardWidth);
             int step = Theme.CardWidth + Theme.CardGap;
             int cols = Math.Max(1, (width - leftInset + Theme.CardGap) / step);
             for (int r = 0; r < 2; r++)
@@ -104,22 +98,9 @@ namespace OmegaTube.Ui
                 placeholderView.Add(titleBar);
                 for (int c = 0; c < cols; c++)
                 {
-                    int x = leftInset + c * step;
-                    int cardY = y + 64;
-                    var thumb = Widgets.Rounded(Theme.Surface, Theme.CardWidth, thumbH + Theme.CardRadius, Theme.CardRadius);
-                    thumb.Position = new Position(x, cardY);
-                    placeholderView.Add(thumb);
-
-                    var info = Widgets.Box(Theme.CardInfo, Theme.CardWidth, Theme.CardInfoHeight);
-                    info.Position = new Position(x, cardY + thumbH);
-                    placeholderView.Add(info);
-
-                    var line1 = Widgets.Rounded(Theme.Surface, Theme.CardWidth - 40, 18, 6);
-                    line1.Position = new Position(14, 18);
-                    info.Add(line1);
-                    var line2 = Widgets.Rounded(Theme.Surface, (Theme.CardWidth - 40) * 2 / 3, 14, 6);
-                    line2.Position = new Position(14, 52);
-                    info.Add(line2);
+                    View card = Widgets.SkeletonCard(Theme.CardWidth);
+                    card.Position = new Position(leftInset + c * step, y + 64);
+                    placeholderView.Add(card);
                 }
             }
             content.Add(placeholderView);
@@ -133,28 +114,6 @@ namespace OmegaTube.Ui
                 placeholderView.Dispose();
                 placeholderView = null;
             }
-        }
-
-        // The cached rows, read and parsed off the UI thread, shown unless the network was faster.
-        private async Task ShowCached(string key, int gen)
-        {
-            FeedPage cached = await Task.Run(() => LocalStore.LoadFeed(key));
-            if (cached == null || cached.Shelves.Count == 0 || gen != generation || Disposed || fresh)
-            {
-                return;
-            }
-            // Cached home rows are replaced as soon as the fresh browse arrives: show placeholder thumbnails
-            // instead of fetching image URLs that are about to be discarded.
-            foreach (Shelf s in cached.Shelves)
-            {
-                foreach (VideoItem it in s.Items)
-                {
-                    it.Thumbnail = "";
-                }
-            }
-            AddShelves(cached.Shelves, seedContinuations: false);
-            status.Text = "";
-            AfterChange();
         }
 
         public void Wake()
@@ -282,11 +241,6 @@ namespace OmegaTube.Ui
                 fresh = true;
                 reuse = new List<FeedRow>(rows);
                 rows.Clear();
-                if (cacheKey != null)
-                {
-                    string key = cacheKey;
-                    _ = Task.Run(() => LocalStore.SaveFeed(key, page));
-                }
             }
             continuation = page.Continuation;
             AddShelves(page.Shelves, seedContinuations: true, reuse);

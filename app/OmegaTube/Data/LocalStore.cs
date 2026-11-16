@@ -32,62 +32,6 @@ namespace OmegaTube.Data
             });
         }
 
-        // ---- feed cache ----
-
-        public static FeedPage LoadFeed(string key)
-        {
-            object root = ReadJson(FeedFile(key));
-            if (root == null)
-            {
-                return null;
-            }
-            var page = new FeedPage { Items = YouTube.ToItems(root, "items"), Highlights = YouTube.ToItems(root, "highlights") };
-            foreach (object s in Json.Arr(root, "shelves") ?? new List<object>())
-            {
-                page.Shelves.Add(new Shelf { Title = Json.Str(s, "title"), Items = YouTube.ToItems(s, "items") });
-            }
-            return page.Items.Count > 0 || page.Shelves.Count > 0 ? page : null;
-        }
-
-        public static void SaveFeed(string key, FeedPage page)
-        {
-            var shelves = new List<object>();
-            foreach (Shelf s in page.Shelves)
-            {
-                shelves.Add(new Dictionary<string, object> { ["title"] = s.Title, ["items"] = ItemsJson(s.Items) });
-            }
-            WriteJson(FeedFile(key), new Dictionary<string, object>
-            {
-                ["items"] = ItemsJson(page.Items), ["highlights"] = ItemsJson(page.Highlights), ["shelves"] = shelves,
-            });
-        }
-
-        private static List<object> ItemsJson(List<VideoItem> list)
-        {
-            var items = new List<object>();
-            foreach (VideoItem v in list)
-            {
-                items.Add(new Dictionary<string, object>
-                {
-                    ["id"] = v.Id, ["title"] = v.Title, ["channel"] = v.Channel, ["duration"] = v.Duration,
-                    ["views"] = v.Views, ["published"] = v.Published, ["thumbnail"] = v.Thumbnail, ["live"] = v.Live,
-                    ["watched"] = v.WatchedPercent, ["playlistId"] = v.PlaylistId, ["kind"] = v.Kind,
-                });
-            }
-            return items;
-        }
-
-        private static string FeedFile(string key)
-        {
-            // Stable short file name for any row key (query text may contain anything).
-            uint h = 2166136261;
-            foreach (char c in key)
-            {
-                h = (h ^ c) * 16777619;
-            }
-            return "feed-" + h.ToString("x8") + ".json";
-        }
-
         // ---- playback positions ----
 
         // Fraction watched (0..1), or 0 when unknown.

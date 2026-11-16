@@ -54,7 +54,7 @@ namespace OmegaTube.Ui
 
             grid = new FeedGrid(1920 - 60, 1080 - GridTop) { Position = new Position(30, GridTop) };
             Root.Add(grid);
-            grid.Show(LoadPage, null, T("No videos"));
+            grid.Show(LoadPage, T("No videos"));
             RefreshButton();
         }
 

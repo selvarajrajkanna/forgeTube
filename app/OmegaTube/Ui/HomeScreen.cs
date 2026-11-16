@@ -21,7 +21,7 @@ namespace OmegaTube.Ui
     {
         private class Section
         {
-            public string Key, Title, Icon, CacheKey, EmptyText;
+            public string Key, Title, Icon, EmptyText;
             public Func<string, Task<FeedPage>> Loader;   // null: nothing to show (signed out) or a hosted screen
             public bool Shelves;                          // rows by topic (Home) instead of a grid
             public bool RefreshOnOpen;                    // new content each time it is opened (recommendations)
@@ -72,7 +72,7 @@ namespace OmegaTube.Ui
         private IFeedView Feed => feedView as IFeedView;
 
         // Something to look at: rows of the open feed, placeholders while loading, or a hosted screen.
-        public bool HasContent => Feed == null || Feed.Count > 0 || (feedView is ShelfList sl && sl.ShowingPlaceholders);
+        public bool HasContent => Feed == null || Feed.Count > 0 || Feed.ShowingPlaceholders;
 
         private void DropEmbedded(string key)
         {
@@ -189,14 +189,14 @@ namespace OmegaTube.Ui
                 new Section { Key = "search", Title = T("Search"), Icon = "search", Embed = () => new SearchScreen(App) },
                 new Section
                 {
-                    Key = "subscriptions", Title = T("Subscriptions"), Icon = "subscriptions", CacheKey = "subscriptions",
+                    Key = "subscriptions", Title = T("Subscriptions"), Icon = "subscriptions",
                     RefreshOnOpen = true,
                     Loader = signedIn ? (Func<string, Task<FeedPage>>)(c => YouTube.Browse("FEsubscriptions", c)) : null,
                     EmptyText = T("Sign in to your account (Account menu) to see the videos of your subscriptions."),
                 },
                 new Section
                 {
-                    Key = "history", Title = T("History"), Icon = "history", CacheKey = "history",
+                    Key = "history", Title = T("History"), Icon = "history",
                     Loader = signedIn ? (Func<string, Task<FeedPage>>)(c => YouTube.Browse("FEhistory", c)) : null,
                     EmptyText = T("Sign in to your account (Account menu) to see your history."),
                 },
@@ -210,7 +210,7 @@ namespace OmegaTube.Ui
                 string query = row.Query;
                 list.Add(new Section
                 {
-                    Key = "search:" + query, Title = row.Title, Icon = row.Icon, CacheKey = "search:" + query,
+                    Key = "search:" + query, Title = row.Title, Icon = row.Icon,
                     Loader = c => YouTube.Search(query, c),
                 });
             }
@@ -391,13 +391,13 @@ namespace OmegaTube.Ui
             if (rows)
             {
                 var list = new ShelfList(1920 - ContentX, 1080 - shelfTop) { Position = new Position(ContentX, shelfTop) };
-                list.Show(s.Loader, s.CacheKey);
+                list.Show(s.Loader);
                 v = list;
             }
             else
             {
                 var grid = new FeedGrid(1920 - ContentX, 1080 - GridTop) { Position = new Position(ContentX, GridTop) };
-                grid.Show(s.Loader, s.CacheKey, s.EmptyText);
+                grid.Show(s.Loader, s.EmptyText);
                 v = grid;
             }
             v.Hide();

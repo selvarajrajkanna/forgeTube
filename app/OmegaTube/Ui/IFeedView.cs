@@ -7,6 +7,7 @@ namespace OmegaTube.Ui
     public interface IFeedView
     {
         int Count { get; }
+        bool ShowingPlaceholders { get; }
         VideoItem FocusedItem { get; }
         event Action InitialLoadFinished;
         void SetFocused(bool value);

@@ -73,6 +73,27 @@ namespace OmegaTube.Ui
             return new View { BackgroundColor = color, Size = new Size(width, height) };
         }
 
+        // Lightweight native GPU-rounded skeleton card used while feeds load (zero text shaping or images).
+        public static View SkeletonCard(int width)
+        {
+            int thumbH = Theme.ThumbHeight(width);
+            var root = new View { Size = new Size(width, Theme.CardHeight(width)) };
+            root.Add(Rounded(Theme.Surface, width, thumbH + Theme.CardRadius, Theme.CardRadius));
+
+            var info = Box(Theme.CardInfo, width, Theme.CardInfoHeight);
+            info.Position = new Position(0, thumbH);
+            root.Add(info);
+
+            var line1 = Rounded(Theme.Surface, width - 40, 18, 6);
+            line1.Position = new Position(14, 18);
+            info.Add(line1);
+
+            var line2 = Rounded(Theme.Surface, (width - 40) * 2 / 3, 14, 6);
+            line2.Position = new Position(14, 52);
+            info.Add(line2);
+            return root;
+        }
+
         public static void SetVisible(View view, bool visible)
         {
             if (visible)

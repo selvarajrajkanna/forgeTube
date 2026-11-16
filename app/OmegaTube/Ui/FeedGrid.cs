@@ -24,6 +24,7 @@ namespace OmegaTube.Ui
         private const int PrefetchRows = 5;           // next page asked when the focus is this close to the end
 
         public int Count => items.Count + highlights.Count;
+        public bool ShowingPlaceholders => placeholderView != null;
         public VideoItem FocusedItem => inHighlights ? highlights[hlFocus].Item : items.Count > 0 ? items[focus] : null;
         public event Action InitialLoadFinished;
         private bool initialLoadNotified;
@@ -38,7 +39,6 @@ namespace OmegaTube.Ui
         private readonly List<Card> highlights = new List<Card>();
         private Func<string, Task<FeedPage>> loader;
         private string continuation = "";
-        private string cacheKey;
         private bool fresh, loading, focused;
         private int focus;
         private bool inHighlights;
@@ -49,6 +49,7 @@ namespace OmegaTube.Ui
         private readonly Func<bool> pump;
         private View emptyView;           // centered sign-in / empty-state card (built on first use)
         private TextLabel emptyMessage;
+        private View placeholderView;
         private readonly int width;
 
         public FeedGrid(int width, int height)
@@ -78,8 +79,8 @@ namespace OmegaTube.Ui
             Add(status);
         }
 
-        // Replaces the content with another feed. cacheKey: show the cached first page meanwhile.
-        public void Show(Func<string, Task<FeedPage>> newLoader, string newCacheKey, string emptyText = null)
+        // Replaces the content with another feed.
+        public void Show(Func<string, Task<FeedPage>> newLoader, string emptyText = null)
         {
             generation++;
             hlHeading.Text = T("Most relevant");   // the app language may have changed since the last feed
@@ -90,7 +91,6 @@ namespace OmegaTube.Ui
             fresh = false;
             loading = false;
             loader = newLoader;
-            cacheKey = newCacheKey;
             content.PositionY = Pad;
             if (loader == null)
             {
@@ -99,27 +99,36 @@ namespace OmegaTube.Ui
                 return;
             }
             emptyView?.Hide();
-            status.Text = T("Loading…");
+            status.Text = "";
+            ShowPlaceholders();
             AfterChange();
-            if (cacheKey != null)
-            {
-                UiGuard.Fire("FeedGrid.ShowCached", () => ShowCached(cacheKey, generation));
-            }
             UiGuard.Fire("FeedGrid.Load", Load);
         }
 
-        // The cached first page, read and parsed off the UI thread, shown unless the network was faster.
-        private async Task ShowCached(string key, int gen)
+        private void ShowPlaceholders()
         {
-            FeedPage cached = await Task.Run(() => LocalStore.LoadFeed(key));
-            if (cached == null || gen != generation || Disposed || fresh)
+            ClearPlaceholders();
+            placeholderView = new View { Size = new Size(width, 2 * rowStep) };
+            for (int r = 0; r < 2; r++)
             {
-                return;
+                for (int c = 0; c < Columns; c++)
+                {
+                    View card = Widgets.SkeletonCard(cardW);
+                    card.Position = new Position(Pad + c * (cardW + GapX), r * rowStep);
+                    placeholderView.Add(card);
+                }
             }
-            SetHighlights(cached.Highlights);
-            items.AddRange(cached.Items);
-            status.Text = "";
-            AfterChange();
+            content.Add(placeholderView);
+        }
+
+        private void ClearPlaceholders()
+        {
+            if (placeholderView != null)
+            {
+                content.Remove(placeholderView);
+                placeholderView.Dispose();
+                placeholderView = null;
+            }
         }
 
         public void Wake()
@@ -182,6 +191,7 @@ namespace OmegaTube.Ui
 
         private void ClearCards()
         {
+            ClearPlaceholders();
             items.Clear();
             foreach (Card c in cards)
             {
@@ -283,21 +293,17 @@ namespace OmegaTube.Ui
             }
             if (page.Error != null)
             {
+                ClearPlaceholders();
                 if (Count == 0)
                 {
                     status.Text = T("Error: {0}", page.Error);
                 }
                 return;
             }
+            ClearPlaceholders();
             if (!fresh)
             {
-                // First network page replaces the cached one.
                 fresh = true;
-                if (cacheKey != null)
-                {
-                    string key = cacheKey;
-                    _ = Task.Run(() => LocalStore.SaveFeed(key, page));
-                }
                 SetHighlights(page.Highlights);   // first: it moves the grid (gridTop)
                 ReplaceItems(page.Items);
                 focus = Math.Min(focus, Math.Max(0, items.Count - 1));
