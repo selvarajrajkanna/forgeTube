@@ -79,8 +79,9 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.stream_headers = info.user_agent.empty() ? client.stream_headers()
                                                  : omega::net::Headers{{"User-Agent", info.user_agent}};
     cfg.fps = video->fps > 0 ? video->fps : 30;
-    cfg.max_width = video->width;
-    cfg.max_height = video->height;
+    // Provision at least 4K UHD decoder/scaler headroom so 1080p streams allocate the UHD tier.
+    cfg.max_width = std::max(video->width, 3840);
+    cfg.max_height = std::max(video->height, 2160);
     cfg.audio_bitrate = audio->bitrate > 0 ? audio->bitrate : 128000;
     cfg.duration_ms = info.length_s * 1000;
     cfg.live = info.is_live;
