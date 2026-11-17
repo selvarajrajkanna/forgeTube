@@ -49,7 +49,7 @@ esp::AudioMime pcm_mime(int bits) {
     }
 }
 
-// -1: probe 32->24->16->0 (Off), >0: verified TV PCM bit depth, 0: TV rejects PCM (HW bypass).
+// -1: probe 32->24->16->0 (Off), >0: verified TV PCM bit depth, 0: TV explicitly rejected all PCM modes (HW bypass).
 std::atomic<int> g_cached_pcm_bits{-1};
 
 }  // namespace
@@ -188,10 +188,10 @@ bool Player::start() {
     }
 
     const std::deque<media::Sample> saved_live_samples[2] = {first_samples[0], first_samples[1]};
+    const int cached = g_cached_pcm_bits.load();
     std::vector<int> audio_candidates = {0};
     std::unique_ptr<audio::Pipeline> dsp;
     if (cfg_.use_audio && cfg_.audio_dsp) {
-        const int cached = g_cached_pcm_bits.load();
         if (cached != 0) {
             const int init_bits = cached > 0 ? cached : 32;
             dsp = std::make_unique<audio::Pipeline>();
@@ -244,8 +244,34 @@ bool Player::start() {
         return true;
     };
 
+    auto await_prepare = [&](int net_wait_ms, int esp_wait_ms) {
+        const auto net_deadline = Clock::now() + std::chrono::milliseconds(net_wait_ms);
+        Clock::time_point esp_deadline{};
+        auto tracks_fed = [&] {
+            return (!cfg_.use_video || video_.packet_fed.load(std::memory_order_relaxed)) &&
+                   (!cfg_.use_audio || audio_.packet_fed.load(std::memory_order_relaxed));
+        };
+        bool fed = false;
+        std::unique_lock<std::mutex> lock(state_mutex_);
+        for (;;) {
+            fed = tracks_fed();
+            if (!running_ || prepared_ || prepare_failed_) break;
+            const auto now = Clock::now();
+            if (esp_deadline == Clock::time_point{} && fed) {
+                esp_deadline = now + std::chrono::milliseconds(esp_wait_ms);
+            }
+            const auto deadline = (esp_deadline != Clock::time_point{}) ? esp_deadline : net_deadline;
+            if (now >= deadline) break;
+            state_cv_.wait_until(lock, deadline);
+        }
+        return fed;
+    };
+
     bool sources_consumed = false;
-    bool all_pcm_prepare_failed = false;
+    // Only latch g_cached_pcm_bits = 0 on initial uncached probing when every PCM mode was explicitly refused;
+    // prepare timeouts or a transient glitch after PCM was already proven fall back to HW for this video only.
+    bool all_pcm_rejected = (cached < 0);
+    bool pcm_fell_back = false;
 
     for (size_t attempt = 0; attempt < audio_candidates.size(); ++attempt) {
         const int pcm_bits = audio_candidates[attempt];
@@ -347,6 +373,7 @@ bool Player::start() {
             if (rc != 0) {
                 if (has_fallback) {
                     OLOG("audio dsp: TV refused PCM_S%dLE (%d), trying fallback", pcm_bits, rc);
+                    pcm_fell_back = true;
                     dsp = std::move(audio_dsp_);
                     teardown_esp();
                     continue;
@@ -434,6 +461,7 @@ bool Player::start() {
 
         prepared_ = false;
         prepare_failed_ = false;
+        dsp_confirmed_ = false;
         paused_ = false;
         eos_ = false;
         errors_ = 0;
@@ -473,6 +501,7 @@ bool Player::start() {
         for (Source& src : sources) {
             Track& t = *src.track;
             t.ready_to_feed = false;
+            t.packet_fed = false;
             start_track(t, src.reader.release(), src.http.release());
         }
 
@@ -483,6 +512,7 @@ bool Player::start() {
             for (Source& src : sources) stop_track(*src.track);
             teardown_esp();
             if (has_fallback) {
+                pcm_fell_back = true;
                 dsp = std::move(audio_dsp_);
                 dsp->reset();
                 continue;
@@ -492,34 +522,44 @@ bool Player::start() {
         }
 
         if (audio_dsp_) {
-            std::unique_lock<std::mutex> lock(state_mutex_);
-            state_cv_.wait_for(lock, std::chrono::milliseconds(3000),
-                               [&] { return !running_ || prepared_ || prepare_failed_; });
+            const bool fed = await_prepare((cached > 0) ? 5000 : 20000, (cached > 0) ? 5000 : 3500);
             if (!prepared_) {
-                OLOG("audio dsp: esp prepare %s for PCM_S%dLE", prepare_failed_ ? "failed" : "timed out", pcm_bits);
-                lock.unlock();
+                const bool rejected = prepare_failed_.load();
+                if (!rejected) all_pcm_rejected = false;
+                if (!rejected && (cached > 0 || !fed)) {
+                    // Slow network/resume loading, not a TV PCM rejection: keep DSP active and let control_loop() wait.
+                    OLOG("audio dsp: prepare still loading (%s), keeping PCM_S%dLE", fed ? "buffering" : "network",
+                         pcm_bits);
+                } else {
+                    OLOG("audio dsp: esp prepare %s for PCM_S%dLE", rejected ? "failed" : "timed out", pcm_bits);
+                    running_ = false;
+                    for (Source& src : sources) stop_track(*src.track);
+                    teardown_esp();
+                    if (has_fallback) {
+                        pcm_fell_back = true;
+                        dsp = std::move(audio_dsp_);
+                        dsp->reset();
+                        continue;
+                    }
+                    error_ = "prepare failed after audio DSP fallback";
+                    return false;
+                }
+            } else {
+                confirm_active_dsp();
+            }
+        } else if (pcm_fell_back) {
+            await_prepare((cached < 0 && all_pcm_rejected) ? 12000 : 5000,
+                          (cached < 0 && all_pcm_rejected) ? 3500 : 5000);
+            if (prepared_ && cached < 0 && all_pcm_rejected) {
+                g_cached_pcm_bits = 0;
+                OLOG("audio dsp: TV rejected all PCM modes, latching HW decoder");
+            } else if (!prepared_ && prepare_failed_) {
                 running_ = false;
                 for (Source& src : sources) stop_track(*src.track);
                 teardown_esp();
-                if (has_fallback) {
-                    all_pcm_prepare_failed = true;
-                    dsp = std::move(audio_dsp_);
-                    dsp->reset();
-                    continue;
-                }
-                error_ = "prepare failed after audio DSP fallback";
+                error_ = "prepare failed in HW audio fallback";
                 return false;
             }
-            g_cached_pcm_bits = pcm_bits;
-            OLOG("audio dsp active: %s %dHz -> 48000Hz PCM_S%dLE (atten -%.2fdB%s)",
-                 media::codec_name(audio_.info.codec), audio_dsp_->source_sample_rate(), pcm_bits,
-                 audio_dsp_->attenuation_db(),
-                 audio_dsp_->source_sample_rate() != 48000 ? ", 160-tap sinc" : ", 1:1 bypass");
-        } else if (all_pcm_prepare_failed) {
-            std::unique_lock<std::mutex> lock(state_mutex_);
-            state_cv_.wait_for(lock, std::chrono::milliseconds(3000),
-                               [&] { return !running_ || prepared_ || prepare_failed_; });
-            if (prepared_) g_cached_pcm_bits = 0;
         }
 
         control_thread_ = std::thread([this] { control_loop(); });
@@ -570,6 +610,25 @@ void Player::notify_track(Track& t) {
     t.cv.notify_all();
 }
 
+void Player::mark_track_fed(Track& t) {
+    if (t.packet_fed.load(std::memory_order_relaxed)) return;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        t.packet_fed.store(true, std::memory_order_relaxed);
+    }
+    state_cv_.notify_all();
+}
+
+void Player::confirm_active_dsp() {
+    if (!audio_dsp_ || dsp_confirmed_.exchange(true)) return;
+    const int bits = audio_dsp_->pcm_bits();
+    g_cached_pcm_bits = bits;
+    OLOG("audio dsp active: %s %dHz -> 48000Hz PCM_S%dLE (atten -%.2fdB%s)",
+         media::codec_name(audio_.info.codec), audio_dsp_->source_sample_rate(), bits,
+         audio_dsp_->attenuation_db(),
+         audio_dsp_->source_sample_rate() != 48000 ? ", 160-tap sinc" : ", 1:1 bypass");
+}
+
 void Player::stop_track(Track& t) {
     {
         std::lock_guard<std::mutex> lock(t.mutex);
@@ -600,7 +659,10 @@ bool Player::seek(int64_t ms) {
         if (use[i]) stop_track(*tracks[i]);
     if (audio_dsp_) audio_dsp_->reset();
 
-    for (Track* t : tracks) t->ready_to_feed = false;
+    for (Track* t : tracks) {
+        t->ready_to_feed = false;
+        t->packet_fed = false;
+    }
     feed_from_ms_ = target;
     eos_ = false;
     seek_pending_ = true;
@@ -695,7 +757,10 @@ bool Player::submit_es_packet(Track& t, esp::StreamType type, const uint8_t* dat
     }
     for (;;) {
         const int st = api_->submit_packet(handle_, &pkt);
-        if (st == esp::SUBMIT_SUCCESS) return true;
+        if (st == esp::SUBMIT_SUCCESS) {
+            mark_track_fed(t);
+            return true;
+        }
         if (st == esp::SUBMIT_FULL || st == esp::SUBMIT_NOT_PREPARED) {
             std::unique_lock<std::mutex> lock(t.mutex);
             t.cv.wait_for(lock, std::chrono::milliseconds(50), [&] { return !running_ || !t.active; });
@@ -733,6 +798,7 @@ void Player::feed_loop(Track& t) {
                     }
                 }
                 api_->submit_eos_packet(handle_, t.type);
+                mark_track_fed(t);
                 OLOG("%s feed: eos submitted", stream_name(t.type));
                 break;
             }
@@ -783,6 +849,7 @@ void Player::control_loop() {
         state_cv_.wait(lock, [&] { return !running_ || prepared_ || prepare_failed_; });
     }
     if (!running_ || prepare_failed_) return;
+    confirm_active_dsp();
     int rc = api_->start(handle_);
     started_at_ = Clock::now();
     OLOG("esp start -> %d", rc);

@@ -100,6 +100,7 @@ private:
         size_t queued_bytes = 0;
         bool demux_done = false;
         std::atomic<bool> ready_to_feed{false};
+        std::atomic<bool> packet_fed{false};
         std::atomic<bool> active{true};  // cleared to stop this track's threads (seek)
         std::atomic<bool> reconnecting{false};
         std::vector<media::Segment> segments;
@@ -121,6 +122,8 @@ private:
     void feed_loop(Track& t);
     void control_loop();
     void notify_track(Track& t);
+    void mark_track_fed(Track& t);
+    void confirm_active_dsp();
 
     static void on_error(int err, void* self);
     static void on_buffer_status(esp::StreamType type, esp::BufferStatus status, void* self);
@@ -146,7 +149,7 @@ private:
 
     Track video_, audio_;
     std::atomic<bool> running_{false};
-    std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false};
+    std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false}, dsp_confirmed_{false};
     std::mutex state_mutex_;
     std::condition_variable state_cv_;
     std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0};
