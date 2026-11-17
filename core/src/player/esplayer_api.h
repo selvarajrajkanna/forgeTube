@@ -12,7 +12,13 @@ using Handle = void*;
 enum StreamType : int { STREAM_AUDIO = 0, STREAM_VIDEO = 1 };
 enum DisplayType : int { DISPLAY_NONE = 0, DISPLAY_OVERLAY = 1 };
 enum DisplayMode : int { DISPLAY_MODE_LETTER_BOX = 0, DISPLAY_MODE_FULL_SCREEN = 2 };
-enum AudioMime : int { AUDIO_AAC = 1, AUDIO_OPUS = 7 };
+enum AudioMime : int {
+    AUDIO_AAC = 1,
+    AUDIO_OPUS = 7,
+    AUDIO_PCM_S16LE = 8,
+    AUDIO_PCM_S24LE = 12,
+    AUDIO_PCM_S32LE = 16,
+};
 // Order of esplusplayer_video_mime_type: UNKNOWN, H263, H264, HEVC, MPEG1, MPEG2, MPEG4, VP8, VP9, WMV3, AV1, MJPEG.
 enum VideoMime : int { VIDEO_H264 = 2, VIDEO_HEVC = 3, VIDEO_VP9 = 8, VIDEO_AV1 = 10 };
 enum VideoScanType : int { VIDEO_SCAN_INTERLACED = 0, VIDEO_SCAN_PROGRESSIVE = 1 };

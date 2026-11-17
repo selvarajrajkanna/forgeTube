@@ -8,6 +8,8 @@ JSON_VERSION=3.12.0
 QUICKJS_VERSION=0.17.0
 EJS_VERSION=0.8.0
 ZLIB_VERSION=1.3.1
+OPUS_VERSION=1.5.2
+FAAD2_VERSION=2.11.4
 DEPS=build/deps
 mkdir -p "$DEPS"
 
@@ -26,6 +28,15 @@ fi
 # zlib (zlib license): gzip decompression for InnerTube / config HTTP responses.
 if [ ! -d "$DEPS/zlib-$ZLIB_VERSION" ]; then
   curl -sfL "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" \
+    | tar -xz -C "$DEPS"
+fi
+# Opus 1.5.2 (BSD-3) & FAAD2 2.11.4 (GPLv2+): floating-point audio decoders for max-fidelity PCM DSP.
+if [ ! -d "$DEPS/opus-$OPUS_VERSION" ]; then
+  curl -sfL "https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz" \
+    | tar -xz -C "$DEPS"
+fi
+if [ ! -d "$DEPS/faad2-$FAAD2_VERSION" ]; then
+  curl -sfL "https://github.com/knik0/faad2/archive/refs/tags/$FAAD2_VERSION.tar.gz" \
     | tar -xz -C "$DEPS"
 fi
 # yt-dlp EJS solver (Unlicense; bundles meriyah ISC + astring MIT): finds the n / sig functions in the player JS.

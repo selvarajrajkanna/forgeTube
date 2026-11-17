@@ -43,6 +43,29 @@ set_target_properties(omega_zlib PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hi
 target_compile_options(omega_zlib PRIVATE -O3 -w)
 target_include_directories(omega_zlib PUBLIC ${OMEGA_ZLIB})
 
+# Opus 1.5.2 (floating-point) & FAAD2 2.11.4 (floating-point, DRC off): clean software decode for PCM DSP.
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_FIXED_POINT OFF CACHE BOOL "" FORCE)
+set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
+set(OPUS_FLOAT_APPROX OFF CACHE BOOL "" FORCE)
+add_subdirectory(${OMEGA_DEPS}/opus-1.5.2 opus EXCLUDE_FROM_ALL)
+if(TARGET opus)
+    set_target_properties(opus PROPERTIES C_VISIBILITY_PRESET hidden)
+    target_compile_options(opus PRIVATE -O3 -w)
+endif()
+
+set(FAAD_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(FAAD_APPLY_DRC OFF CACHE BOOL "" FORCE)
+add_subdirectory(${OMEGA_DEPS}/faad2-2.11.4 faad2 EXCLUDE_FROM_ALL)
+if(TARGET faad)
+    set_target_properties(faad PROPERTIES C_VISIBILITY_PRESET hidden)
+    target_compile_options(faad PRIVATE -O3 -w)
+endif()
+
 # The EJS solver bundles (embedded as C strings).
 file(READ ${OMEGA_DEPS}/ejs-0.8.0/lib.min.js OMEGA_EJS_LIB)
 file(READ ${OMEGA_DEPS}/ejs-0.8.0/core.min.js OMEGA_EJS_CORE)
@@ -80,6 +103,7 @@ add_library(omegacore SHARED
     src/media/demuxer.cpp
     src/media/mp4.cpp
     src/media/webm.cpp
+    src/audio/dsp.cpp
     src/player/esplayer_api.cpp
     src/player/player.cpp
 )
@@ -89,7 +113,7 @@ target_compile_options(omegacore PRIVATE -Wall -Wextra -O3 $<$<CXX_COMPILER_ID:G
 set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
 
 find_package(Threads REQUIRED)
-target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib opus faad Threads::Threads m ${CMAKE_DL_LIBS})
 
 # The TV ships its own libstdc++; link ours statically so we never depend on its version.
 target_link_libraries(omegacore PRIVATE -static-libstdc++ -static-libgcc -Wl,--no-undefined)

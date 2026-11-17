@@ -84,6 +84,8 @@ struct VideoInfo {
     std::string channel_id;
     int64_t length_s = 0;
     bool is_live = false;  // broadcasting now: formats are numbered-segment streams (net::LiveReader)
+    bool has_audio_loudness = false;
+    double audio_loudness_db = 0.0;  // playerConfig.audioConfig.loudnessDb relative to -14 LUFS target
     std::string user_agent;  // of the client that resolved the formats (stream requests must send it)
     std::string client;      // its clientName
     std::vector<Format> formats;  // directly playable adaptive formats only

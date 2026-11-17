@@ -585,6 +585,16 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     out.description = details.value("shortDescription", "");
     out.channel_id = details.value("channelId", "");
     out.views = details.value("viewCount", "");
+    out.has_audio_loudness = false;
+    out.audio_loudness_db = 0.0;
+    const json& pc = r.value("playerConfig", json::object());
+    if (pc.is_object()) {
+        const json& ac = pc.value("audioConfig", json::object());
+        if (ac.is_object() && ac.contains("loudnessDb") && ac["loudnessDb"].is_number()) {
+            out.has_audio_loudness = true;
+            out.audio_loudness_db = ac["loudnessDb"].get<double>();
+        }
+    }
     parse_captions(r.value("captions", json::object()), out);
     out.formats.clear();
     out.user_agent = def.user_agent;

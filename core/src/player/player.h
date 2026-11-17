@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "audio/dsp.h"
 #include "media/demuxer.h"
 #include "net/http.h"
 #include "player/esplayer_api.h"
@@ -35,6 +36,9 @@ struct PlayerConfig {
     std::string app_type = "MSE";     // empty: skip esplusplayer_set_app_info
     std::string app_runtitle;         // optional runtitle passed via esplusplayer_set_app_info_ex
     bool use_video = true, use_audio = true, use_display = true;
+    bool audio_dsp = true;          // decode Opus/AAC to float, sync-resample to 48 kHz, linear loudness -> PCM
+    bool has_audio_loudness = false;
+    double audio_loudness_db = 0.0; // YouTube audioConfig.loudnessDb relative to -14 LUFS
     bool is_hdr = false;
     int hdr_mode = 0;               // 0 None, 1 HDR10, 2 HLG
     int64_t max_queue_ms = 30000;   // demuxed read-ahead per stream (network side)
@@ -107,6 +111,9 @@ private:
     void attach_hooks(Track& t, net::StreamSource& source);
     void push_samples(Track& t, std::deque<media::Sample>& samples);
     std::string fresh_url(Track& t);
+    bool submit_es_packet(Track& t, esp::StreamType type, const uint8_t* data, size_t size, int64_t pts_ms,
+                          int64_t duration_ms);
+    void teardown_esp();
     void feed_loop(Track& t);
     void control_loop();
     void notify_track(Track& t);
@@ -131,6 +138,7 @@ private:
 
     bool has_color_info_ = false;
     esp::ESMatroskaColor color_info_{};
+    std::unique_ptr<audio::Pipeline> audio_dsp_;
 
     Track video_, audio_;
     std::atomic<bool> running_{false};

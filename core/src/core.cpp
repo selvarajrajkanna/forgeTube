@@ -83,6 +83,8 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.max_width = std::max(video->width, 3840);
     cfg.max_height = std::max(video->height, 2160);
     cfg.audio_bitrate = audio->bitrate > 0 ? audio->bitrate : 128000;
+    cfg.has_audio_loudness = info.has_audio_loudness;
+    cfg.audio_loudness_db = info.audio_loudness_db;
     cfg.duration_ms = info.length_s * 1000;
     cfg.live = info.is_live;
     cfg.start_ms = info.is_live ? 0 : start_ms;
