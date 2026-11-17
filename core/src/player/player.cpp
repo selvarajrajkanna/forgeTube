@@ -201,6 +201,10 @@ bool Player::start() {
         OLOG("esp set_audio_stream_info -> %d", rc);
     }
     if (cfg_.use_video) {
+        if (api_->set_video_scan_type) {
+            rc = api_->set_video_scan_type(handle_, esp::VIDEO_SCAN_PROGRESSIVE);
+            OLOG("esp set_video_scan_type(progressive) -> %d", rc);
+        }
         esp::VideoStreamInfo vi{};
         if (!video_.info.codec_data.empty()) {
             vi.codec_data = reinterpret_cast<char*>(video_.info.codec_data.data());

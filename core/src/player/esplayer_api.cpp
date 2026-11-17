@@ -43,6 +43,7 @@ void load() {
     ok &= bind(lib, g_api.set_app_info, "esplusplayer_set_app_info");
     ok &= bind(lib, g_api.set_audio_stream_info, "esplusplayer_set_audio_stream_info");
     ok &= bind(lib, g_api.set_video_stream_info, "esplusplayer_set_video_stream_info");
+    bind(lib, g_api.set_video_scan_type, "esplusplayer_set_video_scan_type");
     ok &= bind(lib, g_api.submit_packet, "esplusplayer_submit_packet");
     ok &= bind(lib, g_api.submit_eos_packet, "esplusplayer_submit_eos_packet");
     ok &= bind(lib, g_api.get_playing_time, "esplusplayer_get_playing_time");

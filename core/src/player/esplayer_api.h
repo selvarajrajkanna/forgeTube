@@ -15,6 +15,7 @@ enum DisplayMode : int { DISPLAY_MODE_LETTER_BOX = 0, DISPLAY_MODE_FULL_SCREEN =
 enum AudioMime : int { AUDIO_AAC = 1 };
 // Order of esplusplayer_video_mime_type: UNKNOWN, H263, H264, HEVC, MPEG1, MPEG2, MPEG4, VP8, VP9, WMV3, AV1, MJPEG.
 enum VideoMime : int { VIDEO_H264 = 2, VIDEO_HEVC = 3, VIDEO_VP9 = 8, VIDEO_AV1 = 10 };
+enum VideoScanType : int { VIDEO_SCAN_INTERLACED = 0, VIDEO_SCAN_PROGRESSIVE = 1 };
 enum BufferStatus : int { BUFFER_UNDERRUN = 0, BUFFER_OVERRUN = 1 };
 enum State : int { STATE_NONE, STATE_IDLE, STATE_READY, STATE_PLAYING, STATE_PAUSED };
 enum SubmitStatus : int {
@@ -125,6 +126,7 @@ struct Api {
     int (*set_app_info)(Handle, const AppInfo*);
     int (*set_audio_stream_info)(Handle, AudioStreamInfo*);
     int (*set_video_stream_info)(Handle, VideoStreamInfo*);
+    int (*set_video_scan_type)(Handle, VideoScanType);
     int (*submit_packet)(Handle, EsPacket*);
     int (*submit_eos_packet)(Handle, StreamType);
     int (*get_playing_time)(Handle, uint64_t* ms);
