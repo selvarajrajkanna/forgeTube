@@ -25,12 +25,13 @@ struct TrackInfo {
     uint32_t channels = 0, sample_rate = 0;
     uint32_t default_duration = 0, default_size = 0, default_flags = 0;  // from trex (WebM: DefaultDuration in ms)
 
-    // HDR colorimetry & static metadata (parsed from 'colr', 'mdcv', 'clli' in MP4 or Colour in WebM)
+    // Colorimetry & HDR static metadata (parsed from 'colr'/'mdcv'/'clli' in MP4 or Colour in WebM).
+    bool has_color = false;
     bool has_hdr = false;
-    uint16_t color_primaries = 0;           // 9 = BT.2020
-    uint16_t transfer_characteristics = 0; // 16 = SMPTE ST 2084 (PQ), 18 = ARIB STD-B67 (HLG)
-    uint16_t matrix_coefficients = 0;      // 9 = BT.2020 NCL
-    uint8_t full_range = 0;
+    uint16_t color_primaries = 0;           // 1 = BT.709, 9 = BT.2020
+    uint16_t transfer_characteristics = 0; // 1 = BT.709, 16 = SMPTE ST 2084 (PQ), 18 = ARIB STD-B67 (HLG)
+    uint16_t matrix_coefficients = 0;      // 1 = BT.709, 9 = BT.2020 NCL
+    uint8_t color_range = 0;               // Matroska Colour.Range: 0 = unspecified, 1 = limited (16-235), 2 = full (0-255)
     uint32_t bits_per_channel = 8;
 
     bool has_mdcv = false;
@@ -42,6 +43,12 @@ struct TrackInfo {
     bool has_clli = false;
     uint16_t max_cll = 0, max_fall = 0;    // in cd/m² (nits)
 };
+
+// Recompute has_hdr from container colorimetry/metadata so SDR 'colr'/'Colour' tags never masquerade as HDR.
+inline void update_hdr_flag(TrackInfo& t) {
+    t.has_hdr = (t.transfer_characteristics == 16 || t.transfer_characteristics == 18 ||
+                 t.has_mdcv || (t.has_clli && (t.max_cll > 0 || t.max_fall > 0)));
+}
 
 // One entry of the stream index (sidx / Cues): a self-contained fragment starting with a keyframe.
 struct Segment {

@@ -233,11 +233,11 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
                     if (vid == kPixelWidth) t.width = static_cast<uint32_t>(to_uint(v));
                     else if (vid == kPixelHeight) t.height = static_cast<uint32_t>(to_uint(v));
                     else if (vid == kColour) {
-                        t.has_hdr = true;
+                        t.has_color = true;
                         for_each_element(v, [&](uint32_t cid, Cursor col) {
                             if (cid == kMatrixCoefficients) t.matrix_coefficients = static_cast<uint16_t>(to_uint(col));
                             else if (cid == kBitsPerChannel) t.bits_per_channel = static_cast<uint32_t>(to_uint(col));
-                            else if (cid == kRange) t.full_range = static_cast<uint8_t>(to_uint(col));
+                            else if (cid == kRange) t.color_range = static_cast<uint8_t>(to_uint(col));
                             else if (cid == kTransferCharacteristics) t.transfer_characteristics = static_cast<uint16_t>(to_uint(col));
                             else if (cid == kPrimaries) t.color_primaries = static_cast<uint16_t>(to_uint(col));
                             else if (cid == kMaxCLL) { t.has_clli = true; t.max_cll = static_cast<uint16_t>(to_uint(col)); }
@@ -258,6 +258,7 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
                                 });
                             }
                         });
+                        update_hdr_flag(t);
                     }
                 });
             } else if (eid == kAudio) {

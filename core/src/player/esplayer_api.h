@@ -39,21 +39,23 @@ struct ESMatroskaMasteringMetadata {
     double luminance_min;
 };
 
+// Matches esplusplayer_matroska_color ABI in Tizen's esplusplayer_capi/matroska_color.h.
 struct ESMatroskaColor {
     uint32_t matrix_coefficients;
     uint32_t bits_per_channel;
-    uint32_t primaries;
-    uint32_t transfer_characteristics;
-    uint32_t range;
     uint32_t chroma_subsampling_horizontal;
     uint32_t chroma_subsampling_vertical;
     uint32_t cb_subsampling_horizontal;
     uint32_t cb_subsampling_vertical;
     uint32_t chroma_siting_horizontal;
     uint32_t chroma_siting_vertical;
+    uint32_t range;
+    uint32_t transfer_characteristics;
+    uint32_t primaries;
     uint32_t max_cll;
     uint32_t max_fall;
     ESMatroskaMasteringMetadata mastering_metadata;
+    uint32_t is_hdr10p;
 };
 
 struct EsPacket {
@@ -99,6 +101,13 @@ struct AppInfo {
     char* type;
 };
 
+struct AppInfoEx {
+    char* id;
+    char* version;
+    char* type;
+    char* runtitle;
+};
+
 using ErrorCb = void (*)(int error, void* user);
 using BufferStatusCb = void (*)(StreamType, BufferStatus, void* user);
 using EosCb = void (*)(void* user);
@@ -124,6 +133,7 @@ struct Api {
     int (*set_ecore_display)(Handle, DisplayType, void* window, int x, int y, int w, int h);
     int (*set_display_mode)(Handle, DisplayMode);
     int (*set_app_info)(Handle, const AppInfo*);
+    int (*set_app_info_ex)(Handle, const AppInfoEx*);
     int (*set_sound_stream_info)(Handle, void* stream_info);
     int (*create_sound_stream_info)(int stream_type, void* focus_cb, void* user_data, void** stream_info);
     int (*destroy_sound_stream_info)(void* stream_info);

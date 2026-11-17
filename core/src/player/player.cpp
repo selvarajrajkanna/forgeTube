@@ -190,10 +190,17 @@ bool Player::start() {
         return false;
     }
     if (!cfg_.app_type.empty()) {
-        esp::AppInfo app{const_cast<char*>(cfg_.app_id.c_str()), const_cast<char*>(cfg_.app_version.c_str()),
-                         const_cast<char*>(cfg_.app_type.c_str())};
-        rc = api_->set_app_info(handle_, &app);
-        OLOG("esp set_app_info(%s %s %s) -> %d", app.id, app.version, app.type, rc);
+        if (api_->set_app_info_ex && !cfg_.app_runtitle.empty()) {
+            esp::AppInfoEx app{const_cast<char*>(cfg_.app_id.c_str()), const_cast<char*>(cfg_.app_version.c_str()),
+                               const_cast<char*>(cfg_.app_type.c_str()), const_cast<char*>(cfg_.app_runtitle.c_str())};
+            rc = api_->set_app_info_ex(handle_, &app);
+            OLOG("esp set_app_info_ex(%s %s %s %s) -> %d", app.id, app.version, app.type, app.runtitle, rc);
+        } else {
+            esp::AppInfo app{const_cast<char*>(cfg_.app_id.c_str()), const_cast<char*>(cfg_.app_version.c_str()),
+                             const_cast<char*>(cfg_.app_type.c_str())};
+            rc = api_->set_app_info(handle_, &app);
+            OLOG("esp set_app_info(%s %s %s) -> %d", app.id, app.version, app.type, rc);
+        }
     }
     if (cfg_.use_display) {
         rc = api_->set_ecore_display(handle_, esp::DISPLAY_OVERLAY, cfg_.window, 0, 0, cfg_.width, cfg_.height);
@@ -263,7 +270,7 @@ bool Player::start() {
             } else {
                 color_info_.transfer_characteristics = (cfg_.hdr_mode == 2) ? 18 : 16;
             }
-            color_info_.range = video_.info.full_range;
+            color_info_.range = video_.info.color_range ? video_.info.color_range : 1;
             color_info_.bits_per_channel = video_.info.bits_per_channel ? video_.info.bits_per_channel : 10;
             color_info_.chroma_subsampling_horizontal = 1;
             color_info_.chroma_subsampling_vertical = 1;
@@ -283,9 +290,9 @@ bool Player::start() {
                 color_info_.mastering_metadata.luminance_max = video_.info.max_luminance * 0.0001;
                 color_info_.mastering_metadata.luminance_min = video_.info.min_luminance * 0.0001;
             }
-            OLOG("esp HDR colorimetry: matrix=%u prim=%u tc=%u bits=%u max_cll=%u max_fall=%u",
+            OLOG("esp HDR colorimetry: matrix=%u prim=%u tc=%u range=%u bits=%u max_cll=%u max_fall=%u",
                  color_info_.matrix_coefficients, color_info_.primaries, color_info_.transfer_characteristics,
-                 color_info_.bits_per_channel, color_info_.max_cll, color_info_.max_fall);
+                 color_info_.range, color_info_.bits_per_channel, color_info_.max_cll, color_info_.max_fall);
         }
     }
 

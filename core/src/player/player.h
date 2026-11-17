@@ -33,6 +33,7 @@ struct PlayerConfig {
     std::function<bool(std::string& video_url, std::string& audio_url)> refresh_urls;
     std::string app_id, app_version;  // reported to the TV resource manager
     std::string app_type = "MSE";     // empty: skip esplusplayer_set_app_info
+    std::string app_runtitle;         // optional runtitle passed via esplusplayer_set_app_info_ex
     bool use_video = true, use_audio = true, use_display = true;
     bool is_hdr = false;
     int hdr_mode = 0;               // 0 None, 1 HDR10, 2 HLG

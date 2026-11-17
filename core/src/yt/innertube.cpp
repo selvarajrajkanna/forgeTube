@@ -393,6 +393,15 @@ bool contains_any(const std::string& s, std::initializer_list<const char*> words
     return false;
 }
 
+VideoCodec classify_video_codec(const std::string& mime, const std::string& codecs) {
+    if (mime == "video/mp4" && codecs.compare(0, 4, "avc1") == 0) return VideoCodec::H264;
+    if ((mime == "video/webm" || mime == "video/mp4") &&
+        (codecs == "vp9" || codecs.compare(0, 5, "vp09.") == 0))
+        return VideoCodec::VP9;
+    if (mime == "video/mp4" && codecs.compare(0, 5, "av01.") == 0) return VideoCodec::AV1;
+    return VideoCodec::Unknown;
+}
+
 }  // namespace
 
 bool Client::ensure_visitor(std::string& error) {
@@ -617,13 +626,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         fmt.audio_default = track.value("audioIsDefault", false);
 
         if (fmt.is_video()) {
-            if (fmt.mime == "video/mp4" && fmt.codecs.compare(0, 4, "avc1") == 0) {
-                fmt.codec = VideoCodec::H264;
-            } else if (fmt.mime == "video/webm" && (fmt.codecs == "vp9" || fmt.codecs.compare(0, 5, "vp09.") == 0)) {
-                fmt.codec = VideoCodec::VP9;
-            } else if (fmt.mime == "video/mp4" && fmt.codecs.compare(0, 5, "av01.") == 0) {
-                fmt.codec = VideoCodec::AV1;
-            }
+            fmt.codec = classify_video_codec(fmt.mime, fmt.codecs);
 
             const json& ci = f.value("colorInfo", json::object());
             std::string tc = ci.value("transferCharacteristics", "");
@@ -1362,16 +1365,13 @@ Client& shared_client() {
 
 std::string Format::video_codec() const {
     if (!is_video()) return "";
-    switch (codec) {
+    VideoCodec c = codec != VideoCodec::Unknown ? codec : classify_video_codec(mime, codecs);
+    switch (c) {
         case VideoCodec::H264: return "avc1";
         case VideoCodec::VP9: return "vp9";
         case VideoCodec::AV1: return "av01";
-        default: break;
+        default: return "";
     }
-    if (mime == "video/mp4" && codecs.compare(0, 4, "avc1") == 0) return "avc1";
-    if (mime == "video/webm" && (codecs == "vp9" || codecs.compare(0, 5, "vp09.") == 0)) return "vp9";
-    if (mime == "video/mp4" && codecs.compare(0, 5, "av01.") == 0) return "av01";
-    return "";
 }
 
 std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, const std::vector<std::string>& codecs) {

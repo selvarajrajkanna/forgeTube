@@ -108,6 +108,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     };
     cfg.app_id = "org.omegatube.modern";
     cfg.app_version = kVersion;
+    cfg.app_runtitle = "YouTube";
     auto* p = new omega_player(std::move(cfg));
     if (!p->impl.start()) {
         OLOG("player start failed: %s", p->impl.error().c_str());

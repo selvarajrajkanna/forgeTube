@@ -264,17 +264,17 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
                                                     if (cc.left() >= 11) {
                                                         uint32_t type = cc.u32();
                                                         if (type == fourcc("nclx")) {
-                                                            track_.has_hdr = true;
+                                                            track_.has_color = true;
                                                             track_.color_primaries = cc.u16();
                                                             track_.transfer_characteristics = cc.u16();
                                                             track_.matrix_coefficients = cc.u16();
-                                                            track_.full_range = cc.u8() >> 7;
+                                                            // ISO BMFF nclx full_range_flag (0=limited, 1=full) -> Matroska Range (1=limited, 2=full).
+                                                            track_.color_range = (cc.u8() >> 7) ? 2 : 1;
                                                         }
                                                     }
                                                 } else if (ct == fourcc("mdcv")) {
                                                     if (cc.left() >= 24) {
                                                         track_.has_mdcv = true;
-                                                        track_.has_hdr = true;
                                                         for (int i = 0; i < 3; ++i) {
                                                             track_.display_primaries_x[i] = cc.u16();
                                                             track_.display_primaries_y[i] = cc.u16();
@@ -287,12 +287,12 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
                                                 } else if (ct == fourcc("clli")) {
                                                     if (cc.left() >= 4) {
                                                         track_.has_clli = true;
-                                                        track_.has_hdr = true;
                                                         track_.max_cll = cc.u16();
                                                         track_.max_fall = cc.u16();
                                                     }
                                                 }
                                             });
+                                            update_hdr_flag(track_);
                                         } else if (entry == fourcc("mp4a")) {
                                             track_.codec = Codec::AAC;
                                             se.skip(16);
