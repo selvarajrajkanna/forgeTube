@@ -298,11 +298,11 @@ namespace OmegaTube.Ui
             commentsPanel.Toast = text => Toast(text);
             Root.Add(commentsPanel);
 
-            statsLabel = Widgets.Label("", Theme.SmallSize - 4, Theme.Text, 1848, 0);
+            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 980, 0);
             statsLabel.MultiLine = true;
             statsLabel.Ellipsis = false;
             statsLabel.WidthResizePolicy = ResizePolicyType.Fixed;
-            statsLabel.SizeWidth = 1848;
+            statsLabel.SizeWidth = 980;
             statsLabel.HeightResizePolicy = ResizePolicyType.UseNaturalSize;
             statsLabel.BackgroundColor = M3TitleSurface;
             Widgets.Round(statsLabel, 14);

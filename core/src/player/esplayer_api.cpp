@@ -1,21 +1,15 @@
 #include "player/esplayer_api.h"
 
 #include <dlfcn.h>
-#if defined(__linux__)
-#include <elf.h>
-#include <link.h>
-#endif
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "util/log.h"
 
@@ -24,258 +18,18 @@ namespace {
 
 Api g_api{};
 const Api* g_loaded = nullptr;
-std::string g_extra_knobs = "esp: not loaded";
+std::string g_extra_knobs = "esp probe: not loaded";
 
-std::string to_lower_ascii(std::string_view sv) {
-    std::string out(sv);
-    for (char& ch : out) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    return out;
-}
-
-bool contains_ci(std::string_view hay, std::string_view needle) {
-    if (needle.empty() || hay.size() < needle.size()) return false;
-    std::string h = to_lower_ascii(hay);
-    return h.find(needle) != std::string::npos;
-}
-
-bool is_known_esplayer_symbol(std::string_view name) {
-    static constexpr std::string_view kKnown[] = {
-        "esplusplayer_create",
-        "esplusplayer_open",
-        "esplusplayer_close",
-        "esplusplayer_destroy",
-        "esplusplayer_prepare_async",
-        "esplusplayer_start",
-        "esplusplayer_stop",
-        "esplusplayer_pause",
-        "esplusplayer_resume",
-        "esplusplayer_seek",
-        "esplusplayer_set_playback_rate",
-        "esplusplayer_get_state",
-        "esplusplayer_set_ecore_display",
-        "esplusplayer_set_display_mode",
-        "esplusplayer_set_app_info",
-        "esplusplayer_set_app_info_ex",
-        "esplusplayer_set_sound_stream_info",
-        "esplusplayer_set_audio_stream_info",
-        "esplusplayer_set_video_stream_info",
-        "esplusplayer_set_video_scan_type",
-        "esplusplayer_submit_packet",
-        "esplusplayer_submit_eos_packet",
-        "esplusplayer_get_playing_time",
-        "esplusplayer_get_adaptive_info",
-        "esplusplayer_get_virtual_rsc_id",
-        "esplusplayer_set_error_cb",
-        "esplusplayer_set_buffer_status_cb",
-        "esplusplayer_set_eos_cb",
-        "esplusplayer_set_ready_to_prepare_cb",
-        "esplusplayer_set_prepare_async_done_cb",
-        "esplusplayer_set_resource_conflicted_cb",
-        "esplusplayer_set_ready_to_seek_cb",
-        "esplusplayer_set_seek_done_cb",
-        "esplusplayer_set_video_frame_dropped_cb",
-        "esplusplayer_get_error_string",
+void probe_sync_apis(void* lib, void* snd) {
+    auto has = [](void* h, const char* sym) -> const char* {
+        return (h && dlsym(h, sym) != nullptr) ? "ok" : "no";
     };
-    for (std::string_view k : kKnown) {
-        if (name == k) return true;
-    }
-    return false;
-}
-
-bool is_actionable_export(std::string_view short_name) {
-    if (short_name.rfind("unset_", 0) == 0 || short_name.rfind("get_size_of_", 0) == 0) return false;
-    if (short_name.size() >= 3 && short_name.substr(short_name.size() - 3) == "_cb") return false;
-    return true;
-}
-
-bool is_sync_or_hdmi_keyword(std::string_view short_name) {
-    static constexpr std::string_view kWords[] = {"lat", "delay", "sync", "hdmi", "arc", "run", "route", "av", "pcm"};
-    std::string low = to_lower_ascii(short_name);
-    for (std::string_view kw : kWords) {
-        if (low.find(kw) != std::string::npos) return true;
-    }
-    return false;
-}
-
-void log_chunked(const char* prefix, const std::vector<std::string>& items) {
-    if (items.empty()) return;
-    std::string line;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (!line.empty() && line.size() + 2 + items[i].size() > 700) {
-            OLOG("%s: %s", prefix, line.c_str());
-            line.clear();
-        }
-        if (!line.empty()) line += ", ";
-        line += items[i];
-    }
-    if (!line.empty()) OLOG("%s: %s", prefix, line.c_str());
-}
-
-std::string wrap_list_for_ui(const std::string& header, const std::vector<std::string>& items, size_t max_col) {
-    std::string out = header;
-    size_t col = header.size();
-    for (size_t i = 0; i < items.size(); ++i) {
-        std::string sep = (i > 0) ? ", " : "";
-        if (i > 0 && col + sep.size() + items[i].size() > max_col) {
-            out += ",\n  ";
-            out += items[i];
-            col = 2 + items[i].size();
-        } else {
-            out += sep;
-            out += items[i];
-            col += sep.size() + items[i].size();
-        }
-    }
-    return out;
-}
-
-bool scan_elf_exports(const char* lib_match, const char* fallback_path,
-                      bool (*keep_fn)(std::string_view), std::vector<std::string>& out,
-                      std::string& resolved_path, const char*& err_tag) {
-    out.clear();
-#if !defined(__linux__)
-    (void)lib_match;
-    (void)fallback_path;
-    (void)keep_fn;
-    resolved_path.clear();
-    err_tag = "unsupported";
-    return false;
-#else
-    struct FindLib {
-        const char* needle;
-        std::string path;
-    } found{lib_match, {}};
-    dl_iterate_phdr(
-        [](struct dl_phdr_info* info, size_t, void* data) -> int {
-            auto* f = static_cast<FindLib*>(data);
-            if (!info || !info->dlpi_name || !*info->dlpi_name) return 0;
-            if (std::strstr(info->dlpi_name, f->needle)) {
-                f->path = info->dlpi_name;
-                return 1;
-            }
-            return 0;
-        },
-        &found);
-    if (found.path.empty() || found.path.find('/') == std::string::npos) {
-        found.path = fallback_path;
-    }
-    resolved_path = found.path;
-
-    std::FILE* fp = std::fopen(found.path.c_str(), "rb");
-    if (!fp) {
-        err_tag = "read denied";
-        return false;
-    }
-
-    auto read_ok = [&]() -> bool {
-        ElfW(Ehdr) eh{};
-        if (std::fread(&eh, 1, sizeof(eh), fp) != sizeof(eh)) return false;
-        if (std::memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0) return false;
-        constexpr unsigned char kExpectedClass = (sizeof(void*) == 8) ? ELFCLASS64 : ELFCLASS32;
-        if (eh.e_ident[EI_CLASS] != kExpectedClass) return false;
-        if (static_cast<size_t>(eh.e_shentsize) != sizeof(ElfW(Shdr)) || eh.e_shoff == 0 || eh.e_shnum == 0 ||
-            eh.e_shnum > 4096)
-            return false;
-
-        if (std::fseek(fp, static_cast<long>(eh.e_shoff), SEEK_SET) != 0) return false;
-        std::vector<ElfW(Shdr)> shdrs(eh.e_shnum);
-        if (std::fread(shdrs.data(), sizeof(ElfW(Shdr)), eh.e_shnum, fp) != static_cast<size_t>(eh.e_shnum))
-            return false;
-
-        for (const ElfW(Shdr)& sh : shdrs) {
-            if (sh.sh_type != SHT_DYNSYM) continue;
-            if (sh.sh_entsize != sizeof(ElfW(Sym)) || sh.sh_size == 0 || sh.sh_size > (4u << 20)) continue;
-            if (sh.sh_link >= shdrs.size()) continue;
-            const ElfW(Shdr)& str_sh = shdrs[sh.sh_link];
-            if (str_sh.sh_type != SHT_STRTAB || str_sh.sh_size == 0 || str_sh.sh_size > (4u << 20)) continue;
-
-            std::vector<ElfW(Sym)> syms(sh.sh_size / sizeof(ElfW(Sym)));
-            std::vector<char> strs(str_sh.sh_size);
-            if (std::fseek(fp, static_cast<long>(sh.sh_offset), SEEK_SET) != 0) return false;
-            if (std::fread(syms.data(), sizeof(ElfW(Sym)), syms.size(), fp) != syms.size()) return false;
-            if (std::fseek(fp, static_cast<long>(str_sh.sh_offset), SEEK_SET) != 0) return false;
-            if (std::fread(strs.data(), 1, strs.size(), fp) != strs.size()) return false;
-            strs.back() = '\0';
-
-            for (const ElfW(Sym)& sym : syms) {
-                if (sym.st_shndx == SHN_UNDEF || (sym.st_info >> 4) == STB_LOCAL) continue;
-                if (sym.st_name == 0 || sym.st_name >= strs.size()) continue;
-                std::string_view name(&strs[sym.st_name]);
-                if (keep_fn(name)) out.emplace_back(name);
-            }
-            return true;
-        }
-        return false;
-    };
-
-    bool ok = read_ok();
-    std::fclose(fp);
-    if (!ok) {
-        err_tag = "no dynsym";
-        return false;
-    }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    err_tag = nullptr;
-    return true;
-#endif
-}
-
-void inspect_esplayer_elf() {
-    std::vector<std::string> all_exports;
-    std::string esp_path;
-    const char* err_tag = nullptr;
-    if (!scan_elf_exports(
-            "libesplusplayer.so", "/usr/lib/libesplusplayer.so",
-            [](std::string_view name) {
-                return name.rfind("esplusplayer_", 0) == 0 || name.rfind("esplayer_", 0) == 0 ||
-                       contains_ci(name, "dvde");
-            },
-            all_exports, esp_path, err_tag)) {
-        g_extra_knobs = std::string("esp: ") + (err_tag ? err_tag : "unavail");
-        OLOG("esplusplayer: export scan failed for %s (%s)", esp_path.c_str(), err_tag ? err_tag : "-");
-        return;
-    }
-
-    std::vector<std::string> all_unknown;
-    std::vector<std::string> actionable;
-    for (const std::string& full : all_exports) {
-        if (is_known_esplayer_symbol(full)) continue;
-        std::string short_name = (full.rfind("esplusplayer_", 0) == 0) ? full.substr(13) : full;
-        all_unknown.push_back(short_name);
-        if (is_actionable_export(short_name)) actionable.push_back(short_name);
-    }
-
-    OLOG("esplusplayer exports (%s): %zu total, %zu unmapped, %zu actionable", esp_path.c_str(),
-         all_exports.size(), all_unknown.size(), actionable.size());
-    log_chunked("esp unmapped", all_unknown);
-
-    std::string summary;
-    if (!actionable.empty()) {
-        summary = wrap_list_for_ui("esp +" + std::to_string(actionable.size()) + ": ", actionable, 122);
-    } else {
-        summary = "esp: 0 extra (" + std::to_string(all_unknown.size()) + " cb/meta / " +
-                  std::to_string(all_exports.size()) + " total)";
-    }
-
-    std::vector<std::string> sm_exports;
-    std::string sm_path;
-    const char* sm_err = nullptr;
-    if (scan_elf_exports(
-            "libcapi-media-sound-manager.so", "/usr/lib/libcapi-media-sound-manager.so.0",
-            [](std::string_view name) { return name.rfind("sound_manager_", 0) == 0; },
-            sm_exports, sm_path, sm_err)) {
-        std::vector<std::string> sm_sync;
-        for (const std::string& full : sm_exports) {
-            std::string short_name = (full.rfind("sound_manager_", 0) == 0) ? full.substr(14) : full;
-            if (is_sync_or_hdmi_keyword(short_name)) sm_sync.push_back(short_name);
-        }
-        if (!sm_sync.empty()) {
-            log_chunked("sound_manager sync/route", sm_sync);
-            summary += "\n  " + wrap_list_for_ui("snd +" + std::to_string(sm_sync.size()) + ": ", sm_sync, 122);
-        }
-    }
-    g_extra_knobs = std::move(summary);
+    g_extra_knobs = std::string("esp probe: get_audio_latency=") + has(lib, "esplusplayer_get_audio_latency") +
+                    " get_off=" + has(lib, "esplusplayer_get_render_time_offset") +
+                    " set_off=" + has(lib, "esplusplayer_set_render_time_offset") +
+                    " ll=" + has(lib, "esplusplayer_set_low_latency_mode") +
+                    " ars=" + has(snd, "sound_manager_set_avoid_resampling");
+    OLOG("%s", g_extra_knobs.c_str());
 }
 
 template <typename T>
@@ -338,7 +92,7 @@ void load() {
     bind_optional(snd ? snd : lib, g_api.create_sound_stream_info, "sound_manager_create_stream_information");
     bind_optional(snd ? snd : lib, g_api.destroy_sound_stream_info, "sound_manager_destroy_stream_information");
 
-    inspect_esplayer_elf();
+    probe_sync_apis(lib, snd);
     if (ok) g_loaded = &g_api;
 }
 
