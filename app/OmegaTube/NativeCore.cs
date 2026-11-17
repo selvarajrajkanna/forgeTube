@@ -90,6 +90,7 @@ namespace OmegaTube
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr Ip_ip(IntPtr p);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int I_ipl(IntPtr p, long a);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int I_ipd(IntPtr p, double a);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void V_ipi(IntPtr p, int a);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void V_ipStats(IntPtr p, out PlayerStats stats);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void LogInitFn([MarshalAs(UnmanagedType.LPUTF8Str)] string host, int port);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr CreateYtFn(IntPtr win, int w, int h, [MarshalAs(UnmanagedType.LPUTF8Str)] string videoId, int maxHeight, [MarshalAs(UnmanagedType.LPUTF8Str)] string codecs, long startMs, [MarshalAs(UnmanagedType.LPUTF8Str)] string audioTrack);
@@ -106,6 +107,7 @@ namespace OmegaTube
         private static Ip_ip _playerFormats;
         private static I_ipl _playerSeek;
         private static I_ipd _playerSetRate;
+        private static V_ipi _playerSetAudioDelay;
         private static V_ipStats _playerGetStats;
         private static Ip_s _ytSuggest, _reportUpload, _authPoll, _ytDetails, _sbSegments, _authSwitch;
         private static Ip_ss _ytSearch, _ytBrowse, _ytPlaylist, _ytPlaylistPage, _ytRelated, _ytCaptions, _ytRate, _ytChannel, _ytComments, _ytPostComment;
@@ -143,6 +145,7 @@ namespace OmegaTube
             _ytRelated = Fn<Ip_ss>("omega_yt_related");
             _playerFormats = Fn<Ip_ip>("omega_player_formats");
             _playerSetRate = Fn<I_ipd>("omega_player_set_rate");
+            _playerSetAudioDelay = Fn<V_ipi>("omega_player_set_audio_delay");
             _ytCaptions = Fn<Ip_ss>("omega_yt_captions");
             _ytDetails = Fn<Ip_s>("omega_yt_details");
             _ytRate = Fn<Ip_ss>("omega_yt_rate");
@@ -171,6 +174,7 @@ namespace OmegaTube
         public static void PlayerDestroy(IntPtr player) => _playerDestroy(player);
         public static IntPtr PlayerFormats(IntPtr player) => _playerFormats(player);
         public static int PlayerSetRate(IntPtr player, double rate) => _playerSetRate(player, rate);
+        public static void PlayerSetAudioDelay(IntPtr player, int delayMs) => _playerSetAudioDelay(player, delayMs);
 
         public static IntPtr YtSearch(string query, string continuation) => _ytSearch(query ?? "", continuation ?? "");
         public static IntPtr YtSuggest(string query) => _ytSuggest(query ?? "");

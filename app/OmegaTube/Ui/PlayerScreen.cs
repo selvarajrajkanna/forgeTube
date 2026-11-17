@@ -143,6 +143,8 @@ namespace OmegaTube.Ui
         private bool autoplay;
         private View autoplayKnob;
         private DateTime lastSave;
+        private DateTime lastBtCheck;
+        private int appliedAudioDelayMs = -1;
         private string lastPlayIcon;
 
         private CaptionChoice captions;    // null: off
@@ -469,6 +471,7 @@ namespace OmegaTube.Ui
                 ShowError(YouTube.LastPlayError());
                 return;
             }
+            SyncBluetoothAudioDelay(now: DateTime.Now, force: true);
             info = YouTube.Playback(player);
             ApplyHdrUiMode(info.Current != null && info.Current.Hdr);
             live = info.Live;
@@ -1035,6 +1038,10 @@ namespace OmegaTube.Ui
                 {
                     lastSave = now;
                     LocalStore.SavePosition(item.Id, stats.PositionMs, stats.DurationMs);
+                }
+                if ((now - lastBtCheck).TotalSeconds >= 2)
+                {
+                    SyncBluetoothAudioDelay(now, force: false);
                 }
             }
             if (pendingSeekMs >= 0 && (now - pendingSeekAt).TotalMilliseconds > 600)
@@ -2470,5 +2477,36 @@ namespace OmegaTube.Ui
         }
 
         private static string SignedSeconds(long ms) => (ms >= 0 ? "+" : "−") + Format(Math.Abs(ms));
+
+        // Automatic Bluetooth A2DP/TWS lip-sync compensation (no user config needed): shifts video PTS forward
+        // by 180 ms when a Bluetooth audio device is active on Tizen, and drops back to 0 ms when disconnected.
+        private void SyncBluetoothAudioDelay(DateTime now, bool force)
+        {
+            lastBtCheck = now;
+            if (player == IntPtr.Zero)
+            {
+                return;
+            }
+            int delayMs = 0;
+            try
+            {
+                foreach (var dev in Tizen.Multimedia.AudioManager.GetConnectedDevices())
+                {
+                    if (dev.Type.ToString().IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        delayMs = 180;
+                        break;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+            if (force || delayMs != appliedAudioDelayMs)
+            {
+                appliedAudioDelayMs = delayMs;
+                NativeCore.PlayerSetAudioDelay(player, delayMs);
+            }
+        }
     }
 }

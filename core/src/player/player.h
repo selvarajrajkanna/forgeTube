@@ -66,6 +66,7 @@ public:
     // Jumps to the keyframe segment at or before `ms`. Returns false if not seekable (yet).
     bool seek(int64_t ms);
     bool set_rate(double rate);
+    void set_audio_delay_ms(int64_t ms) { audio_delay_ms_ = ms; }
     PlayerStats stats();
     const std::string& error() const { return error_; }
     // start() failed because YouTube kept refusing a stream (403/410), not a network or codec issue.
@@ -134,6 +135,7 @@ private:
     int64_t live_base_ms_ = 0;  // live: absolute broadcast time of our playback position 0
     std::atomic<int64_t> stall_grace_until_ms_{0};
     std::atomic<bool> seek_pending_{false};
+    std::atomic<int64_t> audio_delay_ms_{0};
     std::mutex refresh_mutex_;
     Clock::time_point last_refresh_{};
     Clock::time_point started_at_;

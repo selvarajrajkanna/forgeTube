@@ -501,7 +501,11 @@ void Player::feed_loop(Track& t) {
         pkt.type = t.type;
         pkt.buffer = reinterpret_cast<char*>(s.data.data());
         pkt.buffer_size = static_cast<uint32_t>(s.data.size());
-        pkt.pts = static_cast<uint64_t>(s.pts_ms);
+        int64_t delay = audio_delay_ms_.load();
+        int64_t pts = s.pts_ms;
+        if (t.type == esp::STREAM_VIDEO && delay > 0) pts += delay;
+        else if (t.type == esp::STREAM_AUDIO && delay < 0) pts += -delay;
+        pkt.pts = static_cast<uint64_t>(pts);
         pkt.duration = static_cast<uint64_t>(s.duration_ms);
         if (t.type == esp::STREAM_VIDEO && has_color_info_) {
             pkt.matroska_color_info = &color_info_;

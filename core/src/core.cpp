@@ -273,6 +273,10 @@ int omega_player_seek(omega_player* p, int64_t position_ms) { return p && p->imp
 
 int omega_player_set_rate(omega_player* p, double rate) { return p && p->impl.set_rate(rate) ? 0 : -1; }
 
+void omega_player_set_audio_delay(omega_player* p, int delay_ms) {
+    if (p) p->impl.set_audio_delay_ms(delay_ms);
+}
+
 void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     if (!p || !out) return;
     omega::PlayerStats s = p->impl.stats();
