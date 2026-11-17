@@ -2544,33 +2544,40 @@ namespace OmegaTube.Ui
 
         // Automatic audio route detection + lip-sync compensation:
         //  - Active Bluetooth A2DP ('active'/'pending' MediaTransport1 in BlueZ): uses live DelayReport or 180 ms.
-        //  - Idle BT pairings are ignored so HDMI and TV speakers never receive a false +180 ms shift.
-        //  - HDMI connected (no active A2DP): applies saved App.Config.Player.HdmiAudioDelayMs.
+        //  - Idle BT pairings are ignored so HDMI / TV audio never receives a false +180 ms shift.
+        //  - When not actively streaming over BT, applies saved HdmiAudioDelayMs (Tizen hides HDMI ARC behind TV output).
         private static (string route, int delayMs) ComputeAudioSyncTarget(int hdmiDelayMs)
         {
             bool hasBt = false;
-            bool hasHdmi = false;
+            bool hasExt = false;
+            var devTypes = new System.Collections.Generic.List<string>(4);
             try
             {
                 foreach (var dev in Tizen.Multimedia.AudioManager.GetConnectedDevices())
                 {
                     string kind = dev.Type.ToString();
+                    if (!devTypes.Contains(kind)) devTypes.Add(kind);
                     if (kind.IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0) hasBt = true;
-                    else if (kind.IndexOf("Hdmi", StringComparison.OrdinalIgnoreCase) >= 0) hasHdmi = true;
+                    else if (kind.IndexOf("Hdmi", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             kind.IndexOf("Spdif", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             kind.IndexOf("Optical", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             kind.IndexOf("External", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             kind.IndexOf("Usb", StringComparison.OrdinalIgnoreCase) >= 0)
+                        hasExt = true;
                 }
             }
             catch (Exception)
             {
             }
+            string tag = devTypes.Count > 0 ? $" [{string.Join(",", devTypes)}]" : "";
 
             if (hasBt)
             {
                 int probed = NativeCore.BtAudioDelayMs();
-                if (probed > 0) return ("bt", probed);
-                if (probed < 0 && !hasHdmi) return ("bt", 180);
+                if (probed > 0) return ($"bt{tag}", probed);
+                if (probed < 0 && !hasExt) return ($"bt{tag}", 180);
             }
-            if (hasHdmi) return ("hdmi", hdmiDelayMs);
-            return ("tv", 0);
+            return ((hasExt ? "ext" : "tv") + tag, hdmiDelayMs);
         }
 
         private void SyncBluetoothAudioDelay(DateTime now, bool force)
