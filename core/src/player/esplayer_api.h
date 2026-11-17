@@ -124,6 +124,9 @@ struct Api {
     int (*set_ecore_display)(Handle, DisplayType, void* window, int x, int y, int w, int h);
     int (*set_display_mode)(Handle, DisplayMode);
     int (*set_app_info)(Handle, const AppInfo*);
+    int (*set_sound_stream_info)(Handle, void* stream_info);
+    int (*create_sound_stream_info)(int stream_type, void* focus_cb, void* user_data, void** stream_info);
+    int (*destroy_sound_stream_info)(void* stream_info);
     int (*set_audio_stream_info)(Handle, AudioStreamInfo*);
     int (*set_video_stream_info)(Handle, VideoStreamInfo*);
     int (*set_video_scan_type)(Handle, VideoScanType);
@@ -143,5 +146,9 @@ struct Api {
 
 // Loads libesplusplayer.so once. Returns nullptr (and logs) if the library or a symbol is missing.
 const Api* api();
+
+// Queries BlueZ org.bluez.MediaTransport1 "Delay" (AVDTP DelayReport in 0.1 ms units) over system D-Bus.
+// Returns total estimated Bluetooth A2DP sink latency in ms, or 0 if unavailable.
+int query_bt_audio_delay_ms();
 
 }  // namespace omega::esp

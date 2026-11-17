@@ -97,7 +97,7 @@ namespace OmegaTube
 
         // --- Bound function pointers -------------------------------------------------------------------------
         private static Ip_v _version, _playerLastError, _configRefresh, _authStatus, _authBegin, _authAccount, _authAccounts;
-        private static I_v _reportAvailable;
+        private static I_v _reportAvailable, _btAudioDelayMs;
         private static V_v _authSignOut;
         private static I_buf _logTail;
         private static LogInitFn _logInitUdp;
@@ -146,6 +146,7 @@ namespace OmegaTube
             _playerFormats = Fn<Ip_ip>("omega_player_formats");
             _playerSetRate = Fn<I_ipd>("omega_player_set_rate");
             _playerSetAudioDelay = Fn<V_ipi>("omega_player_set_audio_delay");
+            _btAudioDelayMs = Fn<I_v>("omega_bt_audio_delay_ms");
             _ytCaptions = Fn<Ip_ss>("omega_yt_captions");
             _ytDetails = Fn<Ip_s>("omega_yt_details");
             _ytRate = Fn<Ip_ss>("omega_yt_rate");
@@ -175,6 +176,7 @@ namespace OmegaTube
         public static IntPtr PlayerFormats(IntPtr player) => _playerFormats(player);
         public static int PlayerSetRate(IntPtr player, double rate) => _playerSetRate(player, rate);
         public static void PlayerSetAudioDelay(IntPtr player, int delayMs) => _playerSetAudioDelay(player, delayMs);
+        public static int BtAudioDelayMs() => _btAudioDelayMs();
 
         public static IntPtr YtSearch(string query, string continuation) => _ytSearch(query ?? "", continuation ?? "");
         public static IntPtr YtSuggest(string query) => _ytSuggest(query ?? "");

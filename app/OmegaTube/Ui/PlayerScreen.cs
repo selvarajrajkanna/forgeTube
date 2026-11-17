@@ -2478,8 +2478,9 @@ namespace OmegaTube.Ui
 
         private static string SignedSeconds(long ms) => (ms >= 0 ? "+" : "−") + Format(Math.Abs(ms));
 
-        // Automatic Bluetooth A2DP/TWS lip-sync compensation (no user config needed): shifts video PTS forward
-        // by 180 ms when a Bluetooth audio device is active on Tizen, and drops back to 0 ms when disconnected.
+        // Automatic Bluetooth A2DP/TWS lip-sync compensation (no user config needed): probes live BlueZ
+        // MediaTransport1.Delay (AVDTP DelayReport + A2DP encoder latency) or falls back to 180 ms when a
+        // Bluetooth audio device is active on Tizen, and drops back to 0 ms when disconnected.
         private void SyncBluetoothAudioDelay(DateTime now, bool force)
         {
             lastBtCheck = now;
@@ -2494,7 +2495,8 @@ namespace OmegaTube.Ui
                 {
                     if (dev.Type.ToString().IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        delayMs = 180;
+                        int probed = NativeCore.BtAudioDelayMs();
+                        delayMs = probed > 0 ? probed : 180;
                         break;
                     }
                 }

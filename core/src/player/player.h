@@ -115,6 +115,7 @@ private:
     PlayerConfig cfg_;
     const esp::Api* api_ = nullptr;
     esp::Handle handle_ = nullptr;
+    void* sound_stream_info_ = nullptr;
     std::string error_;
     bool stream_refused_ = false;
 

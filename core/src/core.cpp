@@ -277,6 +277,8 @@ void omega_player_set_audio_delay(omega_player* p, int delay_ms) {
     if (p) p->impl.set_audio_delay_ms(delay_ms);
 }
 
+int omega_bt_audio_delay_ms(void) { return omega::esp::query_bt_audio_delay_ms(); }
+
 void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     if (!p || !out) return;
     omega::PlayerStats s = p->impl.stats();

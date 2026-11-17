@@ -60,6 +60,10 @@ Player::~Player() {
         api_->destroy(handle_);
         OLOG("player: destroyed");
     }
+    if (sound_stream_info_ && api_ && api_->destroy_sound_stream_info) {
+        api_->destroy_sound_stream_info(sound_stream_info_);
+        sound_stream_info_ = nullptr;
+    }
 }
 
 bool Player::start() {
@@ -190,6 +194,13 @@ bool Player::start() {
     }
 
     if (cfg_.use_audio) {
+        if (api_->create_sound_stream_info && api_->set_sound_stream_info) {
+            int s_rc = api_->create_sound_stream_info(0 /* SOUND_STREAM_TYPE_MEDIA */, nullptr, nullptr, &sound_stream_info_);
+            if (s_rc == 0 && sound_stream_info_) {
+                rc = api_->set_sound_stream_info(handle_, sound_stream_info_);
+                OLOG("esp set_sound_stream_info(media) -> %d", rc);
+            }
+        }
         esp::AudioStreamInfo ai{};
         ai.codec_data = reinterpret_cast<char*>(audio_.info.codec_data.data());
         ai.codec_data_length = static_cast<uint32_t>(audio_.info.codec_data.size());
