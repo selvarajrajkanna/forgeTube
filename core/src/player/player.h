@@ -54,6 +54,8 @@ struct PlayerStats {
     int eos;
     int64_t duration_ms;
     int reconnecting;  // a stream is retrying after a network error
+    uint32_t dropped_frames;
+    int32_t scaler_id;
 };
 
 // Plays one DASH video track + one audio track (fragmented MP4 or WebM over HTTP) with ESPlayer.
@@ -70,6 +72,10 @@ public:
     bool set_rate(double rate);
     void set_audio_delay_ms(int64_t ms) { audio_delay_ms_ = ms; }
     PlayerStats stats();
+    const media::TrackInfo& video_info() const { return video_.info; }
+    bool progressive_scan() const { return progressive_scan_; }
+    int tier_width() const { return cfg_.max_width; }
+    int tier_height() const { return cfg_.max_height; }
     const std::string& error() const { return error_; }
     // start() failed because YouTube kept refusing a stream (403/410), not a network or codec issue.
     bool stream_refused() const { return stream_refused_; }
@@ -113,6 +119,7 @@ private:
     static void on_resource_conflicted(void* self);
     static void on_ready_to_seek(esp::StreamType type, uint64_t time_ms, void* self);
     static void on_seek_done(void* self);
+    static void on_video_frame_dropped(uint64_t count, void* self);
 
     PlayerConfig cfg_;
     const esp::Api* api_ = nullptr;
@@ -120,6 +127,7 @@ private:
     void* sound_stream_info_ = nullptr;
     std::string error_;
     bool stream_refused_ = false;
+    bool progressive_scan_ = false;
 
     bool has_color_info_ = false;
     esp::ESMatroskaColor color_info_{};
@@ -129,7 +137,8 @@ private:
     std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false};
     std::mutex state_mutex_;
     std::condition_variable state_cv_;
-    std::atomic<uint32_t> errors_{0}, stalls_{0};
+    std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0};
+    std::atomic<int32_t> scaler_id_{-2};  // -2: unqueried, -1: unavailable, >=0: RM virtual id
     std::atomic<int64_t> longest_stall_ms_{0}, position_ms_{0};
     std::thread control_thread_;
     std::mutex seek_mutex_;

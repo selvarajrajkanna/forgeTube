@@ -47,7 +47,9 @@ typedef struct {
     uint32_t stalls;
     uint32_t errors;
     int64_t duration_ms;
-    int32_t reconnecting;  // a stream is retrying after a network error
+    int32_t reconnecting;    // a stream is retrying after a network error
+    uint32_t dropped_frames; // video frames dropped by the TV decoder/renderer
+    int32_t scaler_id;       // RM virtual video renderer id (>= 0), or -1 if unavailable
     int32_t reserved;
 } omega_player_stats;
 

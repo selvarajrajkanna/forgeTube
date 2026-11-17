@@ -182,6 +182,9 @@ bool Player::start() {
     api_->set_resource_conflicted_cb(handle_, &Player::on_resource_conflicted, this);
     api_->set_ready_to_seek_cb(handle_, &Player::on_ready_to_seek, this);
     api_->set_seek_done_cb(handle_, &Player::on_seek_done, this);
+    if (api_->set_video_frame_dropped_cb) {
+        api_->set_video_frame_dropped_cb(handle_, &Player::on_video_frame_dropped, this);
+    }
 
     int rc = api_->open(handle_);
     OLOG("esp open -> %d", rc);
@@ -237,6 +240,7 @@ bool Player::start() {
     if (cfg_.use_video) {
         if (api_->set_video_scan_type) {
             rc = api_->set_video_scan_type(handle_, esp::VIDEO_SCAN_PROGRESSIVE);
+            progressive_scan_ = (rc == 0);
             OLOG("esp set_video_scan_type(progressive) -> %d", rc);
         }
         esp::VideoStreamInfo vi{};
@@ -650,6 +654,24 @@ PlayerStats Player::stats() {
     s.eos = eos_ ? 1 : 0;
     s.duration_ms = duration_ms_;
     s.reconnecting = (video_.reconnecting || audio_.reconnecting) ? 1 : 0;
+    s.dropped_frames = dropped_frames_;
+    s.scaler_id = scaler_id_;
+    if (handle_ && prepared_ && s.state >= esp::STATE_READY) {
+        if (api_->get_virtual_rsc_id && scaler_id_ == -2) {
+            int rid = -1;
+            int rsc_rc = api_->get_virtual_rsc_id(handle_, esp::RSC_VIDEO_RENDERER, &rid);
+            int32_t resolved = (rsc_rc == 0 && rid >= 0) ? rid : -1;
+            scaler_id_ = resolved;
+            s.scaler_id = resolved;
+            OLOG("esp virtual_rsc_id(video_renderer) -> %d (rc=%d)", resolved, rsc_rc);
+        }
+        uint64_t adaptive_drops = 0;
+        if (api_->get_adaptive_info &&
+            api_->get_adaptive_info(handle_, &adaptive_drops, esp::ADAPT_DROPPED_FRAMES) == 0) {
+            s.dropped_frames = static_cast<uint32_t>(std::min<uint64_t>(adaptive_drops, UINT32_MAX));
+        }
+    }
+    if (s.scaler_id == -2) s.scaler_id = -1;
     return s;
 }
 
@@ -727,6 +749,10 @@ void Player::on_seek_done(void* self) {
 void Player::on_resource_conflicted(void* self) {
     ++static_cast<Player*>(self)->errors_;
     OLOG("esp resource conflicted");
+}
+
+void Player::on_video_frame_dropped(uint64_t count, void* self) {
+    static_cast<Player*>(self)->dropped_frames_ = static_cast<uint32_t>(std::min<uint64_t>(count, UINT32_MAX));
 }
 
 }  // namespace omega

@@ -297,7 +297,7 @@ namespace OmegaTube.Ui
             commentsPanel.Toast = text => Toast(text);
             Root.Add(commentsPanel);
 
-            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 520, 120);
+            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 680, 152);
             statsLabel.MultiLine = true;
             statsLabel.BackgroundColor = M3TitleSurface;
             Widgets.Round(statsLabel, 14);
@@ -1063,12 +1063,13 @@ namespace OmegaTube.Ui
                 string aRate = info.AudioBitrate > 0 ? $" · {info.AudioBitrate / 1000} kb/s" : "";
                 statsLabel.Text =
                     $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s\n" +
-                    $"  stalls {stats.Stalls} ({stats.LongestStallMs}ms) | drop v{stats.VideoUnderruns}/a{stats.AudioUnderruns} err {stats.Errors}\n" +
+                    $"  stalls {stats.Stalls} ({stats.LongestStallMs}ms) | drop {stats.DroppedFrames} | underrun v{stats.VideoUnderruns}/a{stats.AudioUnderruns} err {stats.Errors}\n" +
                     "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
                     (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}" : "") +
                     $" {sessionSpeed:0.##}x" +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") +
-                    $" | v{BugReport.AppVersion}" +
+                    (appliedAudioDelayMs > 0 ? $" | bt +{appliedAudioDelayMs}ms" : "") + "\n" +
+                    $"  {PipelineTag(info, stats.ScalerId)} | v{BugReport.AppVersion}" +
                     (sysStatsLine.Length > 0 ? "\n" + sysStatsLine : "");
             }
             if (toast.Visibility && now > toastUntil)
@@ -2439,6 +2440,45 @@ namespace OmegaTube.Ui
                 text += $" ({hdr})";
             }
             return text;
+        }
+
+        private static string FormatColorTag(YouTube.PlaybackInfo p)
+        {
+            string range = p.ColorTransfer switch
+            {
+                16 => "HDR PQ",
+                18 => "HDR HLG",
+                _ when p.ContainerHdr => "HDR",
+                _ when p.Current != null && p.Current.Hdr => !string.IsNullOrEmpty(p.Current.HdrMode) ? p.Current.HdrMode : "HDR",
+                _ => "SDR",
+            };
+            string primaries = p.ColorPrimaries switch
+            {
+                1 => "BT.709",
+                5 or 6 => "BT.601",
+                9 => "BT.2020",
+                > 0 => $"p{p.ColorPrimaries}",
+                _ => "",
+            };
+            string bits = p.ColorBits > 0 ? $"{p.ColorBits}b" : "";
+            string lum = p.ColorRange == 2 ? "full" : p.ColorRange == 1 ? "tv" : "";
+            var parts = new System.Collections.Generic.List<string>(4) { range };
+            if (primaries.Length > 0) parts.Add(primaries);
+            if (bits.Length > 0) parts.Add(bits);
+            if (lum.Length > 0) parts.Add(lum);
+            return string.Join(" ", parts);
+        }
+
+        private static string PipelineTag(YouTube.PlaybackInfo p, int scalerId)
+        {
+            string cont = !string.IsNullOrEmpty(p.Container) ? p.Container : "?";
+            var hw = new System.Collections.Generic.List<string>(3);
+            if (p.MaxWidth > 0 && p.MaxHeight > 0) hw.Add($"tier {p.MaxWidth}x{p.MaxHeight}");
+            if (p.Progressive) hw.Add("prog");
+            if (scalerId >= 0) hw.Add($"rsc {scalerId}");
+            string tail = hw.Count > 0 ? $" | {string.Join(" ", hw)}" : "";
+            string client = !string.IsNullOrEmpty(p.Client) ? $" | {p.Client}" : "";
+            return $"{cont} · {FormatColorTag(p)}{tail}{client}";
         }
 
         private static string AudioCodecLabel(string codecs)

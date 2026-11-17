@@ -72,6 +72,8 @@ namespace OmegaTube
             public uint Errors;
             public long DurationMs;
             public int Reconnecting;
+            public uint DroppedFrames;
+            public int ScalerId;
             public int Reserved;
         }
 

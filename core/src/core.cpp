@@ -243,7 +243,18 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                     last_height = f->height;
                     available.push_back(entry(f));
                 }
+                const auto& vi = p->impl.video_info();
                 p->formats = {{"current", entry(video)},  {"available", available}, {"live", info.is_live},
+                              {"client", info.client},
+                              {"container", vi.container == omega::media::Container::WebM ? "webm" : "mp4"},
+                              {"maxWidth", p->impl.tier_width()},
+                              {"maxHeight", p->impl.tier_height()},
+                              {"progressive", p->impl.progressive_scan()},
+                              {"colorPrimaries", vi.color_primaries},
+                              {"colorTransfer", vi.transfer_characteristics},
+                              {"colorBits", vi.bits_per_channel},
+                              {"colorRange", vi.color_range},
+                              {"containerHdr", vi.has_hdr},
                               {"title", info.title}, {"author", info.author}, {"description", info.description},
                               {"views", info.views}, {"channelId", info.channel_id}, {"audioTrack", audio->audio_track_id},
                               {"audioCodec", audio ? audio->codecs : ""},
@@ -316,6 +327,9 @@ void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     out->errors = s.errors;
     out->duration_ms = s.duration_ms;
     out->reconnecting = s.reconnecting;
+    out->dropped_frames = s.dropped_frames;
+    out->scaler_id = s.scaler_id;
+    out->reserved = 0;
 }
 
 void omega_player_destroy(omega_player* p) { delete p; }

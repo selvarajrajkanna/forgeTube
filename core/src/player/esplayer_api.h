@@ -16,6 +16,13 @@ enum AudioMime : int { AUDIO_AAC = 1, AUDIO_OPUS = 7 };
 // Order of esplusplayer_video_mime_type: UNKNOWN, H263, H264, HEVC, MPEG1, MPEG2, MPEG4, VP8, VP9, WMV3, AV1, MJPEG.
 enum VideoMime : int { VIDEO_H264 = 2, VIDEO_HEVC = 3, VIDEO_VP9 = 8, VIDEO_AV1 = 10 };
 enum VideoScanType : int { VIDEO_SCAN_INTERLACED = 0, VIDEO_SCAN_PROGRESSIVE = 1 };
+enum AdaptiveInfoType : int {
+    ADAPT_NONE = 0,
+    ADAPT_DROPPED_FRAMES = 1,
+    ADAPT_DROPPED_VIDEO_FOR_CATCHUP = 2,
+    ADAPT_DROPPED_AUDIO_FOR_CATCHUP = 3,
+};
+enum RscType : int { RSC_VIDEO_RENDERER = 0 };
 enum BufferStatus : int { BUFFER_UNDERRUN = 0, BUFFER_OVERRUN = 1 };
 enum State : int { STATE_NONE, STATE_IDLE, STATE_READY, STATE_PLAYING, STATE_PAUSED };
 enum SubmitStatus : int {
@@ -116,6 +123,7 @@ using PrepareDoneCb = void (*)(bool ok, void* user);
 using ResourceConflictedCb = void (*)(void* user);
 using ReadyToSeekCb = void (*)(StreamType, uint64_t time_ms, void* user);
 using SeekDoneCb = void (*)(void* user);
+using VideoFrameDroppedCb = void (*)(uint64_t count, void* user);
 
 struct Api {
     Handle (*create)();
@@ -143,6 +151,8 @@ struct Api {
     int (*submit_packet)(Handle, EsPacket*);
     int (*submit_eos_packet)(Handle, StreamType);
     int (*get_playing_time)(Handle, uint64_t* ms);
+    int (*get_adaptive_info)(Handle, void* info, AdaptiveInfoType);
+    int (*get_virtual_rsc_id)(Handle, RscType, int* virtual_id);
     int (*set_error_cb)(Handle, ErrorCb, void*);
     int (*set_buffer_status_cb)(Handle, BufferStatusCb, void*);
     int (*set_eos_cb)(Handle, EosCb, void*);
@@ -151,6 +161,7 @@ struct Api {
     int (*set_resource_conflicted_cb)(Handle, ResourceConflictedCb, void*);
     int (*set_ready_to_seek_cb)(Handle, ReadyToSeekCb, void*);
     int (*set_seek_done_cb)(Handle, SeekDoneCb, void*);
+    int (*set_video_frame_dropped_cb)(Handle, VideoFrameDroppedCb, void*);
     const char* (*get_error_string)(int);
 };
 

@@ -60,6 +60,8 @@ void load() {
     ok &= bind(lib, g_api.submit_packet, "esplusplayer_submit_packet");
     ok &= bind(lib, g_api.submit_eos_packet, "esplusplayer_submit_eos_packet");
     ok &= bind(lib, g_api.get_playing_time, "esplusplayer_get_playing_time");
+    bind_optional(lib, g_api.get_adaptive_info, "esplusplayer_get_adaptive_info");
+    bind_optional(lib, g_api.get_virtual_rsc_id, "esplusplayer_get_virtual_rsc_id");
     ok &= bind(lib, g_api.set_error_cb, "esplusplayer_set_error_cb");
     ok &= bind(lib, g_api.set_buffer_status_cb, "esplusplayer_set_buffer_status_cb");
     ok &= bind(lib, g_api.set_eos_cb, "esplusplayer_set_eos_cb");
@@ -68,6 +70,7 @@ void load() {
     ok &= bind(lib, g_api.set_resource_conflicted_cb, "esplusplayer_set_resource_conflicted_cb");
     ok &= bind(lib, g_api.set_ready_to_seek_cb, "esplusplayer_set_ready_to_seek_cb");
     ok &= bind(lib, g_api.set_seek_done_cb, "esplusplayer_set_seek_done_cb");
+    bind_optional(lib, g_api.set_video_frame_dropped_cb, "esplusplayer_set_video_frame_dropped_cb");
     ok &= bind(lib, g_api.get_error_string, "esplusplayer_get_error_string");
 
     void* snd = dlopen("libcapi-media-sound-manager.so.0", RTLD_LAZY | RTLD_LOCAL);
