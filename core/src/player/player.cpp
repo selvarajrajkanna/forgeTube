@@ -253,6 +253,7 @@ bool Player::start() {
         has_color_info_ = false;
         progressive_scan_ = false;
         scaler_id_ = -2;
+        scaler_rc_ = -999;
 
         if (sources_consumed) {
             if (!rewind_sources()) {
@@ -862,10 +863,15 @@ PlayerStats Player::stats() {
     s.reconnecting = (video_.reconnecting || audio_.reconnecting) ? 1 : 0;
     s.dropped_frames = dropped_frames_;
     s.scaler_id = scaler_id_;
+    s.scaler_rc = scaler_rc_;
+    s.dsp_bits = audio_dsp_ ? audio_dsp_->pcm_bits() : 0;
+    s.dsp_hf = audio_dsp_ ? audio_dsp_->hf_mode() : 0;
     if (handle_ && prepared_ && s.state >= esp::STATE_READY) {
         if (api_->get_virtual_rsc_id && scaler_id_ == -2) {
             int rid = -1;
             int rsc_rc = api_->get_virtual_rsc_id(handle_, esp::RSC_VIDEO_RENDERER, &rid);
+            scaler_rc_ = rsc_rc;
+            s.scaler_rc = rsc_rc;
             int32_t resolved = (rsc_rc == 0 && rid >= 0) ? rid : -1;
             scaler_id_ = resolved;
             s.scaler_id = resolved;

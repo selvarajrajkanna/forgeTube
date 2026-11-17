@@ -60,6 +60,9 @@ struct PlayerStats {
     int reconnecting;  // a stream is retrying after a network error
     uint32_t dropped_frames;
     int32_t scaler_id;
+    int32_t scaler_rc;
+    int32_t dsp_bits;            // 32/24/16 PCM output, or 0 for TV HW passthrough
+    int32_t dsp_hf;              // 0 off/bypass, 1 16 kHz->20 kHz, 2 12 kHz SWB->20 kHz
 };
 
 // Plays one DASH video track + one audio track (fragmented MP4 or WebM over HTTP) with ESPlayer.
@@ -146,7 +149,8 @@ private:
     std::mutex state_mutex_;
     std::condition_variable state_cv_;
     std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0};
-    std::atomic<int32_t> scaler_id_{-2};  // -2: unqueried, -1: unavailable, >=0: RM virtual id
+    std::atomic<int32_t> scaler_id_{-2};    // -2: unqueried, -1: unavailable, >=0: RM virtual id
+    std::atomic<int32_t> scaler_rc_{-999};  // esplusplayer_get_virtual_rsc_id return code
     std::atomic<int64_t> longest_stall_ms_{0}, position_ms_{0};
     std::thread control_thread_;
     std::mutex seek_mutex_;

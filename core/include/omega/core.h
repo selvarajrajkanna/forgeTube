@@ -50,7 +50,9 @@ typedef struct {
     int32_t reconnecting;    // a stream is retrying after a network error
     uint32_t dropped_frames; // video frames dropped by the TV decoder/renderer
     int32_t scaler_id;       // RM virtual video renderer id (>= 0), or -1 if unavailable
-    int32_t reserved;
+    int32_t scaler_rc;       // esplusplayer_get_virtual_rsc_id return code (-999 if unqueried)
+    int32_t dsp_bits;        // active PCM DSP depth (32/24/16), or 0 for TV HW passthrough
+    int32_t dsp_hf;          // HF band extension: 0 off/bypass, 1 16kHz->20kHz, 2 12kHz SWB->20kHz
 } omega_player_stats;
 
 // Resolves a YouTube video id (InnerTube), picks the best video <= max_height + AAC, and starts playing.

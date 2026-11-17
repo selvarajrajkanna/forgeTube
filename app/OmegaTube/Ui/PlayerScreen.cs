@@ -297,7 +297,7 @@ namespace OmegaTube.Ui
             commentsPanel.Toast = text => Toast(text);
             Root.Add(commentsPanel);
 
-            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 680, 152);
+            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 840, 192);
             statsLabel.MultiLine = true;
             statsLabel.BackgroundColor = M3TitleSurface;
             Widgets.Round(statsLabel, 14);
@@ -1061,15 +1061,19 @@ namespace OmegaTube.Ui
                 SampleSystemStats(now);
                 string vRate = info.Current != null && info.Current.Bitrate > 0 ? $" · {info.Current.Bitrate / 1000} kb/s" : "";
                 string aRate = info.AudioBitrate > 0 ? $" · {info.AudioBitrate / 1000} kb/s" : "";
+                string aDsp = stats.DspBits > 0
+                    ? $" -> PCM{stats.DspBits}" + (stats.DspHf == 1 ? "+HF16" : stats.DspHf == 2 ? "+HF12" : "")
+                    : " -> HW";
                 statsLabel.Text =
                     $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s\n" +
                     $"  stalls {stats.Stalls} ({stats.LongestStallMs}ms) | drop {stats.DroppedFrames} | underrun v{stats.VideoUnderruns}/a{stats.AudioUnderruns} err {stats.Errors}\n" +
                     "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
-                    (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}" : "") +
+                    (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}{aDsp}" : "") +
                     $" {sessionSpeed:0.##}x" +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") +
                     (appliedAudioDelayMs > 0 ? $" | bt +{appliedAudioDelayMs}ms" : "") + "\n" +
-                    $"  {PipelineTag(info, stats.ScalerId)} | v{BugReport.AppVersion}" +
+                    $"  {PipelineTag(info, stats.ScalerId, stats.ScalerRc)} | v{BugReport.AppVersion}" +
+                    (!string.IsNullOrEmpty(info.EspKnobs) ? $"\n  {info.EspKnobs}" : "") +
                     (sysStatsLine.Length > 0 ? "\n" + sysStatsLine : "");
             }
             if (toast.Visibility && now > toastUntil)
@@ -2469,13 +2473,17 @@ namespace OmegaTube.Ui
             return string.Join(" ", parts);
         }
 
-        private static string PipelineTag(PlaybackInfo p, int scalerId)
+        private static string PipelineTag(PlaybackInfo p, int scalerId, int scalerRc)
         {
             string cont = !string.IsNullOrEmpty(p.Container) ? p.Container : "?";
-            var hw = new System.Collections.Generic.List<string>(3);
-            if (p.MaxWidth > 0 && p.MaxHeight > 0) hw.Add($"tier {p.MaxWidth}x{p.MaxHeight}");
+            var hw = new System.Collections.Generic.List<string>(4);
+            string src = (p.Current != null && p.Current.Width > 0 && p.Current.Height > 0)
+                ? $"src {p.Current.Width}x{p.Current.Height} -> "
+                : "";
+            if (p.MaxWidth > 0 && p.MaxHeight > 0) hw.Add($"{src}tier {p.MaxWidth}x{p.MaxHeight}");
+            else if (src.Length > 0) hw.Add($"src {p.Current.Width}x{p.Current.Height}");
             if (p.Progressive) hw.Add("prog");
-            if (scalerId >= 0) hw.Add($"rsc {scalerId}");
+            hw.Add(scalerId >= 0 ? $"rsc {scalerId}" : (scalerRc != -999 ? $"rsc err({scalerRc})" : "rsc -"));
             string tail = hw.Count > 0 ? $" | {string.Join(" ", hw)}" : "";
             string client = !string.IsNullOrEmpty(p.Client) ? $" | {p.Client}" : "";
             return $"{cont} · {FormatColorTag(p)}{tail}{client}";

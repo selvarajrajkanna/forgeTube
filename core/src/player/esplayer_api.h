@@ -4,6 +4,7 @@
 // from the TV's /usr/lib/libesplusplayer.so (we do not ship or link against Samsung headers/libs).
 
 #include <cstdint>
+#include <string>
 
 namespace omega::esp {
 
@@ -173,6 +174,9 @@ struct Api {
 
 // Loads libesplusplayer.so once. Returns nullptr (and logs) if the library or a symbol is missing.
 const Api* api();
+
+// Compact summary of unknown exported symbols discovered in libesplusplayer.so (cached at first load).
+const std::string& extra_knobs_summary();
 
 // Queries BlueZ org.bluez.MediaTransport1 "Delay" (AVDTP DelayReport in 0.1 ms units) over system D-Bus.
 // Returns total estimated Bluetooth A2DP sink latency in ms, or 0 if unavailable.

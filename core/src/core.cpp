@@ -252,6 +252,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                               {"maxWidth", p->impl.tier_width()},
                               {"maxHeight", p->impl.tier_height()},
                               {"progressive", p->impl.progressive_scan()},
+                              {"espKnobs", omega::esp::extra_knobs_summary()},
                               {"colorPrimaries", vi.color_primaries},
                               {"colorTransfer", vi.transfer_characteristics},
                               {"colorBits", vi.bits_per_channel},
@@ -331,7 +332,9 @@ void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     out->reconnecting = s.reconnecting;
     out->dropped_frames = s.dropped_frames;
     out->scaler_id = s.scaler_id;
-    out->reserved = 0;
+    out->scaler_rc = s.scaler_rc;
+    out->dsp_bits = s.dsp_bits;
+    out->dsp_hf = s.dsp_hf;
 }
 
 void omega_player_destroy(omega_player* p) { delete p; }

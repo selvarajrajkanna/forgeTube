@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <complex>
@@ -246,6 +247,8 @@ public:
         priming_skip_ = kDelay;
         sib_duck_ = 1.0;
     }
+
+    int active_mode() const { return (blend_ > 0.05) ? (mode12_blend_ > 0.5 ? 2 : 1) : 0; }
 
     void process(const double* stereo_in, size_t in_frames, bool enabled, bool swb_hint, bool emit,
                  std::vector<double>& out) {
@@ -519,6 +522,7 @@ struct Pipeline::Impl {
     int pcm_bits = 32;
     double gain = 1.0;
     double atten_db = 1.0;
+    std::atomic<int> hf_mode{0};
 
     // Decoders (at most one active)
     OpusDecoder* opus = nullptr;
@@ -656,6 +660,7 @@ bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double 
     impl_->frames_decoded = 0;
     impl_->opus_is_swb = false;
     impl_->aac_native_sbr = false;
+    impl_->hf_mode.store(0, std::memory_order_relaxed);
 
     if (track.codec == media::Codec::Opus) {
         int ch = track.channels > 0 ? std::clamp<int>(static_cast<int>(track.channels), 1, 2) : 2;
@@ -827,6 +832,7 @@ bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool em
     const bool allow_ext = !(impl_->aac && impl_->aac_native_sbr);
     impl_->hf_extender.process(impl_->resampled_buf.data(), impl_->resampled_buf.size() / kTargetChannels, allow_ext,
                                impl_->opus_is_swb, emit_output, impl_->out_fifo);
+    impl_->hf_mode.store(allow_ext ? impl_->hf_extender.active_mode() : 0, std::memory_order_relaxed);
     if (emit_output) {
         impl_->drain_chunks(out, false);
     }
@@ -851,6 +857,7 @@ int Pipeline::output_sample_rate() const { return kTargetRate; }
 int Pipeline::output_channels() const { return kTargetChannels; }
 int Pipeline::source_sample_rate() const { return impl_->resampler.source_rate(); }
 int Pipeline::pcm_bits() const { return impl_->pcm_bits; }
+int Pipeline::hf_mode() const { return impl_->hf_mode.load(std::memory_order_relaxed); }
 double Pipeline::attenuation_db() const { return impl_->atten_db; }
 
 }  // namespace omega::audio

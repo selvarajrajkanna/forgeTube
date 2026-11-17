@@ -74,7 +74,9 @@ namespace OmegaTube
             public int Reconnecting;
             public uint DroppedFrames;
             public int ScalerId;
-            public int Reserved;
+            public int ScalerRc;
+            public int DspBits;
+            public int DspHf;
         }
 
         // --- Delegate types for the core's C API (cdecl; UTF-8 strings marshalled via LPUTF8Str) --------------

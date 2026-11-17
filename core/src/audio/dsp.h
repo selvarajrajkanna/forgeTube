@@ -38,6 +38,7 @@ public:
     int output_channels() const;
     int source_sample_rate() const;
     int pcm_bits() const;
+    int hf_mode() const;  // 0: off/bypass, 1: 16 kHz brickwall -> 20 kHz, 2: 12 kHz SWB -> 20 kHz
     double attenuation_db() const;
 
 private:
