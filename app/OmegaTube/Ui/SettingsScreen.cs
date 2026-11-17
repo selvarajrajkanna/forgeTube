@@ -252,6 +252,9 @@ namespace OmegaTube.Ui
             l.Add(Toggle(T("Clock"), T("Time shown with the controls"), () => P.ShowClock, v => P.ShowClock = v));
             l.Add(Toggle(T("Stats for nerds"), T("Bitrate, buffer and stalls overlay"),
                          () => P.ShowStats, v => P.ShowStats = v));
+            l.Add(Choice(T("HDMI audio delay"), T("Sync offset when playing over HDMI to a soundbar"),
+                         () => P.HdmiAudioDelayMs == 0 ? T("Off (0 ms)") : $"{(P.HdmiAudioDelayMs > 0 ? "+" : "")}{P.HdmiAudioDelayMs} ms",
+                         d => P.HdmiAudioDelayMs = Math.Max(-200, Math.Min(400, P.HdmiAudioDelayMs + d * 10))));
         }
 
         private void BuildQuality(List<Row> l)

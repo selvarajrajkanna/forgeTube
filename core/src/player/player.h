@@ -39,6 +39,7 @@ struct PlayerConfig {
     bool audio_dsp = true;          // decode Opus/AAC to float, sync-resample to 48 kHz, linear loudness -> PCM
     bool has_audio_loudness = false;
     double audio_loudness_db = 0.0; // YouTube audioConfig.loudnessDb relative to -14 LUFS
+    int64_t audio_delay_ms = 0;     // initial A/V sync offset applied from Packet 0
     bool is_hdr = false;
     int hdr_mode = 0;               // 0 None, 1 HDR10, 2 HLG
     int64_t max_queue_ms = 30000;   // demuxed read-ahead per stream (network side)

@@ -46,6 +46,7 @@ namespace OmegaTube.Config
         public int CaptionBackground = 2;      // index in CaptionBackgrounds
         // Audio language for dubbed videos ("" = the original track).
         public string AudioLang = "";
+        public int HdmiAudioDelayMs = 0;    // lip-sync offset (ms) when HDMI soundbar output is active
 
         public static readonly float[] CaptionSizes = { 32f, 40f, 50f, 62f };
         public static readonly string[] CaptionSizeLabels = { "Small", "Medium", "Large", "Extra large" };
@@ -275,6 +276,7 @@ namespace OmegaTube.Config
                 Player.CaptionBackground = Math.Max(0, Math.Min(PlayerOptions.CaptionBackgrounds.Length - 1,
                                                                 (int)Json.Num(p, "captionBackground", Player.CaptionBackground)));
                 Player.AudioLang = Json.Str(p, "audioLang", Player.AudioLang);
+                Player.HdmiAudioDelayMs = Math.Max(-200, Math.Min(400, (int)Json.Num(p, "hdmiAudioDelayMs", Player.HdmiAudioDelayMs)));
             }
         }
 
@@ -314,6 +316,7 @@ namespace OmegaTube.Config
                     ["captionSize"] = Player.CaptionSize,
                     ["captionBackground"] = Player.CaptionBackground,
                     ["audioLang"] = Player.AudioLang,
+                    ["hdmiAudioDelayMs"] = Player.HdmiAudioDelayMs,
                 },
             };
         }

@@ -1,6 +1,7 @@
 #include "omega/core.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,7 @@
 
 namespace {
 constexpr const char* kVersion = OMEGA_VERSION;  // from the repo's VERSION file
+std::atomic<int> g_default_audio_delay_ms{0};
 }
 
 struct omega_player {
@@ -85,6 +87,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.audio_bitrate = audio->bitrate > 0 ? audio->bitrate : 128000;
     cfg.has_audio_loudness = info.has_audio_loudness;
     cfg.audio_loudness_db = info.audio_loudness_db;
+    cfg.audio_delay_ms = g_default_audio_delay_ms.load();
     cfg.duration_ms = info.length_s * 1000;
     cfg.live = info.is_live;
     cfg.start_ms = info.is_live ? 0 : start_ms;
@@ -306,6 +309,8 @@ void omega_player_toggle_pause(omega_player* p) {
 int omega_player_seek(omega_player* p, int64_t position_ms) { return p && p->impl.seek(position_ms) ? 0 : -1; }
 
 int omega_player_set_rate(omega_player* p, double rate) { return p && p->impl.set_rate(rate) ? 0 : -1; }
+
+void omega_set_default_audio_delay(int delay_ms) { g_default_audio_delay_ms = delay_ms; }
 
 void omega_player_set_audio_delay(omega_player* p, int delay_ms) {
     if (p) p->impl.set_audio_delay_ms(delay_ms);

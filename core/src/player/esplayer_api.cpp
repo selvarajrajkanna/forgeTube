@@ -82,16 +82,16 @@ bool is_known_esplayer_symbol(std::string_view name) {
     return false;
 }
 
-bool is_interesting_knob(std::string_view short_name) {
+bool is_actionable_export(std::string_view short_name) {
     if (short_name.rfind("unset_", 0) == 0 || short_name.rfind("get_size_of_", 0) == 0) return false;
     if (short_name.size() >= 3 && short_name.substr(short_name.size() - 3) == "_cb") return false;
-    static constexpr std::string_view kKeywords[] = {
-        "video", "hdr",   "color", "scan",  "scale",  "rsc",   "pic",  "pq",    "nr",    "noise",
-        "deint", "sharp", "qual",  "tier",  "param",  "prop",  "attr", "mode",  "enh",   "ai",
-        "dvde",  "frame", "lat",   "delay", "audio",  "pcm",   "disp", "render", "codec", "bit",
-    };
+    return true;
+}
+
+bool is_sync_or_hdmi_keyword(std::string_view short_name) {
+    static constexpr std::string_view kWords[] = {"lat", "delay", "sync", "hdmi", "arc", "run", "route", "av", "pcm"};
     std::string low = to_lower_ascii(short_name);
-    for (std::string_view kw : kKeywords) {
+    for (std::string_view kw : kWords) {
         if (low.find(kw) != std::string::npos) return true;
     }
     return false;
@@ -111,36 +111,63 @@ void log_chunked(const char* prefix, const std::vector<std::string>& items) {
     if (!line.empty()) OLOG("%s: %s", prefix, line.c_str());
 }
 
-void inspect_esplayer_elf() {
+std::string wrap_list_for_ui(const std::string& header, const std::vector<std::string>& items, size_t max_col) {
+    std::string out = header;
+    size_t col = header.size();
+    for (size_t i = 0; i < items.size(); ++i) {
+        std::string sep = (i > 0) ? ", " : "";
+        if (i > 0 && col + sep.size() + items[i].size() > max_col) {
+            out += ",\n  ";
+            out += items[i];
+            col = 2 + items[i].size();
+        } else {
+            out += sep;
+            out += items[i];
+            col += sep.size() + items[i].size();
+        }
+    }
+    return out;
+}
+
+bool scan_elf_exports(const char* lib_match, const char* fallback_path,
+                      bool (*keep_fn)(std::string_view), std::vector<std::string>& out,
+                      std::string& resolved_path, const char*& err_tag) {
+    out.clear();
 #if !defined(__linux__)
-    g_extra_knobs = "esp: sym scan unsupported";
-    return;
+    (void)lib_match;
+    (void)fallback_path;
+    (void)keep_fn;
+    resolved_path.clear();
+    err_tag = "unsupported";
+    return false;
 #else
     struct FindLib {
+        const char* needle;
         std::string path;
-    } found;
+    } found{lib_match, {}};
     dl_iterate_phdr(
         [](struct dl_phdr_info* info, size_t, void* data) -> int {
+            auto* f = static_cast<FindLib*>(data);
             if (!info || !info->dlpi_name || !*info->dlpi_name) return 0;
-            if (std::strstr(info->dlpi_name, "libesplusplayer.so")) {
-                static_cast<FindLib*>(data)->path = info->dlpi_name;
+            if (std::strstr(info->dlpi_name, f->needle)) {
+                f->path = info->dlpi_name;
                 return 1;
             }
             return 0;
         },
         &found);
     if (found.path.empty() || found.path.find('/') == std::string::npos) {
-        found.path = "/usr/lib/libesplusplayer.so";
+        found.path = fallback_path;
     }
+    resolved_path = found.path;
 
     std::FILE* fp = std::fopen(found.path.c_str(), "rb");
     if (!fp) {
-        g_extra_knobs = "esp: sym read denied";
-        OLOG("esplusplayer: could not open %s for export scan", found.path.c_str());
-        return;
+        err_tag = "read denied";
+        return false;
     }
 
-    auto read_ok = [&](std::vector<std::string>& exports_out) -> bool {
+    auto read_ok = [&]() -> bool {
         ElfW(Ehdr) eh{};
         if (std::fread(&eh, 1, sizeof(eh), fp) != sizeof(eh)) return false;
         if (std::memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0) return false;
@@ -174,58 +201,81 @@ void inspect_esplayer_elf() {
                 if (sym.st_shndx == SHN_UNDEF || (sym.st_info >> 4) == STB_LOCAL) continue;
                 if (sym.st_name == 0 || sym.st_name >= strs.size()) continue;
                 std::string_view name(&strs[sym.st_name]);
-                if (name.rfind("esplusplayer_", 0) == 0 || contains_ci(name, "dvde")) {
-                    exports_out.emplace_back(name);
-                }
+                if (keep_fn(name)) out.emplace_back(name);
             }
             return true;
         }
         return false;
     };
 
-    std::vector<std::string> all_exports;
-    bool ok = read_ok(all_exports);
+    bool ok = read_ok();
     std::fclose(fp);
     if (!ok) {
-        g_extra_knobs = "esp: no dynsym";
-        OLOG("esplusplayer: ELF dynsym unavailable in %s", found.path.c_str());
+        err_tag = "no dynsym";
+        return false;
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    err_tag = nullptr;
+    return true;
+#endif
+}
+
+void inspect_esplayer_elf() {
+    std::vector<std::string> all_exports;
+    std::string esp_path;
+    const char* err_tag = nullptr;
+    if (!scan_elf_exports(
+            "libesplusplayer.so", "/usr/lib/libesplusplayer.so",
+            [](std::string_view name) {
+                return name.rfind("esplusplayer_", 0) == 0 || name.rfind("esplayer_", 0) == 0 ||
+                       contains_ci(name, "dvde");
+            },
+            all_exports, esp_path, err_tag)) {
+        g_extra_knobs = std::string("esp: ") + (err_tag ? err_tag : "unavail");
+        OLOG("esplusplayer: export scan failed for %s (%s)", esp_path.c_str(), err_tag ? err_tag : "-");
         return;
     }
 
-    std::sort(all_exports.begin(), all_exports.end());
-    all_exports.erase(std::unique(all_exports.begin(), all_exports.end()), all_exports.end());
-
     std::vector<std::string> all_unknown;
-    std::vector<std::string> interesting;
+    std::vector<std::string> actionable;
     for (const std::string& full : all_exports) {
         if (is_known_esplayer_symbol(full)) continue;
         std::string short_name = (full.rfind("esplusplayer_", 0) == 0) ? full.substr(13) : full;
         all_unknown.push_back(short_name);
-        if (is_interesting_knob(short_name)) interesting.push_back(short_name);
+        if (is_actionable_export(short_name)) actionable.push_back(short_name);
     }
 
-    OLOG("esplusplayer exports (%s): %zu total, %zu unmapped, %zu vid/aud/prop", found.path.c_str(),
-         all_exports.size(), all_unknown.size(), interesting.size());
+    OLOG("esplusplayer exports (%s): %zu total, %zu unmapped, %zu actionable", esp_path.c_str(),
+         all_exports.size(), all_unknown.size(), actionable.size());
     log_chunked("esp unmapped", all_unknown);
 
-    if (!interesting.empty()) {
-        std::string s = "esp +" + std::to_string(interesting.size()) + "/" + std::to_string(all_unknown.size()) + ": ";
-        size_t shown = 0;
-        for (size_t i = 0; i < interesting.size(); ++i) {
-            std::string cand = (shown > 0 ? ", " : "") + interesting[i];
-            if (s.size() + cand.size() > 84) break;
-            s += cand;
-            ++shown;
-        }
-        if (shown < interesting.size()) {
-            s += " (+" + std::to_string(interesting.size() - shown) + " more)";
-        }
-        g_extra_knobs = std::move(s);
+    std::string summary;
+    if (!actionable.empty()) {
+        summary = wrap_list_for_ui("esp +" + std::to_string(actionable.size()) + ": ", actionable, 122);
     } else {
-        g_extra_knobs = "esp: 0 extra vid/pic (" + std::to_string(all_unknown.size()) + " other / " +
-                        std::to_string(all_exports.size()) + " total)";
+        summary = "esp: 0 extra (" + std::to_string(all_unknown.size()) + " cb/meta / " +
+                  std::to_string(all_exports.size()) + " total)";
     }
-#endif
+
+    std::vector<std::string> sm_exports;
+    std::string sm_path;
+    const char* sm_err = nullptr;
+    if (scan_elf_exports(
+            "libcapi-media-sound-manager.so", "/usr/lib/libcapi-media-sound-manager.so.0",
+            [](std::string_view name) { return name.rfind("sound_manager_", 0) == 0; },
+            sm_exports, sm_path, sm_err)) {
+        std::vector<std::string> sm_sync;
+        for (const std::string& full : sm_exports) {
+            std::string short_name = (full.rfind("sound_manager_", 0) == 0) ? full.substr(14) : full;
+            if (is_sync_or_hdmi_keyword(short_name)) sm_sync.push_back(short_name);
+        }
+        if (!sm_sync.empty()) {
+            log_chunked("sound_manager sync/route", sm_sync);
+            summary += "\n  " + wrap_list_for_ui("snd +" + std::to_string(sm_sync.size()) + ": ", sm_sync, 122);
+        }
+    }
+    g_extra_knobs = std::move(summary);
 }
 
 template <typename T>
@@ -350,12 +400,12 @@ const std::string& extra_knobs_summary() {
 int query_bt_audio_delay_ms() {
     static std::once_flag gio_once;
     std::call_once(gio_once, load_gio);
-    if (!g_gio.ready) return 0;
+    if (!g_gio.ready) return -1;
 
     std::lock_guard<std::mutex> lock(g_bt_mutex);
     auto now = std::chrono::steady_clock::now();
     if (g_last_bt_query != std::chrono::steady_clock::time_point{} &&
-        now - g_last_bt_query < std::chrono::seconds(3)) {
+        now - g_last_bt_query < std::chrono::seconds(2)) {
         return g_last_bt_delay;
     }
     g_last_bt_query = now;
@@ -363,19 +413,20 @@ int query_bt_audio_delay_ms() {
     void* res = g_gio.bus_call_sync(g_gio.sys_bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager",
                                     "GetManagedObjects", nullptr, nullptr, 0, 200, nullptr, nullptr);
     if (!res) {
-        g_last_bt_delay = 0;
-        return 0;
+        g_last_bt_delay = -1;
+        return -1;
     }
 
     char* text = g_gio.variant_print(res, 1);
     g_gio.variant_unref(res);
     if (!text) {
-        g_last_bt_delay = 0;
-        return 0;
+        g_last_bt_delay = -1;
+        return -1;
     }
 
     unsigned long best_raw = 0;
     bool found_active = false;
+    bool picked_active = false;
     const char* cursor = text;
     const char* kIface = "org.bluez.MediaTransport1";
     while ((cursor = std::strstr(cursor, kIface)) != nullptr) {
@@ -393,6 +444,12 @@ int query_bt_audio_delay_ms() {
         }
         std::string_view dict(brace, static_cast<size_t>(end - brace));
         bool is_active = dict.find("'State': <'active'>") != std::string_view::npos;
+        bool is_pending = dict.find("'State': <'pending'>") != std::string_view::npos;
+        if (!is_active && !is_pending) {
+            cursor = end;
+            continue;
+        }
+        found_active = true;
         size_t dpos = dict.find("'Delay': <");
         if (dpos != std::string_view::npos) {
             size_t vpos = dpos + 10;
@@ -401,9 +458,9 @@ int query_bt_audio_delay_ms() {
             }
             if (vpos < dict.size() && std::isdigit(static_cast<unsigned char>(dict[vpos]))) {
                 unsigned long raw = std::strtoul(dict.data() + vpos, nullptr, 10);
-                if (raw > 0 && (is_active || !found_active)) {
+                if (raw > 0 && (is_active || !picked_active)) {
                     best_raw = raw;
-                    if (is_active) found_active = true;
+                    if (is_active) picked_active = true;
                 }
             }
         }
@@ -411,16 +468,17 @@ int query_bt_audio_delay_ms() {
     }
     g_gio.g_free_fn(text);
 
-    if (best_raw == 0) {
+    if (!found_active) {
         g_last_bt_delay = 0;
         return 0;
     }
-    // BlueZ MediaTransport1.Delay is in 1/10 ms (100 us) units; add 30 ms for A2DP encoder + packetization latency.
-    int delay_ms = std::clamp(static_cast<int>((best_raw + 5) / 10) + 30, 40, 600);
+    // BlueZ MediaTransport1.Delay is in 1/10 ms (100 us) units; add 30 ms for A2DP encoder latency.
+    // If an active A2DP transport omits DelayReport, fall back to 180 ms only while streaming.
+    int delay_ms = (best_raw > 0) ? std::clamp(static_cast<int>((best_raw + 5) / 10) + 30, 40, 600) : 180;
     g_last_bt_delay = delay_ms;
     if (delay_ms != g_last_logged_bt_delay) {
         g_last_logged_bt_delay = delay_ms;
-        OLOG("bt delay: BlueZ MediaTransport1 Delay=%lu (0.1ms) -> %d ms", best_raw, delay_ms);
+        OLOG("bt delay: active BlueZ MediaTransport1 Delay=%lu (0.1ms) -> %d ms", best_raw, delay_ms);
     }
     return delay_ms;
 }

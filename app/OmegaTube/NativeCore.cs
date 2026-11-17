@@ -83,6 +83,7 @@ namespace OmegaTube
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr Ip_v();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int I_v();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void V_v();
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void V_i(int a);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr Ip_s([MarshalAs(UnmanagedType.LPUTF8Str)] string a);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr Ip_ss([MarshalAs(UnmanagedType.LPUTF8Str)] string a, [MarshalAs(UnmanagedType.LPUTF8Str)] string b);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr Ip_sss([MarshalAs(UnmanagedType.LPUTF8Str)] string a, [MarshalAs(UnmanagedType.LPUTF8Str)] string b, [MarshalAs(UnmanagedType.LPUTF8Str)] string c);
@@ -112,6 +113,7 @@ namespace OmegaTube
         private static I_ipl _playerSeek;
         private static I_ipd _playerSetRate;
         private static V_ipi _playerSetAudioDelay;
+        private static V_i _setDefaultAudioDelay;
         private static V_ipStats _playerGetStats;
         private static Ip_s _ytSuggest, _reportUpload, _authPoll, _ytDetails, _sbSegments, _authSwitch;
         private static Ip_ss _ytSearch, _ytBrowse, _ytPlaylist, _ytPlaylistPage, _ytRelated, _ytCaptions, _ytRate, _ytChannel, _ytComments, _ytPostComment;
@@ -150,6 +152,7 @@ namespace OmegaTube
             _playerFormats = Fn<Ip_ip>("omega_player_formats");
             _playerSetRate = Fn<I_ipd>("omega_player_set_rate");
             _playerSetAudioDelay = Fn<V_ipi>("omega_player_set_audio_delay");
+            _setDefaultAudioDelay = Fn<V_i>("omega_set_default_audio_delay");
             _btAudioDelayMs = Fn<I_v>("omega_bt_audio_delay_ms");
             _ytCaptions = Fn<Ip_ss>("omega_yt_captions");
             _ytDetails = Fn<Ip_s>("omega_yt_details");
@@ -179,6 +182,7 @@ namespace OmegaTube
         public static void PlayerDestroy(IntPtr player) => _playerDestroy(player);
         public static IntPtr PlayerFormats(IntPtr player) => _playerFormats(player);
         public static int PlayerSetRate(IntPtr player, double rate) => _playerSetRate(player, rate);
+        public static void SetDefaultAudioDelay(int delayMs) => _setDefaultAudioDelay(delayMs);
         public static void PlayerSetAudioDelay(IntPtr player, int delayMs) => _playerSetAudioDelay(player, delayMs);
         public static int BtAudioDelayMs() => _btAudioDelayMs();
 

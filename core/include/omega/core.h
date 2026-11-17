@@ -81,9 +81,10 @@ OMEGA_API void omega_player_toggle_pause(omega_player* player);
 OMEGA_API int omega_player_seek(omega_player* player, int64_t position_ms);
 // Playback speed (0.5 .. 2.0), audio kept (pitch handled by the TV player).
 OMEGA_API int omega_player_set_rate(omega_player* player, double rate);
-// Audio/Bluetooth lip-sync offset in ms (> 0 delays video to match lagged Bluetooth audio).
+// Audio/Bluetooth/HDMI lip-sync offset in ms (> 0 delays video to match lagged external audio).
+OMEGA_API void omega_set_default_audio_delay(int delay_ms);
 OMEGA_API void omega_player_set_audio_delay(omega_player* player, int delay_ms);
-// Queries BlueZ MediaTransport1.Delay over system D-Bus; returns live Bluetooth A2DP sink latency in ms, or 0.
+// Queries BlueZ MediaTransport1.Delay over system D-Bus; returns >0 active BT delay in ms, 0 if no A2DP stream active, or -1 if D-Bus unavailable.
 OMEGA_API int omega_bt_audio_delay_ms(void);
 OMEGA_API void omega_player_get_stats(omega_player* player, omega_player_stats* out);
 OMEGA_API void omega_player_destroy(omega_player* player);

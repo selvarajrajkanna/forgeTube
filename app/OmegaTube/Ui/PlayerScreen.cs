@@ -145,6 +145,7 @@ namespace OmegaTube.Ui
         private DateTime lastSave;
         private DateTime lastBtCheck;
         private int appliedAudioDelayMs = -1;
+        private string activeAudioRoute = "";
         private string lastPlayIcon;
 
         private CaptionChoice captions;    // null: off
@@ -297,8 +298,12 @@ namespace OmegaTube.Ui
             commentsPanel.Toast = text => Toast(text);
             Root.Add(commentsPanel);
 
-            statsLabel = Widgets.Label("", Theme.SmallSize - 3, Theme.Text, 840, 192);
+            statsLabel = Widgets.Label("", Theme.SmallSize - 4, Theme.Text, 1848, 0);
             statsLabel.MultiLine = true;
+            statsLabel.Ellipsis = false;
+            statsLabel.WidthResizePolicy = ResizePolicyType.Fixed;
+            statsLabel.SizeWidth = 1848;
+            statsLabel.HeightResizePolicy = ResizePolicyType.UseNaturalSize;
             statsLabel.BackgroundColor = M3TitleSurface;
             Widgets.Round(statsLabel, 14);
             statsLabel.Position = new Position(36, 28);
@@ -459,7 +464,14 @@ namespace OmegaTube.Ui
             string audio = audioTrack;
             ShowLoading(T("Loading…"), opaque: true);
             await lastTeardown;
-            IntPtr created = await Task.Run(() => NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio));
+            int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
+            (string initRoute, int initDelay, IntPtr created) = await Task.Run(() =>
+            {
+                var target = ComputeAudioSyncTarget(hdmiDelay);
+                NativeCore.SetDefaultAudioDelay(target.delayMs);
+                return (target.route, target.delayMs,
+                        NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio));
+            });
             if (closing)
             {
                 Release(created);
@@ -471,7 +483,9 @@ namespace OmegaTube.Ui
                 ShowError(YouTube.LastPlayError());
                 return;
             }
-            SyncBluetoothAudioDelay(now: DateTime.Now, force: true);
+            activeAudioRoute = initRoute;
+            appliedAudioDelayMs = initDelay;
+            lastBtCheck = DateTime.Now;
             info = YouTube.Playback(player);
             ApplyHdrUiMode(info.Current != null && info.Current.Hdr);
             live = info.Live;
@@ -1071,7 +1085,9 @@ namespace OmegaTube.Ui
                     (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}{aDsp}" : "") +
                     $" {sessionSpeed:0.##}x" +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") +
-                    (appliedAudioDelayMs > 0 ? $" | bt +{appliedAudioDelayMs}ms" : "") + "\n" +
+                    (activeAudioRoute.Length > 0
+                        ? $" | out {activeAudioRoute}" + (appliedAudioDelayMs != 0 ? $" ({(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms)" : "")
+                        : (appliedAudioDelayMs != 0 ? $" | delay {(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms" : "")) + "\n" +
                     $"  {PipelineTag(info, stats.ScalerId, stats.ScalerRc)} | v{BugReport.AppVersion}" +
                     (!string.IsNullOrEmpty(info.EspKnobs) ? $"\n  {info.EspKnobs}" : "") +
                     (sysStatsLine.Length > 0 ? "\n" + sysStatsLine : "");
@@ -2526,9 +2542,37 @@ namespace OmegaTube.Ui
 
         private static string SignedSeconds(long ms) => (ms >= 0 ? "+" : "−") + Format(Math.Abs(ms));
 
-        // Automatic Bluetooth A2DP/TWS lip-sync compensation (no user config needed): probes live BlueZ
-        // MediaTransport1.Delay (AVDTP DelayReport + A2DP encoder latency) or falls back to 180 ms when a
-        // Bluetooth audio device is active on Tizen, and drops back to 0 ms when disconnected.
+        // Automatic audio route detection + lip-sync compensation:
+        //  - Active Bluetooth A2DP ('active'/'pending' MediaTransport1 in BlueZ): uses live DelayReport or 180 ms.
+        //  - Idle BT pairings are ignored so HDMI and TV speakers never receive a false +180 ms shift.
+        //  - HDMI connected (no active A2DP): applies saved App.Config.Player.HdmiAudioDelayMs.
+        private static (string route, int delayMs) ComputeAudioSyncTarget(int hdmiDelayMs)
+        {
+            bool hasBt = false;
+            bool hasHdmi = false;
+            try
+            {
+                foreach (var dev in Tizen.Multimedia.AudioManager.GetConnectedDevices())
+                {
+                    string kind = dev.Type.ToString();
+                    if (kind.IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0) hasBt = true;
+                    else if (kind.IndexOf("Hdmi", StringComparison.OrdinalIgnoreCase) >= 0) hasHdmi = true;
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            if (hasBt)
+            {
+                int probed = NativeCore.BtAudioDelayMs();
+                if (probed > 0) return ("bt", probed);
+                if (probed < 0 && !hasHdmi) return ("bt", 180);
+            }
+            if (hasHdmi) return ("hdmi", hdmiDelayMs);
+            return ("tv", 0);
+        }
+
         private void SyncBluetoothAudioDelay(DateTime now, bool force)
         {
             lastBtCheck = now;
@@ -2536,22 +2580,8 @@ namespace OmegaTube.Ui
             {
                 return;
             }
-            int delayMs = 0;
-            try
-            {
-                foreach (var dev in Tizen.Multimedia.AudioManager.GetConnectedDevices())
-                {
-                    if (dev.Type.ToString().IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        int probed = NativeCore.BtAudioDelayMs();
-                        delayMs = probed > 0 ? probed : 180;
-                        break;
-                    }
-                }
-            }
-            catch (Exception)
-            {
-            }
+            var (route, delayMs) = ComputeAudioSyncTarget(App.Config.Player.HdmiAudioDelayMs);
+            activeAudioRoute = route;
             if (force || delayMs != appliedAudioDelayMs)
             {
                 appliedAudioDelayMs = delayMs;

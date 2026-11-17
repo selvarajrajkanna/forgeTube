@@ -59,6 +59,7 @@ Player::Player(PlayerConfig cfg) : cfg_(std::move(cfg)) {
     video_.url = cfg_.video_url;
     audio_.type = esp::STREAM_AUDIO;
     audio_.url = cfg_.audio_url;
+    audio_delay_ms_ = cfg_.audio_delay_ms;
 }
 
 void Player::teardown_esp() {
