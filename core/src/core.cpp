@@ -81,6 +81,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.fps = video->fps > 0 ? video->fps : 30;
     cfg.max_width = video->width;
     cfg.max_height = video->height;
+    cfg.audio_bitrate = audio->bitrate > 0 ? audio->bitrate : 128000;
     cfg.duration_ms = info.length_s * 1000;
     cfg.live = info.is_live;
     cfg.start_ms = info.is_live ? 0 : start_ms;
@@ -188,12 +189,20 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
     for (;;) {
         std::vector<const omega::yt::Format*> videos =
             omega::yt::rank_videos(info, max_height > 0 ? max_height : 1080, prefs);
-        const omega::yt::Format* audio = omega::yt::pick_audio(info, audio_track ? audio_track : "");
-        if (videos.empty() || !audio) {
-            OLOG("youtube %s: no playable video (%s) / AAC audio format", video_id, codecs ? codecs : "-");
+        std::vector<const omega::yt::Format*> audios = omega::yt::rank_audios(info, audio_track ? audio_track : "");
+        if (videos.empty() || audios.empty()) {
+            OLOG("youtube %s: no playable video (%s) / audio format", video_id, codecs ? codecs : "-");
             set_play_error("formats", "", "", videos.empty() ? "no video format for " + std::string(codecs ? codecs : "-")
-                                                              : "no AAC audio format");
+                                                              : "no audio format");
             return nullptr;
+        }
+        const omega::yt::Format* audio = audios.front();
+        const omega::yt::Format* fallback_aac = nullptr;
+        for (const omega::yt::Format* a : audios) {
+            if (a->codecs.compare(0, 4, "mp4a") == 0) {
+                fallback_aac = a;
+                break;
+            }
         }
         // A codec the TV refuses (ESPlayer rejects its stream info) is dropped and the next best format tried.
         std::vector<std::string> refused;
@@ -202,6 +211,15 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
             if (std::find(refused.begin(), refused.end(), video->video_codec()) != refused.end()) continue;
             omega_player* p = start_youtube(window, width, height, client, info, video, audio, start_ms,
                                             skipped_clients, stream_refused);
+            if (!p && !stream_refused && audio->codecs == "opus" && fallback_aac) {
+                // If the TV refused Opus audio rather than the video codec, retry with AAC.
+                std::vector<std::string> last = omega::log::tail(1);
+                if (!last.empty() && last.back().find("audio Opus") != std::string::npos) {
+                    audio = fallback_aac;
+                    p = start_youtube(window, width, height, client, info, video, audio, start_ms,
+                                      skipped_clients, stream_refused);
+                }
+            }
             if (p) {
                 // What the quality panel offers: the format each height cap would pick (codecs the TV refused aside).
                 auto entry = [](const omega::yt::Format* f) {

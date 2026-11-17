@@ -39,7 +39,7 @@ private:
     uint64_t segment_data_ = 0;   // absolute offset of the Segment payload (Cues positions are relative to it)
     uint64_t timecode_scale_ = 1000000;  // ns per tick
     int64_t cluster_time_ = 0;    // ticks
-    int64_t last_delta_ms_ = 0;   // last frame duration seen (for the last frame of a cluster)
+    int64_t last_delta_ms_ = 20;  // last frame duration seen (for the last frame of a cluster)
 
     // An element header read ahead (the first Cluster after the header, or the next Cluster ending a fragment).
     bool has_pending_ = false;

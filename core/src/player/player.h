@@ -23,6 +23,7 @@ struct PlayerConfig {
     net::Headers stream_headers;      // sent with every media request (e.g. YouTube User-Agent)
     int fps = 30;
     int max_width = 1920, max_height = 1080;
+    int64_t audio_bitrate = 128000;
     int64_t duration_ms = 0;          // 0: derive from the stream index
     int64_t start_ms = 0;             // resume position (set before prepare: no flash of the beginning)
     // Live broadcast: the URLs are numbered-segment streams (net::LiveReader); no index, no seek.

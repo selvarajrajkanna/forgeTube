@@ -15,6 +15,7 @@ const char* codec_name(Codec c) {
         case Codec::AAC: return "AAC";
         case Codec::VP9: return "VP9";
         case Codec::AV1: return "AV1";
+        case Codec::Opus: return "Opus";
         default: return "unknown";
     }
 }

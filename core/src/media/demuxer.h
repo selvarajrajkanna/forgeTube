@@ -9,7 +9,7 @@
 
 namespace omega::media {
 
-enum class Codec { Unknown, H264, AAC, VP9, AV1 };
+enum class Codec { Unknown, H264, AAC, VP9, AV1, Opus };
 enum class Container { Mp4, WebM };
 
 const char* codec_name(Codec c);

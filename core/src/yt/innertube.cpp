@@ -608,6 +608,8 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         fmt.bitrate = to_int(f, "bitrate");
         fmt.content_length = to_int(f, "contentLength");
         fmt.audio_sample_rate = static_cast<int>(to_int(f, "audioSampleRate"));
+        int ch = static_cast<int>(to_int(f, "audioChannels"));
+        fmt.audio_channels = ch > 0 ? ch : 2;
         if (f.value("isDrc", false)) continue;  // loudness-compressed duplicate of an audio format
         const json& track = f.value("audioTrack", json::object());
         fmt.audio_track_id = track.value("id", "");
@@ -1386,9 +1388,12 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         bool a_hdr = (a->hdr_mode != HdrMode::None);
         bool b_hdr = (b->hdr_mode != HdrMode::None);
         if (a_hdr != b_hdr) return a_hdr > b_hdr;
+        if (a->fps != b->fps) return a->fps > b->fps;
+        bool a_prem = (a->itag == 356 || a->itag == 616);
+        bool b_prem = (b->itag == 356 || b->itag == 616);
+        if (a_prem != b_prem) return a_prem > b_prem;
         long pa = pref(a), pb = pref(b);
         if (pa != pb) return pa < pb;
-        if (a->fps != b->fps) return a->fps > b->fps;
         return a->bitrate > b->bitrate;
     });
     return out;
@@ -1409,30 +1414,44 @@ std::vector<std::string> parse_codec_list(const std::string& list) {
     return out;
 }
 
-const Format* pick_audio(const VideoInfo& info, const std::string& track) {
-    auto aac = [](const Format& f) {
-        return f.is_audio() && f.mime == "audio/mp4" && f.codecs.compare(0, 4, "mp4a") == 0;
+std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string& track) {
+    auto playable_audio = [&info](const Format& f) {
+        if (!f.is_audio() || f.audio_channels > 2) return false;
+        if (f.mime == "audio/mp4" && f.codecs.compare(0, 4, "mp4a") == 0) return true;
+        if (!info.is_live && f.mime == "audio/webm" && f.codecs == "opus") return true;
+        return false;
     };
     // The track to play: exact id, else same language ("fr" matches "fr.3" and "fr-FR.3"), else the default.
     std::string wanted;
     if (!track.empty()) {
         for (const Format& f : info.formats)
-            if (aac(f) && f.audio_track_id == track) wanted = track;
+            if (playable_audio(f) && f.audio_track_id == track) wanted = track;
         std::string lang = track.substr(0, track.find_first_of(".-"));
         for (const Format& f : info.formats) {
-            if (!wanted.empty() || !aac(f) || f.audio_track_id.empty()) continue;
+            if (!wanted.empty() || !playable_audio(f) || f.audio_track_id.empty()) continue;
             if (f.audio_track_id.substr(0, f.audio_track_id.find_first_of(".-")) == lang) wanted = f.audio_track_id;
         }
     }
     if (wanted.empty())
         for (const Format& f : info.formats)
-            if (aac(f) && f.audio_default) wanted = f.audio_track_id;
-    const Format* best = nullptr;
+            if (playable_audio(f) && f.audio_default) wanted = f.audio_track_id;
+    std::vector<const Format*> out;
     for (const Format& f : info.formats) {
-        if (!aac(f) || (!wanted.empty() && f.audio_track_id != wanted)) continue;
-        if (!best || f.bitrate > best->bitrate) best = &f;
+        if (!playable_audio(f) || (!wanted.empty() && f.audio_track_id != wanted)) continue;
+        out.push_back(&f);
     }
-    return best;
+    std::stable_sort(out.begin(), out.end(), [](const Format* a, const Format* b) {
+        bool a_opus = (a->codecs == "opus");
+        bool b_opus = (b->codecs == "opus");
+        if (a_opus != b_opus) return a_opus > b_opus;
+        return a->bitrate > b->bitrate;
+    });
+    return out;
+}
+
+const Format* pick_audio(const VideoInfo& info, const std::string& track) {
+    auto list = rank_audios(info, track);
+    return list.empty() ? nullptr : list.front();
 }
 
 bool fetch_captions(const std::string& url, const std::string& translate_to, std::vector<CaptionCue>& out,

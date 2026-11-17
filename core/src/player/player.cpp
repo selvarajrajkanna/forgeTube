@@ -33,6 +33,14 @@ bool video_mime(media::Codec c, esp::VideoMime& out) {
     }
 }
 
+bool audio_mime(media::Codec c, esp::AudioMime& out) {
+    switch (c) {
+        case media::Codec::AAC: out = esp::AUDIO_AAC; return true;
+        case media::Codec::Opus: out = esp::AUDIO_OPUS; return true;
+        default: return false;
+    }
+}
+
 }  // namespace
 
 Player::Player(PlayerConfig cfg) : cfg_(std::move(cfg)) {
@@ -153,10 +161,11 @@ bool Player::start() {
         }
     }
     esp::VideoMime vmime = esp::VIDEO_H264;
+    esp::AudioMime amime = esp::AUDIO_AAC;
     if ((cfg_.use_video && !video_mime(video_.info.codec, vmime)) ||
-        (cfg_.use_audio && audio_.info.codec != media::Codec::AAC)) {
+        (cfg_.use_audio && !audio_mime(audio_.info.codec, amime))) {
         error_ = std::string("unsupported codecs: video ") + media::codec_name(video_.info.codec) + ", audio " +
-                 media::codec_name(audio_.info.codec) + " (expected H.264/VP9/AV1 + AAC)";
+                 media::codec_name(audio_.info.codec) + " (expected H.264/VP9/AV1 + Opus/AAC)";
         return false;
     }
 
@@ -202,14 +211,21 @@ bool Player::start() {
             }
         }
         esp::AudioStreamInfo ai{};
-        ai.codec_data = reinterpret_cast<char*>(audio_.info.codec_data.data());
-        ai.codec_data_length = static_cast<uint32_t>(audio_.info.codec_data.size());
-        ai.mime_type = esp::AUDIO_AAC;
-        ai.bitrate = 128000;
+        if (!audio_.info.codec_data.empty()) {
+            ai.codec_data = reinterpret_cast<char*>(audio_.info.codec_data.data());
+            ai.codec_data_length = static_cast<uint32_t>(audio_.info.codec_data.size());
+        }
+        ai.mime_type = amime;
+        ai.bitrate = cfg_.audio_bitrate > 0 ? static_cast<uint32_t>(cfg_.audio_bitrate) : 128000;
         ai.channels = audio_.info.channels;
         ai.sample_rate = audio_.info.sample_rate;
         rc = api_->set_audio_stream_info(handle_, &ai);
-        OLOG("esp set_audio_stream_info -> %d", rc);
+        OLOG("esp set_audio_stream_info(%s %u ch %u Hz %u bps) -> %d", media::codec_name(audio_.info.codec),
+             ai.channels, ai.sample_rate, ai.bitrate, rc);
+        if (rc != 0) {
+            error_ = std::string("TV refused audio ") + media::codec_name(audio_.info.codec) + " (" + std::to_string(rc) + ")";
+            return false;
+        }
     }
     if (cfg_.use_video) {
         if (api_->set_video_scan_type) {

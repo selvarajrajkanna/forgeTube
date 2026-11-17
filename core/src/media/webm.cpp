@@ -273,6 +273,7 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
         else if (codec_id == "V_AV1") t.codec = Codec::AV1;
         else if (codec_id == "V_MPEG4/ISO/AVC") t.codec = Codec::H264;
         else if (codec_id == "A_AAC") t.codec = Codec::AAC;
+        else if (codec_id == "A_OPUS") t.codec = Codec::Opus;
         t.default_duration = static_cast<uint32_t>(default_duration_ns / 1000000);
         t.track_number = number;
         track_ = std::move(t);
@@ -324,8 +325,8 @@ bool WebmReader::parse_block(const uint8_t* p, size_t n, bool simple, bool has_r
     }
     Sample s;
     s.data.assign(c.p, c.end);
-    int64_t ns = (cluster_time_ + rel) * static_cast<int64_t>(timecode_scale_);
-    s.pts_ms = (ns >= 0 ? ns + 500000 : ns - 500000) / 1000000;
+    int64_t ns = std::max<int64_t>(0, (cluster_time_ + rel) * static_cast<int64_t>(timecode_scale_));
+    s.pts_ms = (ns + 500000) / 1000000;
     s.key = simple ? (flags & 0x80) != 0 : !has_reference;
     out.push_back(std::move(s));
     return true;

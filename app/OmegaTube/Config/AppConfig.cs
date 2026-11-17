@@ -259,6 +259,14 @@ namespace OmegaTube.Config
                 Player.ShowStats = Json.Bool(p, "showStats", Player.ShowStats);
                 Player.MaxHeight = (int)Json.Num(p, "maxHeight", Player.MaxHeight);
                 Player.Codecs = Json.Str(p, "codecs", Player.Codecs);
+                if (Player.Codecs == "avc1,vp9")
+                {
+                    Player.Codecs = "av01,vp9,avc1";
+                }
+                else if (Player.Codecs == "vp9,avc1")
+                {
+                    Player.Codecs = "vp9,av01,avc1";
+                }
                 Player.Autoplay = Json.Bool(p, "autoplay", Player.Autoplay);
                 Player.CaptionLang = Json.Str(p, "captionLang", Player.CaptionLang);
                 Player.CaptionTranslate = Json.Bool(p, "captionTranslate", Player.CaptionTranslate);
