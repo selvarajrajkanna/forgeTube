@@ -2442,7 +2442,7 @@ namespace OmegaTube.Ui
             return text;
         }
 
-        private static string FormatColorTag(YouTube.PlaybackInfo p)
+        private static string FormatColorTag(PlaybackInfo p)
         {
             string range = p.ColorTransfer switch
             {
@@ -2469,7 +2469,7 @@ namespace OmegaTube.Ui
             return string.Join(" ", parts);
         }
 
-        private static string PipelineTag(YouTube.PlaybackInfo p, int scalerId)
+        private static string PipelineTag(PlaybackInfo p, int scalerId)
         {
             string cont = !string.IsNullOrEmpty(p.Container) ? p.Container : "?";
             var hw = new System.Collections.Generic.List<string>(3);

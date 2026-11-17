@@ -315,8 +315,8 @@ private:
         }
     }
 
-    void synthesize_band(const std::array<std::complex<double>, kFft>& src_spec, int src_lo, int src_mid, int src_hi,
-                         int shift, int dst_lo, int dst_hi, double slope_span_bins, double gain_mult,
+    void synthesize_band(const std::array<std::complex<double>, kFft / 2 + 1>& src_spec, int src_lo, int src_mid,
+                         int src_hi, int shift, int dst_lo, int dst_hi, double slope_span_bins, double gain_mult,
                          std::array<std::complex<double>, kFft>& dst_spec, bool is_right) const {
         double p1 = 0.0;
         for (int k = src_lo; k < src_mid; ++k) p1 += std::norm(src_spec[k]);
@@ -697,9 +697,10 @@ bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double 
 
         unsigned long sr = 0;
         unsigned char ch = 0;
-        if (NeAACDecInit2(impl_->aac, const_cast<unsigned char*>(track.codec_data.data()),
-                          static_cast<unsigned long>(track.codec_data.size()), &sr, &ch) < 0 ||
-            sr == 0 || ch == 0) {
+        const int init_rc = static_cast<signed char>(
+            NeAACDecInit2(impl_->aac, const_cast<unsigned char*>(track.codec_data.data()),
+                          static_cast<unsigned long>(track.codec_data.size()), &sr, &ch));
+        if (init_rc < 0 || sr == 0 || ch == 0) {
             OLOG("audio dsp: NeAACDecInit2 failed");
             return false;
         }
