@@ -493,6 +493,46 @@ bool Client::player(const std::string& video_id, VideoInfo& out, std::string& er
         if (try_client(c, video_id, out, err)) {
             out.client = name;
             if (i > 0) OLOG("yt: %s played through %s", video_id.c_str(), name.c_str());
+            if (only_client.empty() && !out.is_live) {
+                static const std::vector<std::string> kAllCodecs = {"av01", "vp9", "avc1"};
+                auto ranked = rank_videos(out, 1080, kAllCodecs);
+                const Format* best = ranked.empty() ? nullptr : ranked.front();
+                const bool starved = !best || best->height < 1080 || best->codec == VideoCodec::H264 ||
+                                     (best->height == 1080 && best->bitrate > 0 && best->bitrate < 1200000);
+                if (starved) {
+                    for (size_t j = i + 1; j < clients.size(); ++j) {
+                        std::string alt_name = clients[j].value("clientName", "");
+                        if (std::find(skipped_clients_.begin(), skipped_clients_.end(), alt_name) !=
+                            skipped_clients_.end())
+                            continue;
+                        VideoInfo alt;
+                        std::string alt_err;
+                        if (!try_client(clients[j], video_id, alt, alt_err)) continue;
+                        auto alt_ranked = rank_videos(alt, 1080, kAllCodecs);
+                        const Format* best_alt = alt_ranked.empty() ? nullptr : alt_ranked.front();
+                        if (!best_alt) continue;
+                        const bool best_prem = best && (best->itag == 356 || best->itag == 616);
+                        const bool alt_prem = (best_alt->itag == 356 || best_alt->itag == 616);
+                        const bool better =
+                            !best || best_alt->height > best->height || (alt_prem && !best_prem) ||
+                            (best_alt->height == best->height && best_alt->codec != VideoCodec::H264 &&
+                             best->codec == VideoCodec::H264) ||
+                            (best_alt->height == best->height && best_alt->codec != VideoCodec::H264 &&
+                             best_alt->bitrate > best->bitrate * 135 / 100);
+                        if (better) {
+                            OLOG("yt: upgrading starved %s from %s (%dp %s %lld kb/s) to %s (%dp %s %lld kb/s)",
+                                 video_id.c_str(), name.c_str(), best ? best->height : 0,
+                                 best ? best->video_codec().c_str() : "-",
+                                 static_cast<long long>((best ? best->bitrate : 0) / 1000), alt_name.c_str(),
+                                 best_alt->height, best_alt->video_codec().c_str(),
+                                 static_cast<long long>(best_alt->bitrate / 1000));
+                            out = std::move(alt);
+                            out.client = alt_name;
+                            break;
+                        }
+                    }
+                }
+            }
             return true;
         }
         OLOG("yt: %s via %s: %s", video_id.c_str(), name.c_str(), err.c_str());
@@ -538,12 +578,11 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         {"racyCheckOk", true},
     };
     json playback_context = json::object();
+    json cpc = {{"html5Preference", "HTML5_PREF_WANTS"}};
     if (decipher) {
-        playback_context["contentPlaybackContext"] = {
-            {"html5Preference", "HTML5_PREF_WANTS"},
-            {"signatureTimestamp", shared_decipher().signature_timestamp()}
-        };
+        cpc["signatureTimestamp"] = shared_decipher().signature_timestamp();
     }
+    playback_context["contentPlaybackContext"] = std::move(cpc);
     playback_context["devicePlaybackCapabilities"] = {
         {"supportsAv1", true},
         {"supportsVp9", true},
