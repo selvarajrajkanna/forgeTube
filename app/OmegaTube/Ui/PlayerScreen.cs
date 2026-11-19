@@ -2445,7 +2445,12 @@ namespace OmegaTube.Ui
         private static string QualityLabel(VideoQuality q)
         {
             string text = q.Height == 2160 ? "2160p (4K)" : q.Height == 1440 ? "1440p (2K)" : $"{q.Height}p";
-            if (q.Fps > 0)
+            if (q.FpsNum > 0 && q.FpsDen > 1)
+            {
+                double exact = (double)q.FpsNum / q.FpsDen;
+                text += $" · {exact.ToString("0.##", CultureInfo.InvariantCulture)} fps";
+            }
+            else if (q.Fps > 0)
             {
                 text += $" · {q.Fps} fps";
             }

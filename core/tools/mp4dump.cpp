@@ -18,8 +18,8 @@ int main(int argc, char** argv) {
     }
     const auto t = header->track();
     const auto segs = header->segments();
-    printf("%s codec=%s timescale=%u %ux%u ch=%u rate=%u codec_data=%zu media_time=%lld\n", t.container == omega::media::Container::WebM ? "webm" : "mp4", omega::media::codec_name(t.codec),
-           t.timescale, t.width, t.height, t.channels, t.sample_rate, t.codec_data.size(),
+    printf("%s codec=%s timescale=%u %ux%u fps=%u/%u ch=%u rate=%u codec_data=%zu media_time=%lld\n", t.container == omega::media::Container::WebM ? "webm" : "mp4", omega::media::codec_name(t.codec),
+           t.timescale, t.width, t.height, t.fps_num, t.fps_den, t.channels, t.sample_rate, t.codec_data.size(),
            static_cast<long long>(t.media_time));
     if (t.has_color || t.has_hdr) {
         printf("%s: primaries=%u tc=%u matrix=%u range=%u bits=%u%s%s\n",

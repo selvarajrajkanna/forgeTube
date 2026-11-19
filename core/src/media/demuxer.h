@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -24,6 +26,7 @@ struct TrackInfo {
     uint32_t width = 0, height = 0;
     uint32_t channels = 0, sample_rate = 0;
     uint32_t default_duration = 0, default_size = 0, default_flags = 0;  // from trex (WebM: DefaultDuration in ms)
+    uint32_t fps_num = 0, fps_den = 0;  // rational video frame rate (e.g. 24000/1001, 24/1)
 
     // Colorimetry & HDR static metadata (parsed from 'colr'/'mdcv'/'clli' in MP4 or Colour in WebM).
     bool has_color = false;
@@ -48,6 +51,37 @@ struct TrackInfo {
 inline void update_hdr_flag(TrackInfo& t) {
     t.has_hdr = (t.transfer_characteristics == 16 || t.transfer_characteristics == 18 ||
                  t.has_mdcv || (t.has_clli && (t.max_cll > 0 || t.max_fall > 0)));
+}
+
+// Sets t.fps_num / t.fps_den from a raw rational rate (e.g. timescale / sample_duration or 1e9 / duration_ns),
+// snapping within ±0.005 fps to canonical cinema/broadcast fractions (24000/1001, 24/1, 25/1, 30000/1001, etc.).
+inline void set_track_fps(TrackInfo& t, uint64_t num, uint64_t den) {
+    if (num == 0 || den == 0) return;
+    uint64_t g = std::gcd(num, den);
+    num /= g;
+    den /= g;
+    struct Rate { uint32_t n, d; };
+    static constexpr Rate kStandard[] = {
+        {24000, 1001}, {24, 1}, {25000, 1001}, {25, 1}, {30000, 1001}, {30, 1},
+        {48000, 1001}, {48, 1}, {50000, 1001}, {50, 1}, {60000, 1001}, {60, 1},
+    };
+    const double fps = static_cast<double>(num) / static_cast<double>(den);
+    if (fps < 1.0 || fps > 240.0) return;
+    for (const auto& r : kStandard) {
+        const double std_fps = static_cast<double>(r.n) / static_cast<double>(r.d);
+        if (std::abs(fps - std_fps) < 0.005) {
+            t.fps_num = r.n;
+            t.fps_den = r.d;
+            return;
+        }
+    }
+    if (num <= UINT32_MAX && den <= UINT32_MAX) {
+        t.fps_num = static_cast<uint32_t>(num);
+        t.fps_den = static_cast<uint32_t>(den);
+    } else {
+        t.fps_num = static_cast<uint32_t>(fps + 0.5);
+        t.fps_den = 1;
+    }
 }
 
 // One entry of the stream index (sidx / Cues): a self-contained fragment starting with a keyframe.

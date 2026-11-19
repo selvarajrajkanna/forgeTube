@@ -158,10 +158,11 @@ bool Player::start() {
             return;
         }
         t.url = http->url();  // keep redirected edge URL for fallback retries and seeks
-        OLOG("%s: %s %s timescale=%u %ux%u ch=%u rate=%u codec_data=%zu bytes, media_time=%lld, %zu segments",
+        OLOG("%s: %s %s timescale=%u %ux%u fps=%u/%u ch=%u rate=%u codec_data=%zu bytes, media_time=%lld, %zu segments",
              stream_name(t.type), t.info.container == media::Container::WebM ? "webm" : "mp4",
              media::codec_name(t.info.codec), t.info.timescale, t.info.width, t.info.height,
-             t.info.channels, t.info.sample_rate, t.info.codec_data.size(), static_cast<long long>(t.info.media_time), t.segments.size());
+             t.info.fps_num, t.info.fps_den, t.info.channels, t.info.sample_rate, t.info.codec_data.size(),
+             static_cast<long long>(t.info.media_time), t.segments.size());
         results[idx].ok = true;
     };
     if (sources.size() > 1) {
@@ -399,11 +400,11 @@ bool Player::start() {
             vi.height = video_.info.height;
             vi.max_width = static_cast<uint32_t>(cfg_.max_width);
             vi.max_height = static_cast<uint32_t>(cfg_.max_height);
-            vi.framerate_num = static_cast<uint32_t>(cfg_.fps);
-            vi.framerate_den = 1;
+            vi.framerate_num = video_.info.fps_num > 0 ? video_.info.fps_num : static_cast<uint32_t>(cfg_.fps);
+            vi.framerate_den = (video_.info.fps_num > 0 && video_.info.fps_den > 0) ? video_.info.fps_den : 1;
             rc = api_->set_video_stream_info(handle_, &vi);
-            OLOG("esp set_video_stream_info(%s %ux%u max %ux%u @%u) -> %d", media::codec_name(video_.info.codec), vi.width,
-                 vi.height, vi.max_width, vi.max_height, vi.framerate_num, rc);
+            OLOG("esp set_video_stream_info(%s %ux%u max %ux%u @%u/%u) -> %d", media::codec_name(video_.info.codec), vi.width,
+                 vi.height, vi.max_width, vi.max_height, vi.framerate_num, vi.framerate_den, rc);
             if (rc != 0) {
                 error_ = std::string("TV refused ") + media::codec_name(video_.info.codec) + " " +
                          std::to_string(vi.width) + "x" + std::to_string(vi.height) + " (" + std::to_string(rc) + ")";

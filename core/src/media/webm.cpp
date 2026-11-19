@@ -275,7 +275,10 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
         else if (codec_id == "V_MPEG4/ISO/AVC") t.codec = Codec::H264;
         else if (codec_id == "A_AAC") t.codec = Codec::AAC;
         else if (codec_id == "A_OPUS") t.codec = Codec::Opus;
-        t.default_duration = static_cast<uint32_t>(default_duration_ns / 1000000);
+        t.default_duration = static_cast<uint32_t>((default_duration_ns + 500000) / 1000000);
+        if (type == 1 && default_duration_ns > 0) {
+            set_track_fps(t, 1000000000ULL, default_duration_ns);
+        }
         t.track_number = number;
         track_ = std::move(t);
         if (track_.codec == Codec::Unknown) error_ = "unsupported codec " + codec_id;

@@ -88,6 +88,43 @@ std::vector<uint8_t> parse_esds_asc(Cursor c) {
     return {};
 }
 
+// Inspects a buffered moof payload without mutating reader state to extract total sample count and duration.
+void peek_moof_timing(std::span<const uint8_t> moof, uint32_t default_dur, uint64_t& out_samples,
+                      uint64_t& out_duration) {
+    out_samples = 0;
+    out_duration = 0;
+    Cursor root{moof.data(), moof.data() + moof.size()};
+    for_each_box(root, [&](uint32_t type, Cursor traf) {
+        if (type != fourcc("traf")) return;
+        uint32_t def_duration = default_dur;
+        for_each_box(traf, [&](uint32_t t, Cursor c) {
+            if (t == fourcc("tfhd")) {
+                uint32_t flags = c.u32() & 0xffffff;
+                c.skip(4);  // track_ID
+                if (flags & 0x1) c.skip(8);
+                if (flags & 0x2) c.skip(4);
+                if (flags & 0x8) def_duration = c.u32();
+            } else if (t == fourcc("trun")) {
+                uint32_t vf = c.u32();
+                uint32_t flags = vf & 0xffffff;
+                uint32_t count = c.u32();
+                if (flags & 0x1) c.skip(4);
+                if (flags & 0x4) c.skip(4);
+                for (uint32_t i = 0; i < count && c.has(1); ++i) {
+                    uint32_t d = (flags & 0x100) ? c.u32() : def_duration;
+                    if (flags & 0x200) c.skip(4);
+                    if (flags & 0x400) c.skip(4);
+                    if (flags & 0x800) c.skip(4);
+                    if (d > 0) {
+                        ++out_samples;
+                        out_duration += d;
+                    }
+                }
+            }
+        });
+    });
+}
+
 }  // namespace
 
 bool Fmp4Reader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
@@ -138,6 +175,11 @@ bool Fmp4Reader::read_header() {
             break;
         }
     }
+    const bool is_video =
+        (track_.codec == Codec::H264 || track_.codec == Codec::VP9 || track_.codec == Codec::AV1);
+    if (is_video && track_.default_duration > 0) {
+        set_track_fps(track_, track_.timescale, track_.default_duration);
+    }
     // Peek at the next box: YouTube (and ffmpeg's global_sidx) put the segment index right here.
     uint64_t start = offset_;
     uint32_t type;
@@ -147,12 +189,35 @@ bool Fmp4Reader::read_header() {
     if (!read_exact(buf, payload)) return true;
     if (type == fourcc("sidx")) {
         parse_sidx(buf, offset_);
+        // If trex had no default duration, peek the first moof once (kept in pending_ for read_fragment).
+        if (is_video && track_.fps_num == 0) {
+            uint64_t next_start = offset_;
+            uint32_t next_type = 0;
+            uint64_t next_payload = 0;
+            if (read_box_header(next_type, next_payload)) {
+                uint64_t next_payload_start = offset_;
+                if (read_exact(buf, next_payload)) {
+                    has_pending_ = true;
+                    pending_type_ = next_type;
+                    pending_start_ = next_start;
+                    pending_payload_start_ = next_payload_start;
+                    pending_.swap(buf);
+                }
+            }
+        }
     } else {
         has_pending_ = true;
         pending_type_ = type;
         pending_start_ = start;
         pending_payload_start_ = payload_start;
         pending_.swap(buf);
+    }
+    if (is_video && track_.fps_num == 0 && has_pending_ && pending_type_ == fourcc("moof")) {
+        uint64_t samples = 0, total_dur = 0;
+        peek_moof_timing(pending_, track_.default_duration, samples, total_dur);
+        if (samples > 0 && total_dur > 0) {
+            set_track_fps(track_, static_cast<uint64_t>(track_.timescale) * samples, total_dur);
+        }
     }
     return true;
 }

@@ -26,7 +26,7 @@ namespace OmegaTube.Data
     // One entry of the quality panel: the format a height cap selects.
     public class VideoQuality
     {
-        public int Width, Height, Fps;
+        public int Width, Height, Fps, FpsNum, FpsDen;
         public string Codec;   // avc1 | vp9 | av01
         public long Bitrate;
         public bool Hdr;
@@ -467,6 +467,8 @@ namespace OmegaTube.Data
                 Width = (int)Json.Num(o, "width"),
                 Height = (int)Json.Num(o, "height"),
                 Fps = (int)Json.Num(o, "fps"),
+                FpsNum = (int)Json.Num(o, "fpsNum"),
+                FpsDen = (int)Json.Num(o, "fpsDen"),
                 Codec = Json.Str(o, "codec"),
                 Bitrate = (long)Json.Num(o, "bitrate"),
                 Hdr = Json.Bool(o, "hdr"),

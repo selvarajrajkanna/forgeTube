@@ -249,7 +249,12 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                     available.push_back(entry(f));
                 }
                 const auto& vi = p->impl.video_info();
-                p->formats = {{"current", entry(video)},  {"available", available}, {"live", info.is_live},
+                nlohmann::json current_entry = entry(video);
+                if (vi.fps_num > 0 && vi.fps_den > 0) {
+                    current_entry["fpsNum"] = vi.fps_num;
+                    current_entry["fpsDen"] = vi.fps_den;
+                }
+                p->formats = {{"current", current_entry},  {"available", available}, {"live", info.is_live},
                               {"client", info.client},
                               {"container", vi.container == omega::media::Container::WebM ? "webm" : "mp4"},
                               {"maxWidth", p->impl.tier_width()},
