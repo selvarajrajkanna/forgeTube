@@ -1101,18 +1101,16 @@ namespace OmegaTube.Ui
                 string aDsp = stats.DspBits > 0
                     ? $" -> PCM{stats.DspBits}" + (stats.DspHf == 1 ? "+HF16" : stats.DspHf == 2 ? "+HF12" : "")
                     : " -> HW";
+                string delayTag = appliedAudioDelayMs != 0
+                    ? $" | {(activeAudioRoute.Length > 0 ? activeAudioRoute : "sync")} {(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms"
+                    : "";
                 statsLabel.Text =
-                    $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s\n" +
-                    $"  stalls {stats.Stalls} ({stats.LongestStallMs}ms) | drop {stats.DroppedFrames} | underrun v{stats.VideoUnderruns}/a{stats.AudioUnderruns} err {stats.Errors}\n" +
                     "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
                     (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}{aDsp}" : "") +
-                    $" {sessionSpeed:0.##}x" +
-                    (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") +
-                    (activeAudioRoute.Length > 0
-                        ? $" | out {activeAudioRoute}" + (appliedAudioDelayMs != 0 ? $" ({(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms)" : "")
-                        : (appliedAudioDelayMs != 0 ? $" | delay {(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms" : "")) + "\n" +
-                    $"  {PipelineTag(info, stats.ScalerId, stats.ScalerRc)} | v{BugReport.AppVersion}" +
-                    (!string.IsNullOrEmpty(info.EspKnobs) ? $"\n  {info.EspKnobs}" : "") +
+                    (sessionSpeed != 1.0 ? $" · {sessionSpeed:0.##}x" : "") +
+                    (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") + delayTag + "\n" +
+                    $"  {PipelineTag(info)} | v{BugReport.AppVersion}\n" +
+                    $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | drop {stats.DroppedFrames} | stalls {stats.Stalls} | err {stats.Errors}" +
                     (sysStatsLine.Length > 0 ? "\n" + sysStatsLine : "");
             }
             if (toast.Visibility && now > toastUntil)
@@ -2544,20 +2542,11 @@ namespace OmegaTube.Ui
             return string.Join(" ", parts);
         }
 
-        private static string PipelineTag(PlaybackInfo p, int scalerId, int scalerRc)
+        private static string PipelineTag(PlaybackInfo p)
         {
             string cont = !string.IsNullOrEmpty(p.Container) ? p.Container : "?";
-            var hw = new System.Collections.Generic.List<string>(4);
-            string src = (p.Current != null && p.Current.Width > 0 && p.Current.Height > 0)
-                ? $"src {p.Current.Width}x{p.Current.Height} -> "
-                : "";
-            if (p.MaxWidth > 0 && p.MaxHeight > 0) hw.Add($"{src}tier {p.MaxWidth}x{p.MaxHeight}");
-            else if (src.Length > 0) hw.Add($"src {p.Current.Width}x{p.Current.Height}");
-            if (p.Progressive) hw.Add("prog");
-            hw.Add(scalerId >= 0 ? $"rsc {scalerId}" : (scalerRc != -999 ? $"rsc err({scalerRc})" : "rsc -"));
-            string tail = hw.Count > 0 ? $" | {string.Join(" ", hw)}" : "";
             string client = !string.IsNullOrEmpty(p.Client) ? $" | {p.Client}" : "";
-            return $"{cont} · {FormatColorTag(p)}{tail}{client}";
+            return $"{cont} · {FormatColorTag(p)}{client}";
         }
 
         private static string AudioCodecLabel(string codecs)
@@ -2605,13 +2594,11 @@ namespace OmegaTube.Ui
         {
             bool hasBt = false;
             bool hasExt = false;
-            var devTypes = new System.Collections.Generic.List<string>(4);
             try
             {
                 foreach (var dev in Tizen.Multimedia.AudioManager.GetConnectedDevices())
                 {
                     string kind = dev.Type.ToString();
-                    if (!devTypes.Contains(kind)) devTypes.Add(kind);
                     if (kind.IndexOf("Bluetooth", StringComparison.OrdinalIgnoreCase) >= 0) hasBt = true;
                     else if (kind.IndexOf("Hdmi", StringComparison.OrdinalIgnoreCase) >= 0 ||
                              kind.IndexOf("Spdif", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -2624,15 +2611,14 @@ namespace OmegaTube.Ui
             catch (Exception)
             {
             }
-            string tag = devTypes.Count > 0 ? $" [{string.Join(",", devTypes)}]" : "";
 
             if (hasBt)
             {
                 int probed = NativeCore.BtAudioDelayMs();
-                if (probed > 0) return ($"bt{tag}", probed);
-                if (probed < 0 && !hasExt) return ($"bt{tag}", 180);
+                if (probed > 0) return ("bt", probed);
+                if (probed < 0 && !hasExt) return ("bt", 180);
             }
-            return ((hasExt ? "ext" : "tv") + tag, hdmiDelayMs);
+            return (hasExt ? "ext" : "tv", hdmiDelayMs);
         }
 
         private void SyncBluetoothAudioDelay(DateTime now, bool force)
