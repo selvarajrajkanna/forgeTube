@@ -319,7 +319,40 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
                                                             uint8_t flags = cc.p[2];
                                                             if (flags & 0x40) track_.bits_per_channel = 10;
                                                             if (flags & 0x20) track_.bits_per_channel = 12;
+                                                            uint8_t csp = flags & 0x03;  // chroma_sample_position: 1=vertical (left,half), 2=colocated (left,top)
+                                                            if (csp == 1) {
+                                                                track_.chroma_siting_horz = 1;
+                                                                track_.chroma_siting_vert = 2;
+                                                            } else if (csp == 2) {
+                                                                track_.chroma_siting_horz = 1;
+                                                                track_.chroma_siting_vert = 1;
+                                                            }
                                                             cc.skip(4);
+                                                        }
+                                                        track_.codec_data.assign(cc.p, cc.end);
+                                                    } else if (config == fourcc("vpcC")) {
+                                                        // ISO/IEC 14496-15 VPCodecConfigurationBox (FullBox v1: 4B version/flags + 8B record).
+                                                        if (cc.left() >= 12 && cc.p[0] == 1) {
+                                                            uint8_t depth = cc.p[6] >> 4;
+                                                            if (depth == 8 || depth == 10 || depth == 12) track_.bits_per_channel = depth;
+                                                            uint8_t sub = (cc.p[6] >> 1) & 0x07;  // 0=4:2:0 vertical (left,half), 1=4:2:0 colocated (left,top)
+                                                            if (sub == 0) {
+                                                                track_.chroma_siting_horz = 1;
+                                                                track_.chroma_siting_vert = 2;
+                                                            } else if (sub == 1) {
+                                                                track_.chroma_siting_horz = 1;
+                                                                track_.chroma_siting_vert = 1;
+                                                            }
+                                                            if (!track_.has_color) {
+                                                                uint8_t prim = cc.p[7], tc = cc.p[8], mat = cc.p[9];
+                                                                if (prim != 2 || tc != 2) {
+                                                                    track_.has_color = true;
+                                                                    track_.color_primaries = prim;
+                                                                    track_.transfer_characteristics = tc;
+                                                                    track_.matrix_coefficients = mat;
+                                                                    track_.color_range = (cc.p[6] & 0x01) ? 2 : 1;
+                                                                }
+                                                            }
                                                         }
                                                         track_.codec_data.assign(cc.p, cc.end);
                                                     } else {

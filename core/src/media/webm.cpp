@@ -24,6 +24,8 @@ constexpr uint32_t kPixelHeight = 0xBA;
 constexpr uint32_t kColour = 0x55B0;
 constexpr uint32_t kMatrixCoefficients = 0x55B1;
 constexpr uint32_t kBitsPerChannel = 0x55B2;
+constexpr uint32_t kChromaSitingHorz = 0x55B7;
+constexpr uint32_t kChromaSitingVert = 0x55B8;
 constexpr uint32_t kRange = 0x55B9;
 constexpr uint32_t kTransferCharacteristics = 0x55BA;
 constexpr uint32_t kPrimaries = 0x55BB;
@@ -237,6 +239,8 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
                         for_each_element(v, [&](uint32_t cid, Cursor col) {
                             if (cid == kMatrixCoefficients) t.matrix_coefficients = static_cast<uint16_t>(to_uint(col));
                             else if (cid == kBitsPerChannel) t.bits_per_channel = static_cast<uint32_t>(to_uint(col));
+                            else if (cid == kChromaSitingHorz) t.chroma_siting_horz = static_cast<uint8_t>(to_uint(col));
+                            else if (cid == kChromaSitingVert) t.chroma_siting_vert = static_cast<uint8_t>(to_uint(col));
                             else if (cid == kRange) t.color_range = static_cast<uint8_t>(to_uint(col));
                             else if (cid == kTransferCharacteristics) t.transfer_characteristics = static_cast<uint16_t>(to_uint(col));
                             else if (cid == kPrimaries) t.color_primaries = static_cast<uint16_t>(to_uint(col));

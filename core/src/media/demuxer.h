@@ -36,6 +36,8 @@ struct TrackInfo {
     uint16_t matrix_coefficients = 0;      // 1 = BT.709, 9 = BT.2020 NCL
     uint8_t color_range = 0;               // Matroska Colour.Range: 0 = unspecified, 1 = limited (16-235), 2 = full (0-255)
     uint32_t bits_per_channel = 8;
+    uint8_t chroma_siting_horz = 0;        // Matroska ChromaSitingHorz: 0 = unspec, 1 = left (co-sited), 2 = half
+    uint8_t chroma_siting_vert = 0;        // Matroska ChromaSitingVert: 0 = unspec, 1 = top (co-sited), 2 = half
 
     bool has_mdcv = false;
     uint16_t display_primaries_x[3]{};     // G, B, R in 0.00002 units

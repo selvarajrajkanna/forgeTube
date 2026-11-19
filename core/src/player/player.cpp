@@ -426,6 +426,9 @@ bool Player::start() {
                 color_info_.bits_per_channel = video_.info.bits_per_channel ? video_.info.bits_per_channel : 10;
                 color_info_.chroma_subsampling_horizontal = 1;
                 color_info_.chroma_subsampling_vertical = 1;
+                color_info_.chroma_siting_horizontal = video_.info.chroma_siting_horz ? video_.info.chroma_siting_horz : 1;
+                color_info_.chroma_siting_vertical =
+                    video_.info.chroma_siting_vert ? video_.info.chroma_siting_vert : (color_info_.primaries == 9 ? 1 : 2);
                 if (video_.info.has_clli) {
                     color_info_.max_cll = video_.info.max_cll;
                     color_info_.max_fall = video_.info.max_fall;
@@ -442,9 +445,10 @@ bool Player::start() {
                     color_info_.mastering_metadata.luminance_max = video_.info.max_luminance * 0.0001;
                     color_info_.mastering_metadata.luminance_min = video_.info.min_luminance * 0.0001;
                 }
-                OLOG("esp HDR colorimetry: matrix=%u prim=%u tc=%u range=%u bits=%u max_cll=%u max_fall=%u",
+                OLOG("esp HDR colorimetry: matrix=%u prim=%u tc=%u range=%u bits=%u siting=%u,%u max_cll=%u max_fall=%u",
                      color_info_.matrix_coefficients, color_info_.primaries, color_info_.transfer_characteristics,
-                     color_info_.range, color_info_.bits_per_channel, color_info_.max_cll, color_info_.max_fall);
+                     color_info_.range, color_info_.bits_per_channel, color_info_.chroma_siting_horizontal,
+                     color_info_.chroma_siting_vertical, color_info_.max_cll, color_info_.max_fall);
             }
         }
 

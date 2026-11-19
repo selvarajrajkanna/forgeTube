@@ -1390,6 +1390,14 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         auto it = std::find(codecs.begin(), codecs.end(), c);
         return it != codecs.end() ? (it - codecs.begin()) : static_cast<long>(codecs.size());
     };
+    // Quality-adjusted bitrate at a given resolution/FPS: accounts for codec compression efficiency
+    // (AV1 ~1.65x, VP9 ~1.35x, H.264 1.00x) with a small tie-break bonus (5% / 2%) for preferred codec order.
+    auto effective_bitrate = [](const Format* f, long p) -> int64_t {
+        VideoCodec c = f->codec != VideoCodec::Unknown ? f->codec : classify_video_codec(f->mime, f->codecs);
+        int64_t weight = (c == VideoCodec::AV1) ? 165 : (c == VideoCodec::VP9) ? 135 : 100;
+        int64_t pref_bonus = (p == 0) ? 105 : (p == 1) ? 102 : 100;
+        return (f->bitrate * weight * pref_bonus) / 10000;
+    };
     std::vector<const Format*> out;
     for (const Format& f : info.formats)
         if (f.height <= max_height && pref(&f) < static_cast<long>(codecs.size())) out.push_back(&f);
@@ -1403,6 +1411,8 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         bool b_prem = (b->itag == 356 || b->itag == 616);
         if (a_prem != b_prem) return a_prem > b_prem;
         long pa = pref(a), pb = pref(b);
+        int64_t ea = effective_bitrate(a, pa), eb = effective_bitrate(b, pb);
+        if (ea != eb) return ea > eb;
         if (pa != pb) return pa < pb;
         return a->bitrate > b->bitrate;
     });
