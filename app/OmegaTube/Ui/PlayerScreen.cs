@@ -487,7 +487,8 @@ namespace OmegaTube.Ui
             appliedAudioDelayMs = initDelay;
             lastBtCheck = DateTime.Now;
             info = YouTube.Playback(player);
-            ApplyHdrUiMode(info.Current != null && info.Current.Hdr);
+            ApplyHdrUiMode((info.Current != null && info.Current.Hdr) || info.ContainerHdr ||
+                           info.ColorTransfer == 16 || info.ColorTransfer == 18);
             live = info.Live;
             if (item.IsList && info.Title.Length > 0)
             {

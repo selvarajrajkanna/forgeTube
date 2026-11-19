@@ -429,11 +429,14 @@ bool Player::start() {
                 color_info_.chroma_siting_horizontal = video_.info.chroma_siting_horz ? video_.info.chroma_siting_horz : 1;
                 color_info_.chroma_siting_vertical =
                     video_.info.chroma_siting_vert ? video_.info.chroma_siting_vert : (color_info_.primaries == 9 ? 1 : 2);
-                if (video_.info.has_clli) {
+                if (video_.info.has_clli && (video_.info.max_cll > 0 || video_.info.max_fall > 0)) {
                     color_info_.max_cll = video_.info.max_cll;
                     color_info_.max_fall = video_.info.max_fall;
+                } else if (color_info_.transfer_characteristics == 16) {
+                    color_info_.max_cll = 1000;
+                    color_info_.max_fall = 300;
                 }
-                if (video_.info.has_mdcv) {
+                if (video_.info.has_mdcv && video_.info.max_luminance > 0) {
                     color_info_.mastering_metadata.primary_r_chromaticity_x = video_.info.display_primaries_x[2] * 0.00002;
                     color_info_.mastering_metadata.primary_r_chromaticity_y = video_.info.display_primaries_y[2] * 0.00002;
                     color_info_.mastering_metadata.primary_g_chromaticity_x = video_.info.display_primaries_x[0] * 0.00002;
@@ -444,6 +447,17 @@ bool Player::start() {
                     color_info_.mastering_metadata.white_point_chromaticity_y = video_.info.white_point_y * 0.00002;
                     color_info_.mastering_metadata.luminance_max = video_.info.max_luminance * 0.0001;
                     color_info_.mastering_metadata.luminance_min = video_.info.min_luminance * 0.0001;
+                } else if (color_info_.transfer_characteristics == 16) {
+                    color_info_.mastering_metadata.primary_r_chromaticity_x = 0.708;
+                    color_info_.mastering_metadata.primary_r_chromaticity_y = 0.292;
+                    color_info_.mastering_metadata.primary_g_chromaticity_x = 0.170;
+                    color_info_.mastering_metadata.primary_g_chromaticity_y = 0.797;
+                    color_info_.mastering_metadata.primary_b_chromaticity_x = 0.131;
+                    color_info_.mastering_metadata.primary_b_chromaticity_y = 0.046;
+                    color_info_.mastering_metadata.white_point_chromaticity_x = 0.3127;
+                    color_info_.mastering_metadata.white_point_chromaticity_y = 0.3290;
+                    color_info_.mastering_metadata.luminance_max = 1000.0;
+                    color_info_.mastering_metadata.luminance_min = 0.0001;
                 }
                 OLOG("esp HDR colorimetry: matrix=%u prim=%u tc=%u range=%u bits=%u siting=%u,%u max_cll=%u max_fall=%u",
                      color_info_.matrix_coefficients, color_info_.primaries, color_info_.transfer_characteristics,

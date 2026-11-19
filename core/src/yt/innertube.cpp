@@ -1391,12 +1391,19 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         auto it = std::find(codecs.begin(), codecs.end(), c);
         return it != codecs.end() ? (it - codecs.begin()) : static_cast<long>(codecs.size());
     };
-    // Quality-adjusted bitrate at a given resolution/FPS: accounts for codec compression efficiency
-    // (AV1 ~1.65x, VP9 ~1.35x, H.264 1.00x) with a small tie-break bonus (5% / 2%) for preferred codec order.
-    auto effective_bitrate = [](const Format* f, long p) -> int64_t {
-        VideoCodec c = f->codec != VideoCodec::Unknown ? f->codec : classify_video_codec(f->mime, f->codecs);
+    auto codec_of = [](const Format* f) {
+        return f->codec != VideoCodec::Unknown ? f->codec : classify_video_codec(f->mime, f->codecs);
+    };
+    // H.264 is only chosen when explicitly set as priority (p == 0) or when neither AV1 nor VP9 exists;
+    // AV1 and VP9 share tier 1 and compete by efficiency-weighted relative bitrate (AV1 ~1.22x VP9).
+    auto codec_tier = [&](const Format* f, long p) -> int {
+        if (codec_of(f) == VideoCodec::H264) return (p == 0) ? 2 : 0;
+        return 1;
+    };
+    auto effective_bitrate = [&](const Format* f, long p) -> int64_t {
+        VideoCodec c = codec_of(f);
         int64_t weight = (c == VideoCodec::AV1) ? 165 : (c == VideoCodec::VP9) ? 135 : 100;
-        int64_t pref_bonus = (p == 0) ? 105 : (p == 1) ? 102 : 100;
+        int64_t pref_bonus = (p == 0) ? 105 : 100;
         return (f->bitrate * weight * pref_bonus) / 10000;
     };
     std::vector<const Format*> out;
@@ -1412,6 +1419,8 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         bool b_prem = (b->itag == 356 || b->itag == 616);
         if (a_prem != b_prem) return a_prem > b_prem;
         long pa = pref(a), pb = pref(b);
+        int ta = codec_tier(a, pa), tb = codec_tier(b, pb);
+        if (ta != tb) return ta > tb;
         int64_t ea = effective_bitrate(a, pa), eb = effective_bitrate(b, pb);
         if (ea != eb) return ea > eb;
         if (pa != pb) return pa < pb;
