@@ -1186,7 +1186,7 @@ namespace OmegaTube.Ui
                 }
                 foreach (string dir in dirs)
                 {
-                    string name = Path.GetFileName(dir);
+                    string name = System.IO.Path.GetFileName(dir);
                     bool match = false;
                     foreach (string kw in keywords)
                     {
@@ -1199,12 +1199,12 @@ namespace OmegaTube.Ui
                     if (!match) continue;
                     foreach (string leaf in new[] { "load", "utilization", "device/utilization", "device/load" })
                     {
-                        string cand = Path.Combine(dir, leaf);
+                        string cand = System.IO.Path.Combine(dir, leaf);
                         if (TryReadLeadingLong(cand, out long v) && v >= 0 && v <= 100) return cand;
                     }
                     if (freqFallback == null)
                     {
-                        string cf = Path.Combine(dir, "cur_freq");
+                        string cf = System.IO.Path.Combine(dir, "cur_freq");
                         if (TryReadLeadingLong(cf, out long hz) && hz > 0) freqFallback = cf;
                     }
                 }
@@ -1247,12 +1247,12 @@ namespace OmegaTube.Ui
                     string fallback = null;
                     foreach (string dir in Directory.GetDirectories("/sys/class/thermal", "thermal_zone*"))
                     {
-                        string tp = Path.Combine(dir, "temp");
+                        string tp = System.IO.Path.Combine(dir, "temp");
                         if (!TryReadLeadingLong(tp, out long mc) || mc < 10000 || mc > 125000) continue;
                         if (fallback == null) fallback = tp;
                         try
                         {
-                            string ztype = File.ReadAllText(Path.Combine(dir, "type"));
+                            string ztype = File.ReadAllText(System.IO.Path.Combine(dir, "type"));
                             if (ztype.IndexOf("cpu", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                 ztype.IndexOf("soc", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                 ztype.IndexOf("tsen", StringComparison.OrdinalIgnoreCase) >= 0 ||
