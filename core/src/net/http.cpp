@@ -715,8 +715,9 @@ Response fetch(const Request& req, size_t max_body) {
             res.error = "response too large";
             return res;
         }
+        if (!is_redirect(res.status) || redirects == 5) break;
         std::string location = conn->header("Location");
-        if (!is_redirect(res.status) || location.empty() || redirects == 5) break;
+        if (location.empty()) break;
         current.url = location;
         if (res.status == 303) {
             current.method = "GET";
@@ -781,9 +782,12 @@ bool RangeReader::open_next() {
         url_ = req.url = location;
     }
     if (status == 206) {
-        std::string cr = conn_.header("Content-Range");  // bytes a-b/total
+        std::string_view cr = conn_.header_view("Content-Range");  // bytes a-b/total
         size_t slash = cr.find('/');
-        if (slash != std::string::npos && cr.compare(slash + 1, 1, "*") != 0) total_ = std::stoll(cr.substr(slash + 1));
+        if (slash != std::string_view::npos && slash + 1 < cr.size() && cr[slash + 1] != '*') {
+            int64_t val = -1;
+            if (std::from_chars(cr.data() + slash + 1, cr.data() + cr.size(), val).ec == std::errc{}) total_ = val;
+        }
     } else if (status == 200) {
         if (pos_ != 0) {
             error_ = "server ignored Range at offset " + std::to_string(pos_);

@@ -72,11 +72,13 @@ namespace OmegaTube.Config
             return i >= 0 ? T(Names[i]) : code;
         }
 
+        private static readonly char[] LangSeparators = { '-', '.', '_' };
+
         // "fr-FR" / "fr.3" -> "fr"
         public static string Base(string code)
         {
             code = code ?? "";
-            int cut = code.IndexOfAny(new[] { '-', '.', '_' });
+            int cut = code.IndexOfAny(LangSeparators);
             return (cut >= 0 ? code.Substring(0, cut) : code).ToLowerInvariant();
         }
     }

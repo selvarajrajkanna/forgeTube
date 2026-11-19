@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -53,12 +54,30 @@ net::Headers client_headers(const ClientDef& d, const std::string& visitor) {
     return h;
 }
 
+const json& child_obj(const json& j, const char* key) {
+    static const json kEmpty = json::object();
+    if (!j.is_object()) return kEmpty;
+    auto it = j.find(key);
+    return (it != j.end() && it->is_object()) ? *it : kEmpty;
+}
+
+const json& child_arr(const json& j, const char* key) {
+    static const json kEmpty = json::array();
+    if (!j.is_object()) return kEmpty;
+    auto it = j.find(key);
+    return (it != j.end() && it->is_array()) ? *it : kEmpty;
+}
+
 std::string text_of(const json& j) {
     if (!j.is_object()) return "";
-    if (j.contains("simpleText")) return j["simpleText"].get<std::string>();
+    auto st = j.find("simpleText");
+    if (st != j.end() && st->is_string()) return st->get<std::string>();
     std::string out;
-    for (const json& run : j.value("runs", json::array())) out += run.value("text", "");
-    if (out.empty() && j.contains("content")) out = j["content"].get<std::string>();  // view-model texts
+    for (const json& run : child_arr(j, "runs")) out += run.value("text", "");
+    if (out.empty()) {
+        auto ct = j.find("content");
+        if (ct != j.end() && ct->is_string()) out = ct->get<std::string>();  // view-model texts
+    }
     return out;
 }
 
@@ -93,16 +112,31 @@ bool already_listed(const Feed& out, const FeedItem& item) {
 std::string playlist_kind(const std::string& playlist_id) { return playlist_id.compare(0, 2, "RD") == 0 ? "mix" : "playlist"; }
 
 std::string last_thumbnail(const json& thumbs) {
-    const json& list = thumbs.value("thumbnails", json::array());
+    const json& list = child_arr(thumbs, "thumbnails");
     return list.empty() ? "" : list.back().value("url", "");
+}
+
+bool json_contains_str(const json& j, const char* needle) {
+    if (j.is_string()) return j.get_ref<const std::string&>().find(needle) != std::string::npos;
+    if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ++it)
+            if (json_contains_str(it.value(), needle)) return true;
+    } else if (j.is_array()) {
+        for (const json& v : j)
+            if (json_contains_str(v, needle)) return true;
+    }
+    return false;
 }
 
 // The account's progress on a video: resume overlay (videoRenderer / tile) or progress bar (lockup).
 int watched_percent(const json& j) {
-    std::string d = j.dump();
-    for (const char* key : {"\"percentDurationWatched\":", "\"startPercent\":"}) {
-        size_t at = d.find(key);
-        if (at != std::string::npos) return std::max(0, std::min(100, atoi(d.c_str() + at + strlen(key))));
+    for (const char* key : {"percentDurationWatched", "startPercent"}) {
+        if (const json* v = find_key(j, key)) {
+            int pct = 0;
+            if (v->is_number()) pct = static_cast<int>(v->get<double>());
+            else if (v->is_string()) pct = atoi(v->get_ref<const std::string&>().c_str());
+            return std::max(0, std::min(100, pct));
+        }
     }
     return 0;
 }
@@ -111,19 +145,21 @@ void parse_video_renderer(const json& v, Feed& out) {
     FeedItem item;
     item.video_id = v.value("videoId", "");
     if (item.video_id.empty()) return;
-    item.title = text_of(v.value("title", json::object()));
-    item.channel = text_of(v.value("ownerText", v.value("longBylineText", json::object())));
-    item.duration = text_of(v.value("lengthText", json::object()));
-    item.views = text_of(v.value("shortViewCountText", v.value("viewCountText", json::object())));
-    item.published = text_of(v.value("publishedTimeText", json::object()));
+    item.title = text_of(child_obj(v, "title"));
+    const json& owner = child_obj(v, "ownerText");
+    item.channel = text_of(!owner.empty() ? owner : child_obj(v, "longBylineText"));
+    item.duration = text_of(child_obj(v, "lengthText"));
+    const json& short_views = child_obj(v, "shortViewCountText");
+    item.views = text_of(!short_views.empty() ? short_views : child_obj(v, "viewCountText"));
+    item.published = text_of(child_obj(v, "publishedTimeText"));
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    for (const json& badge : v.value("badges", json::array()))
-        if (badge.dump().find("LIVE") != std::string::npos) item.is_live = true;
+    for (const json& badge : child_arr(v, "badges"))
+        if (json_contains_str(badge, "LIVE")) item.is_live = true;
     // Broadcasts have no length and count viewers ("18 k spectateurs" / "1.2K watching") instead of views.
     if (item.duration.empty() && (item.views.find("spectateur") != std::string::npos ||
                                   item.views.find("watching") != std::string::npos))
         item.is_live = true;
-    item.watched_percent = watched_percent(v.value("thumbnailOverlays", json::array()));
+    item.watched_percent = watched_percent(child_arr(v, "thumbnailOverlays"));
     out.items.push_back(std::move(item));
 }
 
@@ -133,21 +169,21 @@ void parse_playlist_video(const json& v, Feed& out) {
     FeedItem item;
     item.video_id = v.value("videoId", "");
     if (item.video_id.empty()) return;
-    item.title = text_of(v.value("title", json::object()));
-    item.channel = text_of(v.value("shortBylineText", json::object()));
-    item.duration = text_of(v.value("lengthText", json::object()));
-    const json& runs = v.value("videoInfo", json::object()).value("runs", json::array());
+    item.title = text_of(child_obj(v, "title"));
+    item.channel = text_of(child_obj(v, "shortBylineText"));
+    item.duration = text_of(child_obj(v, "lengthText"));
+    const json& runs = child_arr(child_obj(v, "videoInfo"), "runs");
     if (!runs.empty()) item.views = runs[0].value("text", "");
     if (runs.size() >= 3) item.published = runs[2].value("text", "");
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    item.watched_percent = watched_percent(v.value("thumbnailOverlays", json::array()));
+    item.watched_percent = watched_percent(child_arr(v, "thumbnailOverlays"));
     out.items.push_back(std::move(item));
 }
 
 // TV client layout (as in SmartTube's TileItem / ytps5): id in onSelectCommand.watchEndpoint, title in
 // metadata.tileMetadataRenderer, thumbnail and duration in header.tileHeaderRenderer.
 void parse_tile(const json& t, Feed& out) {
-    const json& cmd = t.value("onSelectCommand", json::object());
+    const json& cmd = child_obj(t, "onSelectCommand");
     if (!cmd.contains("watchEndpoint")) return;  // Shorts (reelWatchEndpoint), channels
     FeedItem item;
     item.video_id = cmd["watchEndpoint"].value("videoId", "");
@@ -158,28 +194,29 @@ void parse_tile(const json& t, Feed& out) {
         item.kind = playlist_kind(item.playlist_id);
     }
     if (already_listed(out, item)) return;
-    const json& meta = t.value("metadata", json::object()).value("tileMetadataRenderer", json::object());
-    const json& header = t.value("header", json::object()).value("tileHeaderRenderer", json::object());
-    item.title = text_of(meta.value("title", json::object()));
+    const json& meta = child_obj(child_obj(t, "metadata"), "tileMetadataRenderer");
+    const json& header = child_obj(child_obj(t, "header"), "tileHeaderRenderer");
+    item.title = text_of(child_obj(meta, "title"));
     if (item.title.empty()) return;
     // lines[0]: channel • views • age (sometimes split over two lines); "•" separators are skipped.
     std::vector<std::string> parts;
-    for (const json& line : meta.value("lines", json::array()))
-        for (const json& li : line.value("lineRenderer", json::object()).value("items", json::array())) {
-            std::string text = text_of(li.value("lineItemRenderer", json::object()).value("text", json::object()));
-            if (!text.empty() && text != "\xE2\x80\xA2" && text != " \xE2\x80\xA2 ") parts.push_back(text);
+    for (const json& line : child_arr(meta, "lines"))
+        for (const json& li : child_arr(child_obj(line, "lineRenderer"), "items")) {
+            std::string text = text_of(child_obj(child_obj(li, "lineItemRenderer"), "text"));
+            if (!text.empty() && text != "\xE2\x80\xA2" && text != " \xE2\x80\xA2 ") parts.push_back(std::move(text));
         }
-    if (!parts.empty()) item.channel = parts[0];
-    if (parts.size() > 1) item.views = parts[1];
-    if (parts.size() > 2) item.published = parts[2];
+    if (!parts.empty()) item.channel = std::move(parts[0]);
+    if (parts.size() > 1) item.views = std::move(parts[1]);
+    if (parts.size() > 2) item.published = std::move(parts[2]);
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    for (const json& o : header.value("thumbnailOverlays", json::array())) {
-        const json& ts = o.value("thumbnailOverlayTimeStatusRenderer", json::object());
+    const json& overlays = child_arr(header, "thumbnailOverlays");
+    for (const json& o : overlays) {
+        const json& ts = child_obj(o, "thumbnailOverlayTimeStatusRenderer");
         if (ts.empty()) continue;
-        item.duration = text_of(ts.value("text", json::object()));
+        item.duration = text_of(child_obj(ts, "text"));
         if (ts.value("style", "") == "LIVE") item.is_live = true;
     }
-    item.watched_percent = watched_percent(header.value("thumbnailOverlays", json::array()));
+    item.watched_percent = watched_percent(overlays);
     out.items.push_back(std::move(item));
 }
 
@@ -201,37 +238,31 @@ void parse_lockup(const json& l, Feed& out) {
     }
     if (item.video_id.size() != 11) return;
     if (already_listed(out, item)) return;
-    const json& meta = l.value("metadata", json::object()).value("lockupMetadataViewModel", json::object());
-    item.title = text_of(meta.value("title", json::object()));
+    const json& meta = child_obj(child_obj(l, "metadata"), "lockupMetadataViewModel");
+    item.title = text_of(child_obj(meta, "title"));
     if (item.title.empty()) return;
     // metadataRows: [channel], [views, age]
     std::vector<std::string> parts;
-    const json& rows = meta.value("metadata", json::object())
-                           .value("contentMetadataViewModel", json::object())
-                           .value("metadataRows", json::array());
+    const json& rows = child_arr(child_obj(child_obj(meta, "metadata"), "contentMetadataViewModel"), "metadataRows");
     for (const json& row : rows)
-        for (const json& part : row.value("metadataParts", json::array())) {
-            std::string text = text_of(part.value("text", json::object()));
-            if (!text.empty()) parts.push_back(text);
+        for (const json& part : child_arr(row, "metadataParts")) {
+            std::string text = text_of(child_obj(part, "text"));
+            if (!text.empty()) parts.push_back(std::move(text));
         }
-    if (!parts.empty()) item.channel = parts[0];
-    if (parts.size() > 1) item.views = parts[1];
-    if (parts.size() > 2) item.published = parts[2];
+    if (!parts.empty()) item.channel = std::move(parts[0]);
+    if (parts.size() > 1) item.views = std::move(parts[1]);
+    if (parts.size() > 2) item.published = std::move(parts[2]);
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    std::string image = l.value("contentImage", json::object()).dump();
-    for (const char* key : {"\"text\":\""}) {
-        // The duration / LIVE badge: first thumbnailBadgeViewModel text.
-        size_t badge = image.find("thumbnailBadgeViewModel");
-        size_t at = badge == std::string::npos ? badge : image.find(key, badge);
-        if (at != std::string::npos) {
-            at += strlen(key);
-            item.duration = image.substr(at, image.find('"', at) - at);
+    const json& content_image = child_obj(l, "contentImage");
+    if (const json* badge = find_key(content_image, "thumbnailBadgeViewModel")) {
+        if (const json* txt = find_key(*badge, "text"); txt && txt->is_string()) {
+            item.duration = txt->get<std::string>();
             if (item.duration == "LIVE" || item.duration == "EN DIRECT") item.is_live = true;
         }
     }
     if (item.kind == "mix") item.duration = "MIX";  // its badge is an icon
     if (item.views == "Playlist") item.views.clear();  // the type label, already shown by the badge
-    item.watched_percent = watched_percent(l.value("contentImage", json::object()));
+    item.watched_percent = watched_percent(content_image);
     out.items.push_back(std::move(item));
 }
 
@@ -317,22 +348,22 @@ int64_t to_int(const json& j, const char* key) {
 void parse_captions(const json& captions, VideoInfo& out) {
     out.captions.clear();
     out.translations.clear();
-    const json& list = captions.value("playerCaptionsTracklistRenderer", json::object());
-    for (const json& t : list.value("captionTracks", json::array())) {
+    const json& list = child_obj(captions, "playerCaptionsTracklistRenderer");
+    for (const json& t : child_arr(list, "captionTracks")) {
         CaptionTrack track;
         track.url = t.value("baseUrl", "");
         if (track.url.empty()) continue;
         if (track.url[0] == '/') track.url = "https://www.youtube.com" + track.url;
         track.lang = t.value("languageCode", "");
-        track.name = text_of(t.value("name", json::object()));
+        track.name = text_of(child_obj(t, "name"));
         track.automatic = t.value("kind", "") == "asr";
         track.translatable = t.value("isTranslatable", false);
         if (track.name.empty()) track.name = track.lang;
         out.captions.push_back(std::move(track));
     }
-    for (const json& l : list.value("translationLanguages", json::array())) {
+    for (const json& l : child_arr(list, "translationLanguages")) {
         std::string code = l.value("languageCode", "");
-        if (!code.empty()) out.translations.emplace_back(code, text_of(l.value("languageName", json::object())));
+        if (!code.empty()) out.translations.emplace_back(code, text_of(child_obj(l, "languageName")));
     }
 }
 
@@ -340,14 +371,18 @@ void parse_captions(const json& captions, VideoInfo& out) {
 std::string drop_param(const std::string& url, const std::string& name) {
     size_t mark = url.find('?');
     if (mark == std::string::npos) return url;
-    std::string out = url.substr(0, mark + 1);
+    std::string_view sv(url);
+    std::string out;
+    out.reserve(url.size());
+    out.append(sv.substr(0, mark + 1));
     bool first = true;
-    for (size_t at = mark + 1; at <= url.size();) {
-        size_t end = url.find('&', at);
-        if (end == std::string::npos) end = url.size();
-        std::string pair = url.substr(at, end - at);
+    for (size_t at = mark + 1; at <= sv.size();) {
+        size_t end = sv.find('&', at);
+        if (end == std::string_view::npos) end = sv.size();
+        std::string_view pair = sv.substr(at, end - at);
         if (!pair.empty() && pair.substr(0, pair.find('=')) != name) {
-            out += (first ? "" : "&") + pair;
+            if (!first) out += '&';
+            out.append(pair);
             first = false;
         }
         at = end + 1;
@@ -600,8 +635,8 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     size_t failed = 0;
     size_t total_adaptive = 0;
     std::string first_err;
-    const json& sd = r.contains("streamingData") && r["streamingData"].is_object() ? r["streamingData"] : json::object();
-    for (const json& f : sd.value("adaptiveFormats", json::array())) {
+    const json& sd = child_obj(r, "streamingData");
+    for (const json& f : child_arr(sd, "adaptiveFormats")) {
         ++total_adaptive;
         Format fmt;
         if (decipher) {
@@ -630,7 +665,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         int ch = static_cast<int>(to_int(f, "audioChannels"));
         fmt.audio_channels = ch > 0 ? ch : 2;
         if (f.value("isDrc", false)) continue;  // loudness-compressed duplicate of an audio format
-        const json& track = f.value("audioTrack", json::object());
+        const json& track = child_obj(f, "audioTrack");
         fmt.audio_track_id = track.value("id", "");
         fmt.audio_track_name = track.value("displayName", "");
         fmt.audio_default = track.value("audioIsDefault", false);
@@ -638,7 +673,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         if (fmt.is_video()) {
             fmt.codec = classify_video_codec(fmt.mime, fmt.codecs);
 
-            const json& ci = f.value("colorInfo", json::object());
+            const json& ci = child_obj(f, "colorInfo");
             std::string tc = ci.value("transferCharacteristics", "");
             if (tc.find("SMPTEST2084") != std::string::npos) {
                 fmt.hdr_mode = HdrMode::HDR10;
@@ -1160,6 +1195,7 @@ void pb_string(std::string& out, int field, const std::string& v) {
 std::string params_token(const std::string& pb) {
     static const char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
+    out.reserve(((pb.size() + 2) / 3) * 4 + 4);
     for (size_t i = 0; i < pb.size(); i += 3) {
         size_t left = pb.size() - i;
         unsigned n = static_cast<unsigned char>(pb[i]) << 16;
@@ -1167,8 +1203,10 @@ std::string params_token(const std::string& pb) {
         if (left > 2) n |= static_cast<unsigned char>(pb[i + 2]);
         out += kAlphabet[(n >> 18) & 63];
         out += kAlphabet[(n >> 12) & 63];
-        out += left > 1 ? std::string(1, kAlphabet[(n >> 6) & 63]) : "%3D";
-        out += left > 2 ? std::string(1, kAlphabet[n & 63]) : "%3D";
+        if (left > 1) out += kAlphabet[(n >> 6) & 63];
+        else out += "%3D";
+        if (left > 2) out += kAlphabet[n & 63];
+        else out += "%3D";
     }
     return out;
 }
@@ -1385,29 +1423,42 @@ std::string Format::video_codec() const {
 }
 
 std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, const std::vector<std::string>& codecs) {
-    auto pref = [&codecs](const Format* f) {
-        std::string c = f->video_codec();
-        auto it = std::find(codecs.begin(), codecs.end(), c);
-        return it != codecs.end() ? (it - codecs.begin()) : static_cast<long>(codecs.size());
+    const long no_match = static_cast<long>(codecs.size());
+    auto find_codec_pref = [&](const char* name) -> long {
+        auto it = std::find(codecs.begin(), codecs.end(), name);
+        return it != codecs.end() ? static_cast<long>(it - codecs.begin()) : no_match;
     };
-    auto codec_of = [](const Format* f) {
+    const long pref_h264 = find_codec_pref("avc1");
+    const long pref_vp9 = find_codec_pref("vp9");
+    const long pref_av1 = find_codec_pref("av01");
+
+    auto codec_of = [](const Format* f) -> VideoCodec {
+        if (!f->is_video()) return VideoCodec::Unknown;
         return f->codec != VideoCodec::Unknown ? f->codec : classify_video_codec(f->mime, f->codecs);
+    };
+    auto pref = [&](VideoCodec c) -> long {
+        switch (c) {
+            case VideoCodec::H264: return pref_h264;
+            case VideoCodec::VP9: return pref_vp9;
+            case VideoCodec::AV1: return pref_av1;
+            default: return no_match;
+        }
     };
     // H.264 is only chosen when explicitly set as priority (p == 0) or when neither AV1 nor VP9 exists;
     // AV1 and VP9 share tier 1 and compete by efficiency-weighted relative bitrate (AV1 ~1.22x VP9).
-    auto codec_tier = [&](const Format* f, long p) -> int {
-        if (codec_of(f) == VideoCodec::H264) return (p == 0) ? 2 : 0;
+    auto codec_tier = [](VideoCodec c, long p) -> int {
+        if (c == VideoCodec::H264) return (p == 0) ? 2 : 0;
         return 1;
     };
-    auto effective_bitrate = [&](const Format* f, long p) -> int64_t {
-        VideoCodec c = codec_of(f);
+    auto effective_bitrate = [](const Format* f, VideoCodec c, long p) -> int64_t {
         int64_t weight = (c == VideoCodec::AV1) ? 122 : (c == VideoCodec::VP9) ? 100 : 80;
         int64_t pref_bonus = (p == 0) ? 130 : 100;
         return (f->bitrate * weight * pref_bonus) / 10000;
     };
     std::vector<const Format*> out;
+    out.reserve(info.formats.size());
     for (const Format& f : info.formats)
-        if (f.height <= max_height && pref(&f) < static_cast<long>(codecs.size())) out.push_back(&f);
+        if (f.height <= max_height && pref(codec_of(&f)) < no_match) out.push_back(&f);
     std::stable_sort(out.begin(), out.end(), [&](const Format* a, const Format* b) {
         if (a->height != b->height) return a->height > b->height;
         bool a_hdr = (a->hdr_mode != HdrMode::None);
@@ -1417,10 +1468,11 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
         bool a_prem = (a->itag == 356 || a->itag == 616);
         bool b_prem = (b->itag == 356 || b->itag == 616);
         if (a_prem != b_prem) return a_prem > b_prem;
-        long pa = pref(a), pb = pref(b);
-        int ta = codec_tier(a, pa), tb = codec_tier(b, pb);
+        VideoCodec ca = codec_of(a), cb = codec_of(b);
+        long pa = pref(ca), pb = pref(cb);
+        int ta = codec_tier(ca, pa), tb = codec_tier(cb, pb);
         if (ta != tb) return ta > tb;
-        int64_t ea = effective_bitrate(a, pa), eb = effective_bitrate(b, pb);
+        int64_t ea = effective_bitrate(a, ca, pa), eb = effective_bitrate(b, cb, pb);
         if (ea != eb) return ea > eb;
         if (pa != pb) return pa < pb;
         return a->bitrate > b->bitrate;

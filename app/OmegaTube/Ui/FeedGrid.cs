@@ -199,7 +199,10 @@ namespace OmegaTube.Ui
                 c.Dispose();
             }
             cards.Clear();
-            SetHighlights(new List<VideoItem>());
+            if (highlights.Count > 0)
+            {
+                SetHighlights(new List<VideoItem>());
+            }
             inHighlights = false;
         }
 
@@ -220,10 +223,9 @@ namespace OmegaTube.Ui
             }
             Card.Drop(old);
             bool any = highlights.Count > 0;
-            foreach (View v in new View[] { hlHeading, hlStrip, gridHeading })
-            {
-                Widgets.SetVisible(v, any);
-            }
+            Widgets.SetVisible(hlHeading, any);
+            Widgets.SetVisible(hlStrip, any);
+            Widgets.SetVisible(gridHeading, any);
             gridTop = any ? 2 * HeadingH + rowStep : 0;
             hlFocus = Math.Min(hlFocus, Math.Max(0, highlights.Count - 1));
             hlStrip.PositionX = 0;
@@ -500,6 +502,8 @@ namespace OmegaTube.Ui
             UiWork.Request(pump);
         }
 
+        private static readonly int[] FillOrder = { 0, 1, -1, 2, 3, 4, -2 };
+
         // Fills one card per call: the focused row, then below (where the user goes), above, further rows,
         // and the highlights on screen. Returns false when everything near the focus is filled.
         private bool BuildNext()
@@ -514,7 +518,7 @@ namespace OmegaTube.Ui
                 return true;
             }
             int focusRow = inHighlights ? 0 : focus / Columns;
-            foreach (int d in new[] { 0, 1, -1, 2, 3, 4, -2 })
+            foreach (int d in FillOrder)
             {
                 int row = focusRow + d;
                 for (int i = Math.Max(0, row * Columns); row >= 0 && i < Math.Min(cards.Count, (row + 1) * Columns); i++)

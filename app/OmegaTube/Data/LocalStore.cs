@@ -14,6 +14,7 @@ namespace OmegaTube.Data
 
         private static string dir;
         private static readonly object posLock = new object();
+        private static readonly object writeLock = new object();
         private static Dictionary<string, object> positions;
 
         public static void Init(string dataDir)
@@ -94,7 +95,7 @@ namespace OmegaTube.Data
                 }
                 snapshot = new Dictionary<string, object>(positions);
             }
-            WriteJson("positions.json", snapshot);
+            System.Threading.Tasks.Task.Run(() => WriteJson("positions.json", snapshot));
         }
 
         private static object ReadJson(string name)
@@ -114,7 +115,11 @@ namespace OmegaTube.Data
         {
             try
             {
-                File.WriteAllText(Path.Combine(dir, name), Json.Write(value));
+                string json = Json.Write(value);
+                lock (writeLock)
+                {
+                    File.WriteAllText(Path.Combine(dir, name), json);
+                }
             }
             catch (Exception e)
             {

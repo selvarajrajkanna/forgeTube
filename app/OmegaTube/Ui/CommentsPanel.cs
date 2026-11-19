@@ -92,6 +92,8 @@ namespace OmegaTube.Ui
         private Entry painted;
         private bool posting;
         private bool closed;
+        private bool signedIn;
+        private static readonly Color FocusedToolIconColor = new Color(0.16f, 0.16f, 0.16f, 1f);
 
         private static string myPhoto, myHandle;
 
@@ -276,11 +278,12 @@ namespace OmegaTube.Ui
                 return;
             }
             started = true;
+            signedIn = YouTube.SignedIn();
             UpdateForm();
             ShowStatus(T("Loading comments…"));
             ArrangeParts();
             UiGuard.Fire("CommentsPanel.LoadPage", () => LoadPage(""));
-            if (YouTube.SignedIn() && myPhoto == null)
+            if (signedIn && myPhoto == null)
             {
                 UiGuard.Fire("CommentsPanel.LoadAccount", LoadAccount);
             }
@@ -413,7 +416,7 @@ namespace OmegaTube.Ui
 
         private void UpdateForm()
         {
-            if (!YouTube.SignedIn())
+            if (!signedIn)
             {
                 form.Hide();
                 return;
@@ -514,7 +517,7 @@ namespace OmegaTube.Ui
             int x = 0;
             x = AddTool(e, Tool.Like, "thumb_up", e.Comment.Likes, x);
             x = AddTool(e, Tool.Dislike, "thumb_down", "", x);
-            if (YouTube.SignedIn())
+            if (signedIn)
             {
                 x = AddTool(e, Tool.Reply, null, T("Reply"), x);
             }
@@ -566,7 +569,7 @@ namespace OmegaTube.Ui
                 t.Pill.BackgroundColor = on ? Theme.CardInfoFocused : Color.Transparent;
                 if (t.Icon != null)
                 {
-                    t.Icon.Color = on ? new Color(0.16f, 0.16f, 0.16f, 1f) : active ? Theme.Accent : Color.White;
+                    t.Icon.Color = on ? FocusedToolIconColor : active ? Theme.Accent : Color.White;
                 }
                 if (t.Label != null)
                 {
@@ -582,7 +585,7 @@ namespace OmegaTube.Ui
             List<string> lines = Widgets.WrapLines(e.Comment.Text, perLine);
             e.Truncated = lines.Count > CommentLines;
             int shown = e.Expanded || !e.Truncated ? lines.Count : CommentLines;
-            e.Text.Text = string.Join("\n", lines.GetRange(0, shown));
+            e.Text.Text = shown == lines.Count ? string.Join("\n", lines) : string.Join("\n", lines.GetRange(0, shown));
             float textH = Math.Max(1, shown) * BodyFont * LineFactor;
             e.Text.SizeHeight = textH + 6;
             float y = textTop + textH + 4;

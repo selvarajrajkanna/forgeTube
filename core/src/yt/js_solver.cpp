@@ -5,8 +5,10 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 
 #include "net/http.h"
 #include "util/log.h"
@@ -42,26 +44,30 @@ std::string exception_text(JSContext* ctx) {
     return out;
 }
 
-// Evaluates `code` (global scope); out receives the result as a string. False with error on exception.
-bool eval_string(JSContext* ctx, const std::string& code, const char* name, std::string* out, std::string& error) {
-    JSValue v = JS_Eval(ctx, code.c_str(), code.size(), name, JS_EVAL_TYPE_GLOBAL);
+// Evaluates null-terminated `code` (global scope); out receives the result as a string. False with error on exception.
+bool eval_cstr(JSContext* ctx, const char* code, size_t len, const char* name, std::string* out, std::string& error) {
+    JSValue v = JS_Eval(ctx, code, len, name, JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(v)) {
         error = std::string(name) + ": " + exception_text(ctx);
         return false;
     }
     if (out) {
-        size_t len = 0;
-        const char* s = JS_ToCStringLen(ctx, &len, v);
+        size_t slen = 0;
+        const char* s = JS_ToCStringLen(ctx, &slen, v);
         if (!s) {
             JS_FreeValue(ctx, v);
             error = std::string(name) + ": result is not a string";
             return false;
         }
-        out->assign(s, len);
+        out->assign(s, slen);
         JS_FreeCString(ctx, s);
     }
     JS_FreeValue(ctx, v);
     return true;
+}
+
+bool eval_string(JSContext* ctx, const std::string& code, const char* name, std::string* out, std::string& error) {
+    return eval_cstr(ctx, code.c_str(), code.size(), name, out, error);
 }
 
 void set_global_string(JSContext* ctx, const char* name, const std::string& value) {
@@ -102,8 +108,9 @@ int hex(char c) {
     return -1;
 }
 
-std::string url_decode(const std::string& s) {
+std::string url_decode(std::string_view s) {
     std::string out;
+    out.reserve(s.size());
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '%' && i + 2 < s.size() && hex(s[i + 1]) >= 0 && hex(s[i + 2]) >= 0) {
             out += static_cast<char>(hex(s[i + 1]) << 4 | hex(s[i + 2]));
@@ -115,9 +122,10 @@ std::string url_decode(const std::string& s) {
     return out;
 }
 
-std::string url_encode(const std::string& s) {
+std::string url_encode(std::string_view s) {
     static const char* digits = "0123456789ABCDEF";
     std::string out;
+    out.reserve(s.size() + 16);
     for (unsigned char c : s) {
         if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
             out += static_cast<char>(c);
@@ -131,13 +139,13 @@ std::string url_encode(const std::string& s) {
 }
 
 // key=value&... -> value of `key` (decoded), "" if absent.
-std::string query_value(const std::string& query, const std::string& key) {
+std::string query_value(std::string_view query, std::string_view key) {
     size_t start = 0;
     while (start < query.size()) {
         size_t amp = query.find('&', start);
-        if (amp == std::string::npos) amp = query.size();
+        if (amp == std::string_view::npos) amp = query.size();
         size_t eq = query.find('=', start);
-        if (eq != std::string::npos && eq < amp && query.compare(start, eq - start, key) == 0)
+        if (eq != std::string_view::npos && eq < amp && query.substr(start, eq - start) == key)
             return url_decode(query.substr(eq + 1, amp - eq - 1));
         start = amp + 1;
     }
@@ -196,8 +204,10 @@ bool JsSolver::preprocess(const std::string& player_js, std::string& preprocesse
         return false;
     }
     // lib.min.js defines `lib` (meriyah + astring); core.min.js expects them as globals.
-    std::string setup = std::string(omega_ejs_lib) + "\nObject.assign(globalThis, lib);\n" + omega_ejs_core;
-    bool ok = eval_string(ctx, setup, "ejs", nullptr, error);
+    static constexpr const char kAssignLib[] = "Object.assign(globalThis, lib);";
+    bool ok = eval_cstr(ctx, omega_ejs_lib, std::strlen(omega_ejs_lib), "ejs-lib", nullptr, error) &&
+              eval_cstr(ctx, kAssignLib, sizeof(kAssignLib) - 1, "ejs-assign", nullptr, error) &&
+              eval_cstr(ctx, omega_ejs_core, std::strlen(omega_ejs_core), "ejs-core", nullptr, error);
     if (ok) {
         set_global_string(ctx, "_player", player_js);
         // A throwaway n challenge checks that the functions were really found.
@@ -324,7 +334,7 @@ int Decipher::signature_timestamp() {
 }
 
 bool Decipher::solve_cached(const char* type, const std::string& challenge, std::string& out, std::string& error) {
-    bool is_n = std::string(type) == "n";
+    bool is_n = (type[0] == 'n' && type[1] == '\0');
     if (is_n) {
         auto it = n_cache_.find(challenge);
         if (it != n_cache_.end()) {

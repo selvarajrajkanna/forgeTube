@@ -188,7 +188,6 @@ bool Player::start() {
         return false;
     }
 
-    const std::deque<media::Sample> saved_live_samples[2] = {first_samples[0], first_samples[1]};
     const int cached = g_cached_pcm_bits.load();
     std::vector<int> audio_candidates = {0};
     std::unique_ptr<audio::Pipeline> dsp;
@@ -207,6 +206,11 @@ bool Player::start() {
                 dsp.reset();
             }
         }
+    }
+    std::deque<media::Sample> saved_live_samples[2];
+    if (cfg_.live && audio_candidates.size() > 1) {
+        saved_live_samples[0] = first_samples[0];
+        saved_live_samples[1] = first_samples[1];
     }
 
     auto rewind_sources = [&]() -> bool {
@@ -505,9 +509,12 @@ bool Player::start() {
             position_ms_ = target;
             for (Source& src : sources) {
                 Track& t = *src.track;
-                media::Segment seg = t.segments.empty() ? media::Segment{0, 0, 0} : t.segments.front();
-                for (const auto& candidate : t.segments)
-                    if (candidate.start_ms <= target) seg = candidate;
+                media::Segment seg{0, 0, 0};
+                if (!t.segments.empty()) {
+                    auto it = std::upper_bound(t.segments.begin(), t.segments.end(), target,
+                                               [](int64_t ms, const media::Segment& s) { return ms < s.start_ms; });
+                    seg = (it == t.segments.begin()) ? t.segments.front() : *std::prev(it);
+                }
                 std::string url = src.http->url();
                 t.url = url;
                 src.http = std::make_unique<net::RangeReader>(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset);
@@ -697,9 +704,12 @@ bool Player::seek(int64_t ms) {
     for (int i = 0; i < 2; ++i) {
         if (!use[i]) continue;
         Track& t = *tracks[i];
-        media::Segment seg = t.segments.empty() ? media::Segment{0, 0, 0} : t.segments.front();
-        for (const auto& candidate : t.segments)
-            if (candidate.start_ms <= target) seg = candidate;
+        media::Segment seg{0, 0, 0};
+        if (!t.segments.empty()) {
+            auto it = std::upper_bound(t.segments.begin(), t.segments.end(), target,
+                                       [](int64_t ms, const media::Segment& s) { return ms < s.start_ms; });
+            seg = (it == t.segments.begin()) ? t.segments.front() : *std::prev(it);
+        }
         std::string url;
         {
             std::lock_guard<std::mutex> lt(t.mutex);
@@ -826,19 +836,23 @@ void Player::feed_loop(Track& t) {
                 OLOG("%s feed: eos submitted", stream_name(t.type));
                 break;
             }
+            const bool was_full = (t.queued_ms >= cfg_.max_queue_ms || t.queued_bytes >= cfg_.max_queue_bytes);
             s = std::move(t.queue.front());
             t.queue.pop_front();
             t.queued_ms -= s.duration_ms;
             t.queued_bytes -= s.data.size();
-            t.cv.notify_all();
+            const bool now_room = (t.queued_ms < cfg_.max_queue_ms && t.queued_bytes < cfg_.max_queue_bytes);
+            lock.unlock();
+            if (was_full && now_room) t.cv.notify_all();
         }
 
         // Pace submission on the playback clock so ESPlayer never holds more than feed_ahead_ms
         // (keeps memory bounded and makes seeks / quality switches cheap). Paused => clock frozen => we wait.
-        {
+        if (s.pts_ms > position_ms_.load(std::memory_order_relaxed) + cfg_.feed_ahead_ms) {
             std::unique_lock<std::mutex> lock(t.mutex);
             t.cv.wait(lock, [&] {
-                return !running_ || !t.active || s.pts_ms <= position_ms_ + cfg_.feed_ahead_ms;
+                return !running_ || !t.active ||
+                       s.pts_ms <= position_ms_.load(std::memory_order_relaxed) + cfg_.feed_ahead_ms;
             });
         }
         if (!running_ || !t.active) break;

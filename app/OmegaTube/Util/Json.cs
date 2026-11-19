@@ -38,6 +38,9 @@ namespace OmegaTube.Util
         public static bool Bool(object o, string key, bool fallback = false) =>
             o is Dictionary<string, object> d && d.TryGetValue(key, out object v) && v is bool b ? b : fallback;
 
+        private static readonly object TrueBox = true;
+        private static readonly object FalseBox = false;
+
         private static object Convert(JsonElement el)
         {
             switch (el.ValueKind)
@@ -53,7 +56,7 @@ namespace OmegaTube.Util
                 }
                 case JsonValueKind.Array:
                 {
-                    var list = new List<object>();
+                    var list = new List<object>(el.GetArrayLength());
                     foreach (JsonElement item in el.EnumerateArray())
                     {
                         list.Add(Convert(item));
@@ -65,9 +68,9 @@ namespace OmegaTube.Util
                 case JsonValueKind.Number:
                     return el.GetDouble();
                 case JsonValueKind.True:
-                    return true;
+                    return TrueBox;
                 case JsonValueKind.False:
-                    return false;
+                    return FalseBox;
                 default:
                     return null;
             }

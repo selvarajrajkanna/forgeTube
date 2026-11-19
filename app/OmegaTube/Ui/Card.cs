@@ -150,6 +150,8 @@ namespace OmegaTube.Ui
 
         // ------------------------------------------------------------------ focus
 
+        private static readonly Vector3 FocusedScale = new Vector3(Theme.FocusScale, Theme.FocusScale, 1f);
+
         public void SetFocused(bool focused)
         {
             if (focused == this.focused)
@@ -168,8 +170,7 @@ namespace OmegaTube.Ui
                 zoom.Stop();
                 zoom.Clear();
             }
-            float s = focused ? Theme.FocusScale : 1f;
-            zoom.AnimateTo(this, "Scale", new Vector3(s, s, 1f), Widgets.EaseOut);
+            zoom.AnimateTo(this, "Scale", focused ? FocusedScale : Vector3.One, Widgets.EaseOut);
             zoom.Play();
             if (focused)
             {

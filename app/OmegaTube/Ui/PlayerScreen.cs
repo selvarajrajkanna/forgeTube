@@ -144,14 +144,17 @@ namespace OmegaTube.Ui
         private View autoplayKnob;
         private DateTime lastSave;
         private DateTime lastBtCheck;
+        private int btCheckInFlight;
         private int appliedAudioDelayMs = -1;
         private string activeAudioRoute = "";
         private string lastPlayIcon;
+        private int lastClockHour = -1, lastClockMin = -1;
 
         private CaptionChoice captions;    // null: off
         private List<CaptionCue> cues;
         private int captionGeneration;
         private string captionShown = "";
+        private CaptionCue shownCue0, shownCue1;
         private bool captionsAutoPicked;
 
         public PlayerScreen(App app, VideoItem item, long startMs = -1, int maxHeight = 0) : base(app)
@@ -208,6 +211,7 @@ namespace OmegaTube.Ui
             captionLabel.PivotPoint = Tizen.NUI.PivotPoint.BottomCenter;
             captionLabel.PositionUsesPivotPoint = true;
             captionLabel.Position = new Position(960, CaptionBottomFree);
+            ApplyCaptionStyle();
             captionLabel.Hide();
             Root.Add(captionLabel);
 
@@ -1173,11 +1177,11 @@ namespace OmegaTube.Ui
                     {
                         if (line.StartsWith("MemTotal:"))
                         {
-                            long.TryParse(line.AsSpan(9).Trim().TrimEnd("kB".ToCharArray()).Trim(), out memTotalKb);
+                            long.TryParse(line.AsSpan(9).Trim().TrimEnd("kB".AsSpan()).Trim(), out memTotalKb);
                         }
                         else if (line.StartsWith("MemAvailable:"))
                         {
-                            long.TryParse(line.AsSpan(13).Trim().TrimEnd("kB".ToCharArray()).Trim(), out memAvailKb);
+                            long.TryParse(line.AsSpan(13).Trim().TrimEnd("kB".AsSpan()).Trim(), out memAvailKb);
                         }
                         if (memTotalKb >= 0 && memAvailKb >= 0) break;
                     }
@@ -1237,7 +1241,12 @@ namespace OmegaTube.Ui
                 return;
             }
             Widgets.SetVisible(clockLabel, App.Config.Player.ShowClock);
-            clockLabel.Text = now.ToString("HH:mm");
+            if (now.Hour != lastClockHour || now.Minute != lastClockMin)
+            {
+                lastClockHour = now.Hour;
+                lastClockMin = now.Minute;
+                clockLabel.Text = now.ToString("HH:mm");
+            }
             string icon = stats.State == 4 || ended ? "play" : "pause";
             if (icon != lastPlayIcon)
             {
@@ -1309,6 +1318,8 @@ namespace OmegaTube.Ui
             captions = choice;
             cues = null;
             captionShown = "";
+            shownCue0 = null;
+            shownCue1 = null;
             captionLabel.Hide();
             int gen = ++captionGeneration;
             UpdateIndicators();
@@ -1380,12 +1391,14 @@ namespace OmegaTube.Ui
                 {
                     captionLabel.Hide();
                     captionShown = "";
+                    shownCue0 = null;
+                    shownCue1 = null;
                 }
                 return;
             }
             NativeCore.PlayerGetStats(player, out NativeCore.PlayerStats now);
             long pos = now.PositionMs;
-            var active = new List<string>();
+            CaptionCue active0 = null, active1 = null;
             foreach (CaptionCue c in cues)
             {
                 if (c.StartMs > pos)
@@ -1394,27 +1407,40 @@ namespace OmegaTube.Ui
                 }
                 if (pos < c.EndMs)
                 {
-                    active.Add(c.Text);
+                    if (active0 == null)
+                    {
+                        active0 = c;
+                    }
+                    else if (active1 == null)
+                    {
+                        active1 = c;
+                    }
+                    else
+                    {
+                        active0 = active1;
+                        active1 = c;
+                    }
                 }
             }
-            if (active.Count > 2)
+            if (active0 != shownCue0 || active1 != shownCue1)
             {
-                active.RemoveRange(0, active.Count - 2);
-            }
-            string text = active.Count == 0 ? "" : Widgets.Wrap(string.Join("\n", active), 46);
-            if (text != captionShown)
-            {
-                captionShown = text;
-                if (text.Length == 0)
+                shownCue0 = active0;
+                shownCue1 = active1;
+                string raw = active0 == null ? "" : active1 == null ? active0.Text : active0.Text + "\n" + active1.Text;
+                string text = raw.Length == 0 ? "" : Widgets.Wrap(raw, 46);
+                if (text != captionShown)
                 {
-                    captionLabel.Hide();
-                }
-                else
-                {
-                    // One space of padding on each line, inside the background.
-                    captionLabel.Text = " " + text.Replace("\n", " \n ") + " ";
-                    ApplyCaptionStyle();
-                    captionLabel.Show();
+                    captionShown = text;
+                    if (text.Length == 0)
+                    {
+                        captionLabel.Hide();
+                    }
+                    else
+                    {
+                        // One space of padding on each line, inside the background.
+                        captionLabel.Text = " " + text.Replace("\n", " \n ") + " ";
+                        captionLabel.Show();
+                    }
                 }
             }
             captionLabel.PositionY = chrome.Visibility && focus != Focus.Hidden && focus != Focus.Playlist && focus != Focus.Suggestions
@@ -2593,13 +2619,43 @@ namespace OmegaTube.Ui
             {
                 return;
             }
-            var (route, delayMs) = ComputeAudioSyncTarget(App.Config.Player.HdmiAudioDelayMs);
-            activeAudioRoute = route;
-            if (force || delayMs != appliedAudioDelayMs)
+            int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
+            if (force)
             {
-                appliedAudioDelayMs = delayMs;
-                NativeCore.PlayerSetAudioDelay(player, delayMs);
+                var (route, delayMs) = ComputeAudioSyncTarget(hdmiDelay);
+                activeAudioRoute = route;
+                if (delayMs != appliedAudioDelayMs)
+                {
+                    appliedAudioDelayMs = delayMs;
+                    NativeCore.PlayerSetAudioDelay(player, delayMs);
+                }
+                return;
             }
+            if (Interlocked.CompareExchange(ref btCheckInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+            UiGuard.Fire("PlayerScreen.BtSync", async () =>
+            {
+                try
+                {
+                    var (route, delayMs) = await Task.Run(() => ComputeAudioSyncTarget(hdmiDelay));
+                    if (closing || player == IntPtr.Zero)
+                    {
+                        return;
+                    }
+                    activeAudioRoute = route;
+                    if (delayMs != appliedAudioDelayMs)
+                    {
+                        appliedAudioDelayMs = delayMs;
+                        NativeCore.PlayerSetAudioDelay(player, delayMs);
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref btCheckInFlight, 0);
+                }
+            });
         }
     }
 }

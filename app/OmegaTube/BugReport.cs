@@ -80,24 +80,43 @@ namespace OmegaTube
             return $"{time} {(e != null ? e.ToString() : "unknown error")}";
         }
 
+        private static string cachedAppVersion;
+        private static readonly Regex ManifestVersionRx = new Regex("<manifest[^>]*\\sversion=\"([^\"]+)\"", RegexOptions.Compiled);
+        private static readonly Regex QuotedLogRx = new Regex(@"'(?:[^'\n]|'(?=\w))*'( by [^,\n]+)?", RegexOptions.Compiled);
+        private static readonly Regex UrlRx = new Regex(@"(https?://[^\s/?#""']+)[^\s""']*", RegexOptions.Compiled);
+        private static readonly Regex BearerRx = new Regex(@"(?i)\b(bearer)\s+\S+", RegexOptions.Compiled);
+        private static readonly Regex SecretRx = new Regex(@"(?i)(token|secret|cookie|authorization|visitor_?data|device_?code|user_?code)([""']?\s*[:=]\s*[""']?)[^\s""',&]+", RegexOptions.Compiled);
+        private static readonly Regex EmailRx = new Regex(@"[\w.+-]+@[\w-]+\.[\w.-]+", RegexOptions.Compiled);
+        private static readonly Regex IpRx = new Regex(@"\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b", RegexOptions.Compiled);
+
         public static string AppVersion
         {
             get
             {
+                if (cachedAppVersion != null)
+                {
+                    return cachedAppVersion;
+                }
                 try
                 {
                     // res/../tizen-manifest.xml: the installed package's own manifest.
                     string manifest = Path.Combine(Tizen.Applications.Application.Current.DirectoryInfo.Resource, "..", "tizen-manifest.xml");
-                    Match m = Regex.Match(File.ReadAllText(manifest), "<manifest[^>]*\\sversion=\"([^\"]+)\"");
+                    Match m = ManifestVersionRx.Match(File.ReadAllText(manifest));
                     if (m.Success)
                     {
-                        return m.Groups[1].Value;
+                        cachedAppVersion = m.Groups[1].Value;
+                        return cachedAppVersion;
                     }
                 }
                 catch (Exception)
                 {
                 }
-                return CoreLoaded ? NativeCore.Version : "?";
+                if (CoreLoaded)
+                {
+                    cachedAppVersion = NativeCore.Version;
+                    return cachedAppVersion;
+                }
+                return "?";
             }
         }
 
@@ -207,17 +226,17 @@ namespace OmegaTube
         // masked, the video ids stay. Not applied to exception texts, whose quotes name what failed.
         public static string RedactLog(string text)
         {
-            return Regex.Replace(Redact(text), @"'(?:[^'\n]|'(?=\w))*'( by [^,\n]+)?", "'…'");
+            return QuotedLogRx.Replace(Redact(text), "'…'");
         }
 
         // Keeps account data, tokens, stream URLs and addresses out of public reports.
         public static string Redact(string text)
         {
-            text = Regex.Replace(text, @"(https?://[^\s/?#""']+)[^\s""']*", "$1/…");
-            text = Regex.Replace(text, @"(?i)\b(bearer)\s+\S+", "$1 …");
-            text = Regex.Replace(text, @"(?i)(token|secret|cookie|authorization|visitor_?data|device_?code|user_?code)([""']?\s*[:=]\s*[""']?)[^\s""',&]+", "$1$2…");
-            text = Regex.Replace(text, @"[\w.+-]+@[\w-]+\.[\w.-]+", "…@…");
-            return Regex.Replace(text, @"\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b", "x.x.x.x");
+            text = UrlRx.Replace(text, "$1/…");
+            text = BearerRx.Replace(text, "$1 …");
+            text = SecretRx.Replace(text, "$1$2…");
+            text = EmailRx.Replace(text, "…@…");
+            return IpRx.Replace(text, "x.x.x.x");
         }
     }
 }

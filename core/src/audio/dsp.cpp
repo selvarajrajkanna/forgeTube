@@ -342,7 +342,9 @@ private:
 
         const int fade_in = 6;
         const int fade_out = 10;
-        for (int b = dst_lo; b <= dst_hi; ++b) {
+        const double decay_step = std::pow(slope_step, 1.0 / slope_span_bins);
+        double decay = 1.0;
+        for (int b = dst_lo; b <= dst_hi; ++b, decay *= decay_step) {
             const int s = b - shift;
             if (s <= 0 || s >= kFft / 2) continue;
 
@@ -355,7 +357,6 @@ private:
                 const double t = static_cast<double>(dst_hi - b + 1) / static_cast<double>(fade_out + 1);
                 edge *= 0.5 * (1.0 - std::cos(kPi * t));
             }
-            const double decay = std::pow(slope_step, static_cast<double>(b - dst_lo) / slope_span_bins);
             const std::complex<double> val = src_spec[s] * rot * (norm_base * edge * decay);
 
             // Pack L and R Hermitian-symmetrically into one complex spectrum: Y[b] = YL[b] + j*YR[b].
@@ -541,6 +542,17 @@ struct Pipeline::Impl {
     std::vector<double> work_in;
     std::vector<double> resampled_buf;
     std::vector<double> out_fifo;
+    std::vector<std::vector<uint8_t>> free_bufs;
+
+    void reclaim_frames(std::vector<PcmFrame>& out) {
+        for (auto& f : out) {
+            if (free_bufs.size() < 8 && f.data.capacity() > 0) {
+                f.data.clear();
+                free_bufs.push_back(std::move(f.data));
+            }
+        }
+        out.clear();
+    }
 
     // Contiguous 48 kHz sample-locked timestamp tracking
     bool pts_anchored = false;
@@ -630,6 +642,10 @@ struct Pipeline::Impl {
             const size_t take = std::min<size_t>(kFrameSamples, avail_frames - offset_frames);
             if (!flush_tail && take < static_cast<size_t>(kFrameSamples)) break;
             PcmFrame pkt;
+            if (!free_bufs.empty()) {
+                pkt.data = std::move(free_bufs.back());
+                free_bufs.pop_back();
+            }
             pkt.pts_ms = base_pts_ms + (emitted_frames * 1000LL + kTargetRate / 2) / kTargetRate;
             pkt.duration_ms = std::max<int64_t>(1, (static_cast<int64_t>(take) * 1000LL + kTargetRate / 2) / kTargetRate);
             pack_samples(&out_fifo[offset_frames * kTargetChannels], take, pkt.data);
@@ -746,7 +762,7 @@ void Pipeline::reset() {
 }
 
 bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool emit_output, std::vector<PcmFrame>& out) {
-    out.clear();
+    impl_->reclaim_frames(out);
     if (!data || size == 0) return true;
 
     const float* decoded_ptr = nullptr;
