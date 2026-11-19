@@ -1102,7 +1102,11 @@ namespace OmegaTube.Ui
             if (statsLabel.Visibility && player != IntPtr.Zero)
             {
                 SampleSystemStats(now);
-                string vRate = info.Current != null && info.Current.Bitrate > 0 ? $" · {info.Current.Bitrate / 1000} kb/s" : "";
+                string vRate = stats.VideoBitrateKbps > 0
+                    ? (info.Current != null && info.Current.Bitrate > 0
+                        ? $" · {stats.VideoBitrateKbps} kb/s (avg {info.Current.Bitrate / 1000})"
+                        : $" · {stats.VideoBitrateKbps} kb/s")
+                    : (info.Current != null && info.Current.Bitrate > 0 ? $" · {info.Current.Bitrate / 1000} kb/s" : "");
                 string aRate = info.AudioBitrate > 0 ? $" · {info.AudioBitrate / 1000} kb/s" : "";
                 string aDsp = stats.DspBits > 0
                     ? $" -> PCM{stats.DspBits}" + (stats.DspHf == 1 ? "+HF16" : stats.DspHf == 2 ? "+HF12" : "")
@@ -1144,9 +1148,8 @@ namespace OmegaTube.Ui
             }
         }
 
-        private static bool hwProbed;
-        private static string gpuLoadPath, vpuLoadPath, npuLoadPath, cpuFreqPath, tempPath;
-        private static bool gpuIsFreq, vpuIsFreq, npuIsFreq;
+        private static bool cpuFreqProbed;
+        private static string cpuFreqPath;
 
         private static bool TryReadLeadingLong(string path, out long value)
         {
@@ -1155,7 +1158,7 @@ namespace OmegaTube.Ui
             {
                 string raw = File.ReadAllText(path).Trim();
                 int len = 0;
-                while (len < raw.Length && (char.IsDigit(raw[len]) || (len == 0 && raw[len] == '-'))) len++;
+                while (len < raw.Length && char.IsDigit(raw[len])) len++;
                 return len > 0 && long.TryParse(raw.AsSpan(0, len), out value);
             }
             catch (Exception)
@@ -1164,73 +1167,10 @@ namespace OmegaTube.Ui
             }
         }
 
-        private static string ProbeDevfreqOrMisc(string[] directPaths, string[] keywords, out bool isFreq)
+        private static void EnsureCpuFreqProbed()
         {
-            isFreq = false;
-            foreach (string p in directPaths)
-            {
-                if (TryReadLeadingLong(p, out long v) && v >= 0 && v <= 100) return p;
-            }
-            string freqFallback = null;
-            foreach (string root in new[] { "/sys/class/devfreq", "/sys/class/misc" })
-            {
-                string[] dirs;
-                try
-                {
-                    if (!Directory.Exists(root)) continue;
-                    dirs = Directory.GetDirectories(root);
-                }
-                catch (Exception)
-                {
-                    continue;
-                }
-                foreach (string dir in dirs)
-                {
-                    string name = System.IO.Path.GetFileName(dir);
-                    bool match = false;
-                    foreach (string kw in keywords)
-                    {
-                        if (name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            match = true;
-                            break;
-                        }
-                    }
-                    if (!match) continue;
-                    foreach (string leaf in new[] { "load", "utilization", "device/utilization", "device/load" })
-                    {
-                        string cand = System.IO.Path.Combine(dir, leaf);
-                        if (TryReadLeadingLong(cand, out long v) && v >= 0 && v <= 100) return cand;
-                    }
-                    if (freqFallback == null)
-                    {
-                        string cf = System.IO.Path.Combine(dir, "cur_freq");
-                        if (TryReadLeadingLong(cf, out long hz) && hz > 0) freqFallback = cf;
-                    }
-                }
-            }
-            if (freqFallback != null)
-            {
-                isFreq = true;
-                return freqFallback;
-            }
-            return null;
-        }
-
-        private static void EnsureHwSensorsProbed()
-        {
-            if (hwProbed) return;
-            hwProbed = true;
-            gpuLoadPath = ProbeDevfreqOrMisc(
-                new[] { "/sys/class/misc/mali0/device/utilization", "/sys/kernel/gpu/gpu_busy", "/sys/devices/platform/mali/utilization" },
-                new[] { "gpu", "mali" }, out gpuIsFreq);
-            vpuLoadPath = ProbeDevfreqOrMisc(
-                Array.Empty<string>(),
-                new[] { "vpu", "vdec", "mfc", "hevc", "av1", "codec" }, out vpuIsFreq);
-            npuLoadPath = ProbeDevfreqOrMisc(
-                Array.Empty<string>(),
-                new[] { "npu", "dla", "neural", "ai" }, out npuIsFreq);
-
+            if (cpuFreqProbed) return;
+            cpuFreqProbed = true;
             foreach (string p in new[] { "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq" })
             {
                 if (TryReadLeadingLong(p, out long khz) && khz > 0)
@@ -1239,50 +1179,6 @@ namespace OmegaTube.Ui
                     break;
                 }
             }
-
-            try
-            {
-                if (Directory.Exists("/sys/class/thermal"))
-                {
-                    string fallback = null;
-                    foreach (string dir in Directory.GetDirectories("/sys/class/thermal", "thermal_zone*"))
-                    {
-                        string tp = System.IO.Path.Combine(dir, "temp");
-                        if (!TryReadLeadingLong(tp, out long mc) || mc < 10000 || mc > 125000) continue;
-                        if (fallback == null) fallback = tp;
-                        try
-                        {
-                            string ztype = File.ReadAllText(System.IO.Path.Combine(dir, "type"));
-                            if (ztype.IndexOf("cpu", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                ztype.IndexOf("soc", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                ztype.IndexOf("tsen", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                ztype.IndexOf("gpu", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                tempPath = tp;
-                                break;
-                            }
-                        }
-                        catch (Exception)
-                        {
-                        }
-                    }
-                    tempPath ??= fallback;
-                }
-            }
-            catch (Exception)
-            {
-            }
-        }
-
-        private static string ReadHwMetric(string label, string path, bool isFreq)
-        {
-            if (path == null || !TryReadLeadingLong(path, out long v)) return "";
-            if (isFreq)
-            {
-                long mhz = v > 1_000_000 ? v / 1_000_000 : v / 1_000;
-                return mhz > 0 ? $"  {label} {mhz}MHz" : "";
-            }
-            return v >= 0 && v <= 100 ? $"  {label} {v}%" : "";
         }
 
         private void SampleSystemStats(DateTime now)
@@ -1292,7 +1188,7 @@ namespace OmegaTube.Ui
             {
                 return;
             }
-            EnsureHwSensorsProbed();
+            EnsureCpuFreqProbed();
             try
             {
                 using Process proc = Process.GetCurrentProcess();
@@ -1368,17 +1264,10 @@ namespace OmegaTube.Ui
                     ? $" @{cpuKhz / 1_000_000.0:F2}GHz"
                     : "";
                 string cpuText = (sysCpu >= 0 ? $"cpu  app {appCpu:F1}%  sys {sysCpu:F1}%" : $"cpu  app {appCpu:F1}%") + cpuFreqText;
-                string hwText = ReadHwMetric("gpu", gpuLoadPath, gpuIsFreq)
-                              + ReadHwMetric("vpu", vpuLoadPath, vpuIsFreq)
-                              + ReadHwMetric("npu", npuLoadPath, npuIsFreq);
-                if (tempPath != null && TryReadLeadingLong(tempPath, out long tempMc) && tempMc >= 10000 && tempMc <= 125000)
-                {
-                    hwText += $"  {tempMc / 1000.0:F0}°C";
-                }
                 string memText = sysTotalMb > 0
                     ? $"mem  {sysUsedMb:F0}/{sysTotalMb:F0} MB (app {appMb:F0} MB, gc {gcMb:F0} MB)"
                     : $"mem  app {appMb:F0} MB (gc {gcMb:F0} MB)";
-                sysStatsLine = $"  {cpuText}{hwText}   {memText}";
+                sysStatsLine = $"  {cpuText}   {memText}";
                 lastSysSampleAt = now;
             }
             catch (Exception)

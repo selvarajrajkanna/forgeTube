@@ -816,6 +816,8 @@ void Player::feed_loop(Track& t) {
     if (!running_ || !t.active) return;
     OLOG("%s feed: start", stream_name(t.type));
     std::vector<audio::PcmFrame> pcm_out;
+    uint64_t br_bytes = 0;
+    int64_t br_dur_ms = 0;
     while (running_ && t.active) {
         media::Sample s;
         {
@@ -879,6 +881,17 @@ void Player::feed_loop(Track& t) {
         if (t.type == esp::STREAM_AUDIO && s.pts_ms < feed_from_ms_) continue;
         if (!submit_es_packet(t, t.type, s.data.data(), s.data.size(), s.pts_ms, s.duration_ms)) return;
         t.submitted_ms = s.pts_ms;
+        if (t.type == esp::STREAM_VIDEO) {
+            br_bytes += s.data.size();
+            br_dur_ms += std::max<int64_t>(1, s.duration_ms);
+            if (br_dur_ms >= 1000) {
+                video_bitrate_kbps_.store(
+                    static_cast<uint32_t>((br_bytes * 8ULL) / static_cast<uint64_t>(br_dur_ms)),
+                    std::memory_order_relaxed);
+                br_bytes = 0;
+                br_dur_ms = 0;
+            }
+        }
     }
 }
 
@@ -973,6 +986,7 @@ PlayerStats Player::stats() {
     s.scaler_rc = scaler_rc_;
     s.dsp_bits = audio_dsp_ ? audio_dsp_->pcm_bits() : 0;
     s.dsp_hf = audio_dsp_ ? audio_dsp_->hf_mode() : 0;
+    s.video_bitrate_kbps = video_bitrate_kbps_.load(std::memory_order_relaxed);
     if (handle_ && prepared_ && s.state >= esp::STATE_READY) {
         if (api_->get_virtual_rsc_id && scaler_id_ == -2) {
             int rid = -1;

@@ -404,6 +404,7 @@ void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     out->scaler_rc = s.scaler_rc;
     out->dsp_bits = s.dsp_bits;
     out->dsp_hf = s.dsp_hf;
+    out->video_bitrate_kbps = s.video_bitrate_kbps;
 }
 
 void omega_player_destroy(omega_player* p) { delete p; }

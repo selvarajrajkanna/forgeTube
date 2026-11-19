@@ -77,6 +77,7 @@ namespace OmegaTube
             public int ScalerRc;
             public int DspBits;
             public int DspHf;
+            public uint VideoBitrateKbps;
         }
 
         // --- Delegate types for the core's C API (cdecl; UTF-8 strings marshalled via LPUTF8Str) --------------

@@ -64,6 +64,7 @@ struct PlayerStats {
     int32_t scaler_rc;
     int32_t dsp_bits;            // 32/24/16 PCM output, or 0 for TV HW passthrough
     int32_t dsp_hf;              // 0 off/bypass, 1 16 kHz->20 kHz, 2 12 kHz SWB->20 kHz
+    uint32_t video_bitrate_kbps; // rolling 1-second encoded video bitrate (kb/s)
 };
 
 // Plays one DASH video track + one audio track (fragmented MP4 or WebM over HTTP) with ESPlayer.
@@ -152,7 +153,7 @@ private:
     std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false}, dsp_confirmed_{false};
     std::mutex state_mutex_;
     std::condition_variable state_cv_;
-    std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0};
+    std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0}, video_bitrate_kbps_{0};
     std::atomic<int32_t> scaler_id_{-2};    // -2: unqueried, -1: unavailable, >=0: RM virtual id
     std::atomic<int32_t> scaler_rc_{-999};  // esplusplayer_get_virtual_rsc_id return code
     std::atomic<int64_t> longest_stall_ms_{0}, position_ms_{0};
