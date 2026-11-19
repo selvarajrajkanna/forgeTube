@@ -111,6 +111,8 @@ target_include_directories(omegacore PUBLIC include PRIVATE src ${OMEGA_DEPS})
 # qrcodegen is included as <qrcodegen/qrcodegen.hpp>
 target_compile_options(omegacore PRIVATE -Wall -Wextra -O3 $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>)
 set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
+# Safe hardware math flags for 64-bit float audio DSP (ARMv8 vfma.f64 & direct vsqrt.f64 without -ffast-math hazards).
+set_source_files_properties(src/audio/dsp.cpp PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-ffp-contract=fast")
 
 find_package(Threads REQUIRED)
 target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib opus faad Threads::Threads m ${CMAKE_DL_LIBS})
@@ -128,4 +130,15 @@ if(OMEGA_HOST_TOOLS)
                    ${CMAKE_CURRENT_BINARY_DIR}/remote_config_default.cpp)
     target_include_directories(ytcheck PRIVATE src ${OMEGA_DEPS})
     target_link_libraries(ytcheck PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib Threads::Threads)
+endif()
+
+# Link-Time Optimization (Release builds only, verified against the active cross/host toolchain).
+include(CheckIPOSupported)
+check_ipo_supported(RESULT OMEGA_IPO_SUPPORTED LANGUAGES C CXX)
+if(OMEGA_IPO_SUPPORTED)
+    foreach(_tgt omegacore opus faad omega_zlib ytcheck)
+        if(TARGET ${_tgt})
+            set_property(TARGET ${_tgt} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        endif()
+    endforeach()
 endif()
