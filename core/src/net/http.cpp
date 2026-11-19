@@ -756,14 +756,11 @@ bool RangeReader::open_next() {
     Request req;
     req.url = url_;
     req.headers = headers_;
-    // Adaptive chunk sizing: 2 MB initial chunk for fast time-to-first-frame, then 4 MB -> 8 MB steady-state
-    // to halve HTTP range-request round-trips on high-bitrate 4K60 streams (cap on retries).
+    // Adaptive chunk sizing: the body is streamed as it arrives, so the first range's size does not delay the
+    // first frame; after two clean ranges, 8 MB halves range round-trips on high-bitrate (4K60) streams.
+    // Retries fall back to the base size.
     uint64_t req_chunk = chunk_size_;
-    if (chunks_opened_ == 0) {
-        req_chunk = std::min<uint64_t>(chunk_size_, 2 * 1024 * 1024);
-    } else if (chunks_opened_ >= 2 && failures_ == 0) {
-        req_chunk = std::max<uint64_t>(chunk_size_, 8 * 1024 * 1024);
-    }
+    if (chunks_opened_ >= 2 && failures_ == 0) req_chunk = std::max<uint64_t>(chunk_size_, 8 * 1024 * 1024);
     uint64_t end = pos_ + req_chunk - 1;
     if (total_ >= 0) end = std::min<uint64_t>(end, static_cast<uint64_t>(total_) - 1);
     req.headers.emplace_back("Range", "bytes=" + std::to_string(pos_) + "-" + std::to_string(end));

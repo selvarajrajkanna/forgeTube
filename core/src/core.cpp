@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -181,9 +182,12 @@ struct PreloadedVideo {
     std::string video_id;
     omega::yt::VideoInfo info;
     std::chrono::steady_clock::time_point ts;
+    std::string in_flight;  // video id being resolved by omega_yt_preload right now
 };
 std::mutex g_preload_mutex;
+std::condition_variable g_preload_cv;
 PreloadedVideo g_preload;
+constexpr auto kPreloadTtl = std::chrono::seconds(45);
 
 }  // namespace
 
@@ -192,20 +196,28 @@ void omega_yt_preload(const char* video_id) {
     std::string vid(video_id);
     {
         std::lock_guard<std::mutex> lock(g_preload_mutex);
+        if (g_preload.in_flight == vid) return;
         if (g_preload.video_id == vid && !g_preload.info.formats.empty() &&
-            std::chrono::steady_clock::now() - g_preload.ts < std::chrono::seconds(30)) {
+            std::chrono::steady_clock::now() - g_preload.ts < kPreloadTtl) {
             return;
         }
+        g_preload.in_flight = vid;
     }
     omega::yt::Client client;
     omega::yt::VideoInfo info;
     std::string error;
-    if (!client.player(vid, info, error) || info.formats.empty()) return;
-    std::lock_guard<std::mutex> lock(g_preload_mutex);
-    g_preload.video_id = std::move(vid);
-    g_preload.info = std::move(info);
-    g_preload.ts = std::chrono::steady_clock::now();
-    OLOG("youtube %s: preloaded (%zu formats)", g_preload.video_id.c_str(), g_preload.info.formats.size());
+    const bool ok = client.player(vid, info, error) && !info.formats.empty();
+    {
+        std::lock_guard<std::mutex> lock(g_preload_mutex);
+        if (g_preload.in_flight == vid) g_preload.in_flight.clear();
+        if (ok) {
+            g_preload.video_id = vid;
+            g_preload.info = std::move(info);
+            g_preload.ts = std::chrono::steady_clock::now();
+            OLOG("youtube %s: preloaded (%zu formats)", vid.c_str(), g_preload.info.formats.size());
+        }
+    }
+    g_preload_cv.notify_all();
 }
 
 omega_player* omega_player_create_youtube(void* window, int width, int height, const char* video_id,
@@ -216,14 +228,18 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
     std::string error;
     std::string vid = video_id ? video_id : "";
     bool used_preload = false;
-    {
-        std::lock_guard<std::mutex> lock(g_preload_mutex);
-        if (!vid.empty() && g_preload.video_id == vid && !g_preload.info.formats.empty() &&
-            std::chrono::steady_clock::now() - g_preload.ts < std::chrono::seconds(45)) {
+    if (!vid.empty()) {
+        std::unique_lock<std::mutex> lock(g_preload_mutex);
+        // A preload of this very video still resolving: wait for it instead of resolving it twice.
+        g_preload_cv.wait_for(lock, std::chrono::seconds(4), [&] { return g_preload.in_flight != vid; });
+        if (g_preload.video_id == vid && !g_preload.info.formats.empty() &&
+            std::chrono::steady_clock::now() - g_preload.ts < kPreloadTtl) {
             info = std::move(g_preload.info);
-            g_preload.video_id.clear();
             used_preload = true;
         }
+        // Single use; a stale entry for another video is dropped too.
+        g_preload.info = omega::yt::VideoInfo{};
+        g_preload.video_id.clear();
     }
     if (used_preload) {
         OLOG("youtube %s: using preloaded VideoInfo (%zu formats)", vid.c_str(), info.formats.size());

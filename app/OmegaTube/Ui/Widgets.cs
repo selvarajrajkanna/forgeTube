@@ -338,13 +338,15 @@ namespace OmegaTube.Ui
         // Smoothly moves a view; returns the animation so callers can stop a running one.
         public static Animation Slide(View view, float x, float y, Animation previous, int ms = 180)
         {
-            bool atTarget = Math.Abs(view.PositionX - x) < 0.5f && Math.Abs(view.PositionY - y) < 0.5f;
+            // While an animation runs, PositionX/Y already report its destination (event-side value), so the
+            // "already there" shortcut is only safe once the previous slide has finished.
+            bool idle = previous == null || previous.State == Animation.States.Stopped;
             if (previous != null)
             {
                 previous.Stop();
                 previous.Dispose();   // one per key press under key repeat: hand the native handle back at once
             }
-            if (atTarget)
+            if (idle && Math.Abs(view.PositionX - x) < 0.5f && Math.Abs(view.PositionY - y) < 0.5f)
             {
                 return null;
             }
