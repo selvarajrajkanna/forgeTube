@@ -283,6 +283,24 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
         if (type == 1 && default_duration_ns > 0) {
             set_track_fps(t, 1000000000ULL, default_duration_ns);
         }
+        if (t.codec == Codec::AV1 && t.codec_data.size() > 4) {
+            uint8_t flags = t.codec_data[2];
+            if (t.bits_per_channel <= 8) {
+                if (flags & 0x40) t.bits_per_channel = 10;
+                if (flags & 0x20) t.bits_per_channel = 12;
+            }
+            if (!t.chroma_siting_horz && !t.chroma_siting_vert) {
+                uint8_t csp = flags & 0x03;
+                if (csp == 1) {
+                    t.chroma_siting_horz = 1;
+                    t.chroma_siting_vert = 2;
+                } else if (csp == 2) {
+                    t.chroma_siting_horz = 1;
+                    t.chroma_siting_vert = 1;
+                }
+            }
+            t.codec_data.erase(t.codec_data.begin(), t.codec_data.begin() + 4);
+        }
         t.track_number = number;
         track_ = std::move(t);
         if (track_.codec == Codec::Unknown) error_ = "unsupported codec " + codec_id;

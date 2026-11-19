@@ -354,7 +354,6 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
                                                                 }
                                                             }
                                                         }
-                                                        track_.codec_data.assign(cc.p, cc.end);
                                                     } else {
                                                         track_.codec_data.assign(cc.p, cc.end);
                                                     }

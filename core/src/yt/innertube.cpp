@@ -624,7 +624,8 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         fmt.width = static_cast<int>(to_int(f, "width"));
         fmt.height = static_cast<int>(to_int(f, "height"));
         fmt.fps = static_cast<int>(to_int(f, "fps"));
-        fmt.bitrate = to_int(f, "bitrate");
+        int64_t avg_br = to_int(f, "averageBitrate");
+        fmt.bitrate = avg_br > 0 ? avg_br : to_int(f, "bitrate");
         fmt.content_length = to_int(f, "contentLength");
         fmt.audio_sample_rate = static_cast<int>(to_int(f, "audioSampleRate"));
         int ch = static_cast<int>(to_int(f, "audioChannels"));
