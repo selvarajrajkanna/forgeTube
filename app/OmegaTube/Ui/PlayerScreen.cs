@@ -974,6 +974,12 @@ namespace OmegaTube.Ui
             tick?.Stop();
             captionTick?.Stop();
             spin.Stop();
+            if (slide != null)
+            {
+                slide.Stop();
+                slide.Dispose();
+                slide = null;
+            }
             SavePosition();
             Release(player);
             player = IntPtr.Zero;

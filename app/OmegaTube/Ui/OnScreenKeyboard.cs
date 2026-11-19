@@ -90,9 +90,17 @@ namespace OmegaTube.Ui
 
         public void SetActionLabel(int index, string text) => keys[ActionRow][index].Text = text;
 
-        public void JumpToTopRow() => row = 0;
+        public void JumpToTopRow()
+        {
+            row = 0;
+            col = Math.Min(col, 9);
+        }
 
-        public void JumpToActionRow() => row = ActionRow;
+        public void JumpToActionRow()
+        {
+            row = ActionRow;
+            col = Math.Min(col, ActionKeys - 1);
+        }
 
         public void ToggleSymbols()
         {
@@ -185,6 +193,10 @@ namespace OmegaTube.Ui
 
         private void PaintKey(int r, int c, bool isFocused)
         {
+            if (r < 0 || r >= keys.Count || c < 0 || c >= keys[r].Count)
+            {
+                return;
+            }
             bool hi = r == ActionRow && c == highlightActionIndex;
             keys[r][c].BackgroundColor = isFocused ? Theme.Accent : hi ? Theme.SurfaceHigh : Theme.Surface;
         }

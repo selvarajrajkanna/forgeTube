@@ -211,13 +211,47 @@ namespace OmegaTube
                 return;
             }
             Screen top = stack[stack.Count - 1];
+            bool wasReport = top is ReportScreen || top is SafeErrorScreen;
             stack.RemoveAt(stack.Count - 1);
-            top.OnHide();
-            Window.Default.Remove(top.Root);
-            top.Root.Dispose();
+            try
+            {
+                top.OnHide();
+            }
+            catch (Exception e)
+            {
+                Tizen.Log.Error("omegatube-modern", "pop OnHide: " + e);
+            }
+            try
+            {
+                Window.Default.Remove(top.Root);
+                top.Root.Dispose();
+            }
+            catch (Exception e)
+            {
+                Tizen.Log.Error("omegatube-modern", "pop Dispose: " + e);
+            }
             Screen below = stack[stack.Count - 1];
             below.Root.Show();
-            below.OnShow();
+            if (wasReport)
+            {
+                // Never trap the user in a report-screen loop if the screen behind it also throws on re-show.
+                try
+                {
+                    below.OnShow();
+                }
+                catch (Exception e)
+                {
+                    Tizen.Log.Error("omegatube-modern", "re-show after report: " + e);
+                    if (BugReport.CoreLoaded)
+                    {
+                        NativeCore.Log("re-show after report: " + e);
+                    }
+                }
+            }
+            else
+            {
+                below.OnShow();
+            }
         }
 
         // A screen rebuilding itself: on the stack (Replace) or hosted beside the home rail.

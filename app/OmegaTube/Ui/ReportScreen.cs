@@ -44,16 +44,28 @@ namespace OmegaTube.Ui
                         : T("Scan the QR code with your phone: it opens a GitHub issue already filled in with this TV's model and the end of the log. Describe the problem, then send it.");
 
             var titleLabel = Widgets.Label(title, Theme.TitleSize + 8, Theme.Text, TextW, 70);
-            titleLabel.Position = new Position(TextX, 130);
+            titleLabel.Position = new Position(TextX, 110);
             Root.Add(titleLabel);
-            var bodyLabel = Widgets.Label(body, Theme.BodySize + 2, Theme.Text, TextW, 200);
+            var bodyLabel = Widgets.Label(body, Theme.BodySize + 2, Theme.Text, TextW, 140);
             bodyLabel.MultiLine = true;
             bodyLabel.Ellipsis = false;
-            bodyLabel.Position = new Position(TextX, 240);
+            bodyLabel.Position = new Position(TextX, 200);
             Root.Add(bodyLabel);
-            var device = Widgets.Label(BugReport.DeviceInfo(), Theme.SmallSize, Theme.TextDim, TextW, 260);
+            int deviceY = 380;
+            if (!string.IsNullOrEmpty(crash))
+            {
+                string[] lines = BugReport.Redact(crash).Split('\n');
+                int count = System.Math.Min(4, lines.Length);
+                string summary = string.Join("\n", lines, 0, count);
+                var errLabel = Widgets.Label(summary, Theme.SmallSize - 2, Theme.Accent, TextW, 170);
+                errLabel.MultiLine = true;
+                errLabel.Position = new Position(TextX, 360);
+                Root.Add(errLabel);
+                deviceY = 550;
+            }
+            var device = Widgets.Label(BugReport.DeviceInfo(), Theme.SmallSize, Theme.TextDim, TextW, 220);
             device.MultiLine = true;
-            device.Position = new Position(TextX, 480);
+            device.Position = new Position(TextX, deviceY);
             Root.Add(device);
 
             // The upload goes through the core's HTTPS stack, to the service named by the remote config.
