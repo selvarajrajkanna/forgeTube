@@ -64,6 +64,9 @@ typedef struct {
 OMEGA_API omega_player* omega_player_create_youtube(void* ecore_wl2_window, int width, int height, const char* video_id,
                                                     int max_height, const char* codecs, int64_t start_ms,
                                                     const char* audio_track);
+// Pre-resolves InnerTube VideoInfo for video_id into a short-lived cache consumed by the next
+// omega_player_create_youtube call. Blocking (network): call off the UI thread.
+OMEGA_API void omega_yt_preload(const char* video_id);
 // Why the last omega_player_create_youtube returned NULL: {"kind","status","reason","detail","signedIn"}.
 // kind: login | age | upcoming | unplayable | unavailable | rate_limited | http | network | formats | player | other;
 // status: YouTube's playabilityStatus ("LOGIN_REQUIRED"...) or "HTTP_<code>"; reason: YouTube's own message

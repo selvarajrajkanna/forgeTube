@@ -43,6 +43,8 @@ namespace OmegaTube.Ui
         private readonly List<List<TextLabel>> keys = new List<List<TextLabel>>();
         private readonly int highlightActionIndex;
         private int row = 1, col;
+        private int paintedRow = -1, paintedCol = -1;
+        private bool paintedFocused;
         private bool symbolPage;
 
         private string[][] KeyLayout => symbolPage ? Symbols
@@ -154,15 +156,37 @@ namespace OmegaTube.Ui
 
         public void Paint(bool focused)
         {
-            for (int r = 0; r < keys.Count; r++)
+            if (paintedRow < 0)
             {
-                for (int c = 0; c < keys[r].Count; c++)
+                for (int r = 0; r < keys.Count; r++)
                 {
-                    bool f = focused && r == row && c == col;
-                    bool hi = r == ActionRow && c == highlightActionIndex;
-                    keys[r][c].BackgroundColor = f ? Theme.Accent : hi ? Theme.SurfaceHigh : Theme.Surface;
+                    for (int c = 0; c < keys[r].Count; c++)
+                    {
+                        PaintKey(r, c, focused && r == row && c == col);
+                    }
                 }
             }
+            else
+            {
+                if (paintedRow == row && paintedCol == col && paintedFocused == focused)
+                {
+                    return;
+                }
+                if (paintedRow < keys.Count && paintedCol < keys[paintedRow].Count)
+                {
+                    PaintKey(paintedRow, paintedCol, false);
+                }
+                PaintKey(row, col, focused);
+            }
+            paintedRow = row;
+            paintedCol = col;
+            paintedFocused = focused;
+        }
+
+        private void PaintKey(int r, int c, bool isFocused)
+        {
+            bool hi = r == ActionRow && c == highlightActionIndex;
+            keys[r][c].BackgroundColor = isFocused ? Theme.Accent : hi ? Theme.SurfaceHigh : Theme.Surface;
         }
 
         private void LabelKeys(string action3Label, string action4Label)

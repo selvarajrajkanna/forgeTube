@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -176,7 +177,36 @@ nlohmann::json audio_tracks_json(const omega::yt::VideoInfo& info) {
     return tracks;
 }
 
+struct PreloadedVideo {
+    std::string video_id;
+    omega::yt::VideoInfo info;
+    std::chrono::steady_clock::time_point ts;
+};
+std::mutex g_preload_mutex;
+PreloadedVideo g_preload;
+
 }  // namespace
+
+void omega_yt_preload(const char* video_id) {
+    if (!video_id || !*video_id) return;
+    std::string vid(video_id);
+    {
+        std::lock_guard<std::mutex> lock(g_preload_mutex);
+        if (g_preload.video_id == vid && !g_preload.info.formats.empty() &&
+            std::chrono::steady_clock::now() - g_preload.ts < std::chrono::seconds(30)) {
+            return;
+        }
+    }
+    omega::yt::Client client;
+    omega::yt::VideoInfo info;
+    std::string error;
+    if (!client.player(vid, info, error) || info.formats.empty()) return;
+    std::lock_guard<std::mutex> lock(g_preload_mutex);
+    g_preload.video_id = std::move(vid);
+    g_preload.info = std::move(info);
+    g_preload.ts = std::chrono::steady_clock::now();
+    OLOG("youtube %s: preloaded (%zu formats)", g_preload.video_id.c_str(), g_preload.info.formats.size());
+}
 
 omega_player* omega_player_create_youtube(void* window, int width, int height, const char* video_id,
                                           int max_height, const char* codecs, int64_t start_ms,
@@ -184,7 +214,20 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
     omega::yt::Client client;
     omega::yt::VideoInfo info;
     std::string error;
-    if (!client.player(video_id ? video_id : "", info, error)) {
+    std::string vid = video_id ? video_id : "";
+    bool used_preload = false;
+    {
+        std::lock_guard<std::mutex> lock(g_preload_mutex);
+        if (!vid.empty() && g_preload.video_id == vid && !g_preload.info.formats.empty() &&
+            std::chrono::steady_clock::now() - g_preload.ts < std::chrono::seconds(45)) {
+            info = std::move(g_preload.info);
+            g_preload.video_id.clear();
+            used_preload = true;
+        }
+    }
+    if (used_preload) {
+        OLOG("youtube %s: using preloaded VideoInfo (%zu formats)", vid.c_str(), info.formats.size());
+    } else if (!client.player(vid, info, error)) {
         OLOG("youtube %s: %s", video_id ? video_id : "-", error.c_str());
         const omega::yt::Client::Refusal& r = client.refusal();
         set_play_error(refusal_kind(r.status), r.status, r.reason, error);

@@ -55,6 +55,7 @@ namespace OmegaTube.Ui
             public TextLabel Label;   // the skip button is a pill with text
             public View Indicator;    // lit under toggles that are on (subtitles, loop, stats); none on the skip pill
             public bool Available = true;
+            public int X;
         }
 
         private class CaptionChoice
@@ -87,6 +88,7 @@ namespace OmegaTube.Ui
         private readonly View track, progressFill, playhead;
         private readonly List<Button> buttons = new List<Button>();
         private readonly List<Button> rightButtons = new List<Button>();  // laid out from the right edge
+        private readonly List<int> visibleOrder = new List<int>();        // button indices sorted by X
         private readonly Button skipButton, playButton;
         private readonly ListPanel panel;
         private readonly TextLabel captionLabel;
@@ -149,6 +151,7 @@ namespace OmegaTube.Ui
         private string activeAudioRoute = "";
         private string lastPlayIcon;
         private int lastClockHour = -1, lastClockMin = -1;
+        private string preloadedVideoId;
 
         private CaptionChoice captions;    // null: off
         private List<CaptionCue> cues;
@@ -384,7 +387,7 @@ namespace OmegaTube.Ui
             indicator.Position = new Position(x + (ButtonSize - 16) / 2, ButtonsY + ButtonSize + 5);
             indicator.Hide();
             chrome.Add(indicator);
-            var b = new Button { Action = action, View = view, Icon = img, Indicator = indicator };
+            var b = new Button { Action = action, View = view, Icon = img, Indicator = indicator, X = x };
             buttons.Add(b);
             return b;
         }
@@ -422,6 +425,7 @@ namespace OmegaTube.Ui
                     continue;
                 }
                 right -= (int)b.View.SizeWidth;
+                b.X = right;
                 b.View.PositionX = right;
                 if (b.Indicator != null)
                 {
@@ -429,6 +433,15 @@ namespace OmegaTube.Ui
                 }
                 right -= 10;
             }
+            visibleOrder.Clear();
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                if (buttons[i].Available)
+                {
+                    visibleOrder.Add(i);
+                }
+            }
+            visibleOrder.Sort((a, b) => buttons[a].X.CompareTo(buttons[b].X));
             UpdateIndicators();
         }
 
@@ -1058,6 +1071,11 @@ namespace OmegaTube.Ui
                     lastSave = now;
                     LocalStore.SavePosition(item.Id, stats.PositionMs, stats.DurationMs);
                 }
+                if (stats.State == 3 && !live && !Loop && InList && playlistRow?.FirstItem != null &&
+                    stats.DurationMs > 0 && stats.DurationMs - stats.PositionMs <= 1500)
+                {
+                    PreloadNext(playlistRow.FirstItem);
+                }
                 if ((now - lastBtCheck).TotalSeconds >= 2)
                 {
                     SyncBluetoothAudioDelay(now, force: false);
@@ -1103,7 +1121,12 @@ namespace OmegaTube.Ui
             }
             if (focus == Focus.UpNext)
             {
-                int left = (int)Math.Ceiling((upNextAt - now).TotalSeconds);
+                double secsLeft = (upNextAt - now).TotalSeconds;
+                if (secsLeft <= 1.25)
+                {
+                    PreloadNext(upNextItem);
+                }
+                int left = (int)Math.Ceiling(secsLeft);
                 upNextCountdown.Text = T("Playing in {0} s", Math.Max(0, left));
                 if (left <= 0)
                 {
@@ -1684,27 +1707,27 @@ namespace OmegaTube.Ui
         }
 
         // Next / previous visible button in screen order.
-        private void MoveButton(int delta)
+        private void PreloadNext(VideoItem next)
         {
-            List<int> order = VisibleOrder();
-            int at = order.IndexOf(buttonIndex);
-            at = Math.Max(0, Math.Min(order.Count - 1, (at < 0 ? 0 : at) + delta));
-            buttonIndex = order[at];
-            RefreshButtons();
+            if (next == null || string.IsNullOrEmpty(next.Id) || preloadedVideoId == next.Id)
+            {
+                return;
+            }
+            preloadedVideoId = next.Id;
+            string nextId = next.Id;
+            Task.Run(() => NativeCore.YtPreload(nextId));
         }
 
-        private List<int> VisibleOrder()
+        private void MoveButton(int delta)
         {
-            var order = new List<int>();
-            for (int i = 0; i < buttons.Count; i++)
+            if (visibleOrder.Count == 0)
             {
-                if (buttons[i].View.Visibility)
-                {
-                    order.Add(i);
-                }
+                return;
             }
-            order.Sort((a, b) => buttons[a].View.PositionX.CompareTo(buttons[b].View.PositionX));
-            return order;
+            int at = visibleOrder.IndexOf(buttonIndex);
+            at = Math.Max(0, Math.Min(visibleOrder.Count - 1, (at < 0 ? 0 : at) + delta));
+            buttonIndex = visibleOrder[at];
+            RefreshButtons();
         }
 
         public override bool OnKey(string key)

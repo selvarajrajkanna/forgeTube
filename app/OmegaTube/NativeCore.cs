@@ -119,7 +119,7 @@ namespace OmegaTube
         private static Ip_ss _ytSearch, _ytBrowse, _ytPlaylist, _ytPlaylistPage, _ytRelated, _ytCaptions, _ytRate, _ytChannel, _ytComments, _ytPostComment;
         private static Ip_sss _ytPostReply, _ytCommentAction;
         private static Ip_si _ytSubscribe;
-        private static V_s _init;
+        private static V_s _init, _ytPreload;
         private static V_ss _setLocale;
 
         private static void Bind()
@@ -129,6 +129,7 @@ namespace OmegaTube
             _logLine = Fn<V_s>("omega_log_line");
             _logTail = Fn<I_buf>("omega_log_tail");
             _playerCreateYouTube = Fn<CreateYtFn>("omega_player_create_youtube");
+            _ytPreload = Fn<V_s>("omega_yt_preload");
             _playerLastError = Fn<Ip_v>("omega_player_last_error");
             _playerTogglePause = Fn<V_ip>("omega_player_toggle_pause");
             _playerSeek = Fn<I_ipl>("omega_player_seek");
@@ -175,6 +176,7 @@ namespace OmegaTube
         public static void Log(string text) => _logLine(text ?? "");
         public static IntPtr PlayerCreateYouTube(IntPtr ecoreWindow, int width, int height, string videoId, int maxHeight, string codecs, long startMs, string audioTrack) =>
             _playerCreateYouTube(ecoreWindow, width, height, videoId ?? "", maxHeight, codecs ?? "", startMs, audioTrack ?? "");
+        public static void YtPreload(string videoId) => _ytPreload(videoId ?? "");
         public static IntPtr PlayerLastError() => _playerLastError();
         public static void PlayerTogglePause(IntPtr player) => _playerTogglePause(player);
         public static int PlayerSeek(IntPtr player, long positionMs) => _playerSeek(player, positionMs);

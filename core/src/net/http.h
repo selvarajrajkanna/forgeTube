@@ -141,6 +141,7 @@ private:
     Connection conn_;
     uint64_t pos_ = 0;
     int64_t total_ = -1;
+    int chunks_opened_ = 0;
     bool sequential_ = false;
     bool open_ = false;
     bool eof_ = false;
