@@ -417,7 +417,8 @@ bool Player::start() {
             }
 
             const bool is_hdr = video_.info.has_hdr || cfg_.is_hdr;
-            if (is_hdr || video_.info.has_color || video_.info.chroma_siting_horz || video_.info.chroma_siting_vert) {
+            if (is_hdr || video_.info.has_color || video_.info.chroma_siting_horz || video_.info.chroma_siting_vert ||
+                video_.info.height >= 720) {
                 has_color_info_ = true;
                 color_info_ = esp::ESMatroskaColor{};
                 const uint32_t def_mat = is_hdr ? 9 : 1;
