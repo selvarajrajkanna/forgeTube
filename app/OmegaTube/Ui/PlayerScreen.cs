@@ -2631,7 +2631,7 @@ namespace OmegaTube.Ui
                 }
                 return;
             }
-            if (Interlocked.CompareExchange(ref btCheckInFlight, 1, 0) != 0)
+            if (System.Threading.Interlocked.CompareExchange(ref btCheckInFlight, 1, 0) != 0)
             {
                 return;
             }
@@ -2653,7 +2653,7 @@ namespace OmegaTube.Ui
                 }
                 finally
                 {
-                    Interlocked.Exchange(ref btCheckInFlight, 0);
+                    System.Threading.Interlocked.Exchange(ref btCheckInFlight, 0);
                 }
             });
         }
