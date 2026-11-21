@@ -582,16 +582,16 @@ namespace OmegaTube.Ui
             }
             if (sessionSpeed != 1.0 && !live)
             {
-                PlayerHandle h = playerHandle;
+                PlayerHandle handle = playerHandle;
                 double s = sessionSpeed;
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(1500);  // the rate applies once prepared
-                    lock (h.Gate)
+                    lock (handle.Gate)
                     {
-                        if (!h.Destroyed && h.Ptr != IntPtr.Zero)
+                        if (!handle.Destroyed && handle.Ptr != IntPtr.Zero)
                         {
-                            NativeCore.PlayerSetRate(h.Ptr, s);
+                            NativeCore.PlayerSetRate(handle.Ptr, s);
                         }
                     }
                 });

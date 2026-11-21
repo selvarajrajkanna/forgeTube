@@ -6,8 +6,19 @@ namespace OmegaTube.Ui
     // the remote only sends arrows / Return / Back, so a simple index model beats NUI's FocusManager.
     public abstract class Screen
     {
-        public View Root { get; } = new View { WidthResizePolicy = Tizen.NUI.ResizePolicyType.FillToParent,
-                                               HeightResizePolicy = Tizen.NUI.ResizePolicyType.FillToParent };
+        private sealed class ScreenRoot : View
+        {
+            public bool IsDisposed => Disposed;
+        }
+
+        private readonly ScreenRoot root = new ScreenRoot
+        {
+            WidthResizePolicy = Tizen.NUI.ResizePolicyType.FillToParent,
+            HeightResizePolicy = Tizen.NUI.ResizePolicyType.FillToParent,
+        };
+
+        public View Root => root;
+        protected bool IsDisposed => root.IsDisposed;
 
         protected App App { get; }
 

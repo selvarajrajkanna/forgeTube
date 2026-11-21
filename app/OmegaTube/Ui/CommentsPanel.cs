@@ -425,17 +425,19 @@ namespace OmegaTube.Ui
                 // Collapsed replies live in e.Children (unparented from list); dispose them too.
                 foreach (Entry child in e.Children)
                 {
-                    if (child.View != null && !child.View.Disposed)
+                    if (child.View != null)
                     {
                         list.Remove(child.View);
                         child.View.Dispose();
+                        child.View = null;
                     }
                 }
                 e.Children.Clear();
-                if (e.View != null && !e.View.Disposed)
+                if (e.View != null)
                 {
                     list.Remove(e.View);
                     e.View.Dispose();
+                    e.View = null;
                 }
             }
             entries.Clear();

@@ -386,12 +386,12 @@ namespace OmegaTube.Ui
         {
             int generation = ++suggestGeneration;
             await Task.Delay(250);
-            if (Root.Disposed || generation != suggestGeneration)
+            if (IsDisposed || generation != suggestGeneration)
             {
                 return;
             }
             List<string> list = query.Trim().Length == 0 ? new List<string>() : await YouTubeSuggest(query);
-            if (Root.Disposed || generation != suggestGeneration)
+            if (IsDisposed || generation != suggestGeneration)
             {
                 return;
             }
@@ -431,7 +431,7 @@ namespace OmegaTube.Ui
         {
             FeedRow row = results;
             await row.Load();
-            if (!Root.Disposed && row == results && row.Count > 0 && zone == Zone.Keyboard)
+            if (!IsDisposed && row == results && row.Count > 0 && zone == Zone.Keyboard)
             {
                 zone = Zone.Results;
                 UpdateFocus();
