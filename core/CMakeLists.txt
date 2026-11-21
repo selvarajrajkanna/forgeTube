@@ -56,6 +56,16 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
     # Tizen TV targets ARMv8-A with guaranteed NEON; inline NEON intrinsics directly without RTCD dispatch.
     set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
 endif()
+# GCC's 32-bit <arm_neon.h> omits vcvtaq_s32_f32 even with -march=armv8-a; restrict that branch to AArch64.
+set(OPUS_ARM_MATHOPS "${OMEGA_DEPS}/opus-1.6.1/celt/arm/mathops_arm.h")
+if(EXISTS "${OPUS_ARM_MATHOPS}")
+    file(READ "${OPUS_ARM_MATHOPS}" _opus_mathops)
+    string(REPLACE "defined(__aarch64__) || (defined(__ARM_ARCH) && __ARM_ARCH >= 8)"
+                   "defined(__aarch64__)" _opus_mathops_fixed "${_opus_mathops}")
+    if(NOT "${_opus_mathops_fixed}" STREQUAL "${_opus_mathops}")
+        file(WRITE "${OPUS_ARM_MATHOPS}" "${_opus_mathops_fixed}")
+    endif()
+endif()
 add_subdirectory(${OMEGA_DEPS}/opus-1.6.1 opus EXCLUDE_FROM_ALL)
 if(TARGET opus)
     set_target_properties(opus PROPERTIES C_VISIBILITY_PRESET hidden)
