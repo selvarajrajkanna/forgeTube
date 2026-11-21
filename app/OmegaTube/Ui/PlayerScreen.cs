@@ -92,6 +92,7 @@ namespace OmegaTube.Ui
         private readonly View chrome;          // everything at the bottom; slides up for suggestions
         private readonly TextLabel titleLabel, metaLabel, timeLabel, durationLabel, clockLabel, stateLabel, statsLabel, toast;
         private readonly TextLabel tooltip;
+        private string lastTooltipText;
         private readonly View backdrop;        // opaque while loading: the TV picture must not show through
         private ImageView poster;
         private readonly View barA, barB;      // black bars where the video does not cover the screen (4:3, 21:9)
@@ -206,9 +207,9 @@ namespace OmegaTube.Ui
             poster = new ImageView
             {
                 Size = new Size(1920, 1080),
-                ResourceUrl = "https://i.ytimg.com/vi/" + item.Id + "/hq720.jpg",
                 Opacity = 0.35f,
             };
+            Widgets.RoundedImage(poster, "https://i.ytimg.com/vi/" + item.Id + "/hq720.jpg", 0, 640, 360);
             backdrop.Add(poster);
             Root.Add(backdrop);
             barA = new View { BackgroundColor = Color.Black };
@@ -850,7 +851,7 @@ namespace OmegaTube.Ui
             }
             if (d.ChannelAvatar.Length > 0)
             {
-                channel.Image.ResourceUrl = d.ChannelAvatar;
+                Widgets.RoundedImage(channel.Image, d.ChannelAvatar, 12, 24, 24);
             }
             Chip sub = ChipOf(Social.Subscribe);
             sub.Active = d.Subscribed == 1;
@@ -989,6 +990,7 @@ namespace OmegaTube.Ui
                 {
                     Position = new Position(40, nextY),
                 };
+                playlistRow.SetShown(false);
                 chrome.Add(playlistRow);
                 nextY += Theme.RowHeight;
             }
@@ -996,6 +998,7 @@ namespace OmegaTube.Ui
             {
                 Position = new Position(40, nextY),
             };
+            suggestions.SetShown(false);
             chrome.Add(suggestions);
             if (playlistRow != null)
             {
@@ -1697,10 +1700,14 @@ namespace OmegaTube.Ui
         // Without a background the text needs an outline to stay readable on bright pictures.
         public static void StyleCaption(TextLabel label, float backgroundAlpha)
         {
-            var outline = new PropertyMap();
-            outline.Add("color", new PropertyValue(Color.Black));
-            outline.Add("width", new PropertyValue(backgroundAlpha < 0.3f ? 3f : 0f));
-            label.Outline = outline;
+            using (var outline = new PropertyMap())
+            using (var color = new PropertyValue(Color.Black))
+            using (var width = new PropertyValue(backgroundAlpha < 0.3f ? 3f : 0f))
+            {
+                outline.Add("color", color);
+                outline.Add("width", width);
+                label.Outline = outline;
+            }
         }
 
         // ---------------------------------------------------------------- SponsorBlock
@@ -1844,6 +1851,14 @@ namespace OmegaTube.Ui
                        : 0;
             slide = Widgets.Slide(chrome, 0, lift, slide, 220);
             RefreshButtons();
+            bool showRows = focus == Focus.Playlist || focus == Focus.Suggestions;
+            if (showRows)
+            {
+                playlistRow?.SetShown(true);
+                suggestions?.SetShown(true);
+                playlistRow?.RequestWork?.Invoke();
+                suggestions?.RequestWork?.Invoke();
+            }
             playlistRow?.SetFocused(focus == Focus.Playlist);
             suggestions?.SetFocused(focus == Focus.Suggestions);
             // Focused seek bar: bigger playhead and a thicker track.
@@ -1864,6 +1879,10 @@ namespace OmegaTube.Ui
             tooltip.Hide();
             playlistRow?.SetFocused(false);
             suggestions?.SetFocused(false);
+            playlistRow?.SetShown(false);
+            suggestions?.SetShown(false);
+            playlistRow?.UnloadAll();
+            suggestions?.UnloadAll();
             SyncSkipPill();
         }
 
@@ -1923,14 +1942,16 @@ namespace OmegaTube.Ui
                 Action.Stats => T("Stats for nerds"),
                 _ => "",
             };
-            if (tooltip.Text != "  " + text + "  ")
+            if (lastTooltipText != text)
             {
+                lastTooltipText = text;
                 tooltip.Text = "  " + text + "  ";
             }
             // Centred below the button, kept on screen.
             float center = b.View.PositionX + b.View.SizeWidth / 2;
             float half = Math.Min(400, text.Length * 6.0f + 26);
-            tooltip.Position = new Position(Math.Max(ProgressX + half, Math.Min(ProgressX + ProgressWidth - half, center)), ButtonsY + ButtonSize + 10);
+            tooltip.PositionX = Math.Max(ProgressX + half, Math.Min(ProgressX + ProgressWidth - half, center));
+            tooltip.PositionY = ButtonsY + ButtonSize + 10;
             tooltip.Show();
         }
 

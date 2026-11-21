@@ -21,9 +21,9 @@ public:
     JsSolver& operator=(const JsSolver&) = delete;
 
     // Slow (parses the whole ~2.5 MB player): the preprocessed player, a few MB, to keep for load().
-    static bool preprocess(const std::string& player_js, std::string& preprocessed, std::string& error);
+    static bool preprocess(std::string&& player_js, std::string& preprocessed, std::string& error);
     // Fast: instantiates the n / sig functions of a preprocessed player.
-    bool load(const std::string& preprocessed, std::string& error);
+    bool load(std::string&& preprocessed, std::string& error);
     // type: "n" or "sig".
     bool solve(const char* type, const std::string& challenge, std::string& out, std::string& error);
 

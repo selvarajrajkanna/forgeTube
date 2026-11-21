@@ -135,6 +135,7 @@ namespace OmegaTube.Ui
             {
                 UpdateFocus();
             }
+            results?.RequestWork?.Invoke();
         }
 
         public override void SetFocused(bool focused)
@@ -157,6 +158,7 @@ namespace OmegaTube.Ui
             {
                 FocusManager.Instance.ClearFocus();
             }
+            results?.UnloadAll();
         }
 
         private static bool IsSubmitKey(string key) =>

@@ -70,6 +70,120 @@ const json& child_arr(const json& j, const char* key) {
     return (it != j.end() && it->is_array()) ? *it : kEmpty;
 }
 
+bool is_skipped_innertube_key(std::string_view k) {
+    return k == "responseContext" || k == "trackingParams" || k == "clickTrackingParams" ||
+           k == "adPlacements" || k == "adSlots" || k == "playerAds" || k == "adSlotRenderer" ||
+           k == "storyboards" || k == "microformat" || k == "loggingDirectives";
+}
+
+// SAX-to-DOM builder that skips unused telemetry/ad subtrees with zero allocations.
+struct FilteringDomSax {
+    json root;
+    std::vector<json*> stack;
+    std::string pending_key;
+    bool skip_next_value = false;
+    int skip_depth = 0;
+    bool failed = false;
+
+    json* attach(json val) {
+        if (stack.empty()) {
+            root = std::move(val);
+            return &root;
+        }
+        json* parent = stack.back();
+        if (parent->is_array()) {
+            parent->push_back(std::move(val));
+            return &parent->back();
+        }
+        json& slot = (*parent)[pending_key];
+        pending_key.clear();
+        slot = std::move(val);
+        return &slot;
+    }
+
+    bool consume_scalar(json val) {
+        if (skip_depth > 0) return true;
+        if (skip_next_value) {
+            skip_next_value = false;
+            return true;
+        }
+        attach(std::move(val));
+        return true;
+    }
+
+    bool null() { return consume_scalar(nullptr); }
+    bool boolean(bool v) { return consume_scalar(v); }
+    bool number_integer(json::number_integer_t v) { return consume_scalar(v); }
+    bool number_unsigned(json::number_unsigned_t v) { return consume_scalar(v); }
+    bool number_float(json::number_float_t v, const std::string&) { return consume_scalar(v); }
+    bool string(std::string& v) { return consume_scalar(std::move(v)); }
+    bool binary(json::binary_t& v) { return consume_scalar(std::move(v)); }
+
+    bool start_object(std::size_t) {
+        if (skip_depth > 0) {
+            ++skip_depth;
+            return true;
+        }
+        if (skip_next_value) {
+            skip_next_value = false;
+            skip_depth = 1;
+            return true;
+        }
+        stack.push_back(attach(json::object()));
+        return true;
+    }
+    bool end_object() {
+        if (skip_depth > 0) {
+            --skip_depth;
+            return true;
+        }
+        if (!stack.empty()) stack.pop_back();
+        return true;
+    }
+    bool start_array(std::size_t) {
+        if (skip_depth > 0) {
+            ++skip_depth;
+            return true;
+        }
+        if (skip_next_value) {
+            skip_next_value = false;
+            skip_depth = 1;
+            return true;
+        }
+        stack.push_back(attach(json::array()));
+        return true;
+    }
+    bool end_array() {
+        if (skip_depth > 0) {
+            --skip_depth;
+            return true;
+        }
+        if (!stack.empty()) stack.pop_back();
+        return true;
+    }
+    bool key(std::string& k) {
+        if (skip_depth > 0) return true;
+        if (is_skipped_innertube_key(k)) {
+            skip_next_value = true;
+            return true;
+        }
+        pending_key = std::move(k);
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&, const json::exception&) {
+        failed = true;
+        return false;
+    }
+};
+
+json parse_innertube_json(std::string& body) {
+    FilteringDomSax sax;
+    bool ok = json::sax_parse(body, &sax);
+    std::string().swap(body);  // free raw HTTP body immediately after parsing
+    if (!ok || sax.failed) return json(json::value_t::discarded);
+    return std::move(sax.root);
+}
+
 std::string text_of(const json& j) {
     if (!j.is_object()) return "";
     auto st = j.find("simpleText");
@@ -610,7 +724,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     }
 
     record_response(res.body);
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "player: invalid json";
         return false;
@@ -729,7 +843,7 @@ bool Client::search(const std::string& query, const std::string& continuation, F
         return false;
     }
     record_response(res.body);
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "search: invalid json";
         return false;
@@ -755,7 +869,7 @@ bool Client::playlist(const std::string& video_id, const std::string& playlist_i
         error = "playlist: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     const json* panel = r.is_discarded() ? nullptr : find_key(r, "playlist");
     if (panel && panel->is_object() && panel->contains("playlist")) panel = &(*panel)["playlist"];
     if (!panel || !panel->is_object() || !panel->contains("contents")) {
@@ -810,7 +924,7 @@ bool Client::playlist_page(const std::string& playlist_id, const std::string& co
         return false;
     }
     record_response(res.body);
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "playlist: invalid json";
         return false;
@@ -832,7 +946,7 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
     if (!access_token.empty()) {
         json tv_params = continuation.empty() ? json{{"videoId", video_id}} : json{{"continuation", continuation}};
         net::Response tv = post_as_account("next", tv_params, access_token);
-        json t = tv.ok() ? json::parse(tv.body, nullptr, false) : json();
+        json t = tv.ok() ? parse_innertube_json(tv.body) : json();
         if (t.is_object()) {
             out = Feed{};
             const json* sc = nullptr;
@@ -889,7 +1003,7 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
         error = "next: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "next: invalid json";
         return false;
@@ -933,7 +1047,7 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
         error = http_error("next", res);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "next: invalid json";
         return false;
@@ -970,10 +1084,11 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
             out.like_count = text_of(child_obj(child_obj(*lb, "toggleButtonRenderer"), "defaultText"));
     }
     if (out.like_count.find_first_of("0123456789") == std::string::npos) out.like_count.clear();
+    r = json();  // release the WEB DOM before parsing the TV account-state DOM
 
     // Parse the account's like/subscribe state fetched above.
     if (!access_token.empty()) {
-        json t = tv.ok() ? json::parse(tv.body, nullptr, false) : json();
+        json t = tv.ok() ? parse_innertube_json(tv.body) : json();
         if (t.is_object()) {
             if (const json* like = find_key(t, "likeStatus"))
                 if (like->is_string()) out.like_status = like->get<std::string>();
@@ -1013,7 +1128,7 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
         return false;
     }
     record_response(res.body);
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "channel: invalid json";
         return false;
@@ -1248,12 +1363,12 @@ std::string comment_action_params(int action, bool undo, const std::string& vide
 
 // The account's vote on each comment: the TV client answers the same continuation as WEB, as commentRenderers
 // carrying it. Cosmetic: on any failure the comments simply show no vote.
-void apply_votes(const net::Response& res, CommentPage& page) {
+void apply_votes(net::Response& res, CommentPage& page) {
     if (!res.ok()) {
         OLOG("yt: comment votes: http %d", res.status);
         return;
     }
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     std::unordered_map<std::string, std::string> votes;
     std::function<void(const json&)> walk = [&](const json& j) {
         if (j.is_array()) {
@@ -1302,7 +1417,7 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
             return false;
         }
         record_response(res.body);
-        r = json::parse(res.body, nullptr, false);
+        r = parse_innertube_json(res.body);
         if (r.is_discarded()) {
             error = "comments: invalid json";
             return false;
@@ -1351,6 +1466,7 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
         error = std::string("comments: ") + e.what();
         return false;
     }
+    r = json();  // release WEB comments DOM before parsing TV votes DOM
     if (out.create_params.empty()) out.create_params = create_params(video_id, "");
     if (!access_token.empty() && !out.items.empty()) apply_votes(votes_res, out);
     OLOG("yt: comments %s%s -> %zu items, count '%s', next %s, post %s", video_id.c_str(),
@@ -1377,7 +1493,7 @@ bool Client::browse(const std::string& browse_id, const std::string& continuatio
         return false;
     }
     record_response(res.body);
-    json r = json::parse(res.body, nullptr, false);
+    json r = parse_innertube_json(res.body);
     if (r.is_discarded()) {
         error = "browse: invalid json";
         return false;
@@ -1620,27 +1736,159 @@ bool fetch_captions(const std::string& url, const std::string& translate_to, std
         error = "captions: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
-    if (!r.is_object()) {
-        error = res.body.empty() ? "captions: empty answer" : "captions: invalid json";
+    if (res.body.empty()) {
+        error = "captions: empty answer";
         return false;
     }
     out.clear();
-    // json3: events {tStartMs, dDurationMs, segs:[{utf8}]}; speech-recognition tracks split lines into
-    // word segments and add "\n"-only events, which carry nothing to show.
-    for (const json& e : child_arr(r, "events")) {
-        const json& segs = child_arr(e, "segs");
-        if (segs.empty()) continue;
-        CaptionCue cue;
-        for (const json& seg : segs)
-            if (seg.is_object()) cue.text += seg.value("utf8", "");
-        size_t first = cue.text.find_first_not_of(" \r\n\t");
-        if (first == std::string::npos) continue;
-        cue.text = cue.text.substr(first, cue.text.find_last_not_of(" \r\n\t") + 1 - first);
-        cue.start_ms = to_int(e, "tStartMs");
-        int64_t dur = to_int(e, "dDurationMs");
-        cue.end_ms = dur > 0 ? cue.start_ms + dur : 0;
-        out.push_back(std::move(cue));
+    // Zero-DOM SAX parse of json3: events[].{tStartMs, dDurationMs, segs:[{utf8}]}.
+    // Speech-recognition tracks split lines into word segments and add "\n"-only events.
+    struct CaptionsSax {
+        std::vector<CaptionCue>& out;
+        int depth = 0;
+        bool root_is_object = false;
+        bool failed = false;
+        bool next_is_events = false;
+        bool in_events = false;
+        bool in_event = false;
+        enum class EvField { None, Start, Dur, Segs } ev_field = EvField::None;
+        bool in_segs = false;
+        bool in_seg = false;
+        bool want_utf8 = false;
+        int64_t cur_start = 0;
+        int64_t cur_dur = 0;
+        bool cur_has_segs = false;
+        std::string cur_text;
+
+        void assign_ev_int(int64_t v) {
+            if (depth == 3 && in_event) {
+                if (ev_field == EvField::Start) cur_start = v;
+                else if (ev_field == EvField::Dur) cur_dur = v;
+                ev_field = EvField::None;
+            }
+        }
+        bool clear_scalar() {
+            if (depth == 1) next_is_events = false;
+            else if (depth == 3 && in_event) ev_field = EvField::None;
+            else if (depth == 5 && in_seg) want_utf8 = false;
+            return true;
+        }
+        bool null() { return clear_scalar(); }
+        bool boolean(bool) { return clear_scalar(); }
+        bool number_integer(json::number_integer_t v) {
+            assign_ev_int(static_cast<int64_t>(v));
+            return clear_scalar();
+        }
+        bool number_unsigned(json::number_unsigned_t v) {
+            assign_ev_int(static_cast<int64_t>(v));
+            return clear_scalar();
+        }
+        bool number_float(json::number_float_t v, const std::string&) {
+            assign_ev_int(static_cast<int64_t>(v));
+            return clear_scalar();
+        }
+        bool binary(json::binary_t&) { return clear_scalar(); }
+        bool string(std::string& v) {
+            if (depth == 5 && in_seg && want_utf8) {
+                cur_text += v;
+                want_utf8 = false;
+            } else if (depth == 3 && in_event && (ev_field == EvField::Start || ev_field == EvField::Dur)) {
+                int64_t n = 0;
+                auto parsed = std::from_chars(v.data(), v.data() + v.size(), n);
+                if (parsed.ec == std::errc{}) assign_ev_int(n);
+            }
+            return clear_scalar();
+        }
+        bool start_object(std::size_t) {
+            ++depth;
+            if (depth == 1) {
+                root_is_object = true;
+            } else if (depth == 2) {
+                next_is_events = false;
+            } else if (depth == 3 && in_events) {
+                in_event = true;
+                ev_field = EvField::None;
+                cur_start = 0;
+                cur_dur = 0;
+                cur_has_segs = false;
+                cur_text.clear();
+            } else if (depth == 4 && in_event) {
+                ev_field = EvField::None;
+            } else if (depth == 5 && in_segs) {
+                in_seg = true;
+                want_utf8 = false;
+            }
+            return true;
+        }
+        bool end_object() {
+            if (depth == 5 && in_seg) {
+                in_seg = false;
+                want_utf8 = false;
+            } else if (depth == 3 && in_event) {
+                if (cur_has_segs) {
+                    size_t first = cur_text.find_first_not_of(" \r\n\t");
+                    if (first != std::string::npos) {
+                        size_t last = cur_text.find_last_not_of(" \r\n\t");
+                        CaptionCue cue;
+                        cue.text = cur_text.substr(first, last + 1 - first);
+                        cue.start_ms = cur_start;
+                        cue.end_ms = cur_dur > 0 ? cur_start + cur_dur : 0;
+                        out.push_back(std::move(cue));
+                    }
+                }
+                in_event = false;
+                ev_field = EvField::None;
+            }
+            --depth;
+            return true;
+        }
+        bool start_array(std::size_t) {
+            ++depth;
+            if (depth == 2 && next_is_events) {
+                in_events = true;
+                next_is_events = false;
+            } else if (depth == 2) {
+                next_is_events = false;
+            } else if (depth == 4 && in_event && ev_field == EvField::Segs) {
+                in_segs = true;
+                cur_has_segs = true;
+                ev_field = EvField::None;
+            } else if (depth == 4 && in_event) {
+                ev_field = EvField::None;
+            }
+            return true;
+        }
+        bool end_array() {
+            if (depth == 4 && in_segs) in_segs = false;
+            else if (depth == 2 && in_events) in_events = false;
+            --depth;
+            return true;
+        }
+        bool key(std::string& k) {
+            if (depth == 1) {
+                next_is_events = (k == "events");
+            } else if (depth == 3 && in_event) {
+                ev_field = (k == "tStartMs")      ? EvField::Start
+                           : (k == "dDurationMs") ? EvField::Dur
+                           : (k == "segs")        ? EvField::Segs
+                                                  : EvField::None;
+            } else if (depth == 5 && in_seg) {
+                want_utf8 = (k == "utf8");
+            }
+            return true;
+        }
+        bool parse_error(std::size_t, const std::string&, const json::exception&) {
+            failed = true;
+            return false;
+        }
+    };
+    CaptionsSax sax{out};
+    bool ok = json::sax_parse(res.body, &sax);
+    std::string().swap(res.body);
+    if (!ok || sax.failed || !sax.root_is_object) {
+        out.clear();
+        error = "captions: invalid json";
+        return false;
     }
     // Infer end_ms for cues that omit dDurationMs (common on ASR / live-originated json3 tracks).
     for (size_t i = 0; i < out.size(); ++i) {

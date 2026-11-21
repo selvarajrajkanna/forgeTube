@@ -60,7 +60,7 @@ namespace OmegaTube.Ui
         // A slow heartbeat on the triangle while waiting.
         private void Pulse()
         {
-            if (dismissed || poll == null)
+            if (dismissed || fade != null)
             {
                 return;
             }
@@ -79,7 +79,6 @@ namespace OmegaTube.Ui
             long elapsed = Environment.TickCount64 - start;
             if (elapsed >= MaxMs || (elapsed >= MinMs && ready()))
             {
-                poll = null;
                 Close();
                 return false;
             }
@@ -113,6 +112,7 @@ namespace OmegaTube.Ui
 
         private void DisposeAnimations()
         {
+            if (poll != null) { poll.Stop(); poll.Dispose(); poll = null; }
             if (pop != null) { pop.Stop(); pop.Dispose(); pop = null; }
             if (pulse != null) { pulse.Stop(); pulse.Dispose(); pulse = null; }
             if (spin != null) { spin.Stop(); spin.Dispose(); spin = null; }

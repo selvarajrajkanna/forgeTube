@@ -18,7 +18,8 @@ add_subdirectory(${OMEGA_DEPS}/mbedtls-3.6.8 mbedtls EXCLUDE_FROM_ALL)
 foreach(_mb mbedcrypto mbedx509 mbedtls)
     if(TARGET ${_mb})
         # Thread-safe shared DRBG/entropy/PSA crypto across parallel HTTPS threads (consistent ABI via PUBLIC).
-        target_compile_definitions(${_mb} PUBLIC MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD)
+        # Client outbound requests are small (<4 KiB), saving 12 KiB per active/pooled TLS socket.
+        target_compile_definitions(${_mb} PUBLIC MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD MBEDTLS_SSL_OUT_CONTENT_LEN=4096)
     endif()
 endforeach()
 if(TARGET mbedcrypto)

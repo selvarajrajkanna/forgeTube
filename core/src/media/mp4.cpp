@@ -668,6 +668,7 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
                 }
             }
             runs_.clear();
+            if (frag_buf_.capacity() > 256 * 1024) std::vector<uint8_t>().swap(frag_buf_);
             return true;
         } else if (!from_pending) {
             if (!skip(payload)) {

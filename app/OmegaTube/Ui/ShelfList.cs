@@ -121,6 +121,15 @@ namespace OmegaTube.Ui
             UiWork.Request(pump);
         }
 
+        public void UnloadAll()
+        {
+            UiWork.Cancel(pump);
+            foreach (FeedRow r in rows)
+            {
+                r.UnloadAll();
+            }
+        }
+
         // Asks the first rows again (new recommendations), back at the top right away so they do not land
         // under the focus. Rows and cards still showing the same thing are kept. A next page on its way is
         // dropped (generation).
@@ -149,6 +158,7 @@ namespace OmegaTube.Ui
         protected override void Dispose(DisposeTypes type)
         {
             UiWork.Cancel(pump);
+            if (scroll != null) { scroll.Stop(); scroll.Dispose(); scroll = null; }
             base.Dispose(type);
         }
 
@@ -327,13 +337,18 @@ namespace OmegaTube.Ui
             return true;
         }
 
-        // The focused row at the top; rows far from it are hidden (nothing to render).
+        // The focused row at the top; rows far from it are hidden and their card textures unloaded.
         private void ScrollToFocus()
         {
             scroll = Widgets.Slide(content, 0, -RowTop(focus), scroll);
             for (int i = 0; i < rows.Count; i++)
             {
-                rows[i].SetShown(i >= focus - RowsAround && i <= focus + RowsAround + 1);
+                bool show = i >= focus - RowsAround && i <= focus + RowsAround + 1;
+                rows[i].SetShown(show);
+                if (i < focus - RowsAround - 1 || i > focus + RowsAround + 2)
+                {
+                    rows[i].UnloadAll();
+                }
             }
             if (rows.Count > 0)
             {

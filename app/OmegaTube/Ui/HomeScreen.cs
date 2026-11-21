@@ -35,11 +35,13 @@ namespace OmegaTube.Ui
         private const float EmbedScale = (1920f - EmbedX) / 1920f;
         private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
         private const int PrewarmIdleMs = 1500;   // remote untouched that long: build one entry ahead
+        private const int MaxCachedFeeds = 4;     // LRU cap on retained feed views
 
         private readonly List<Section> sections = new List<Section>();
         private readonly Dictionary<string, Screen> embedded = new Dictionary<string, Screen>();
         private readonly TextLabel header;
         private readonly Dictionary<string, View> feeds = new Dictionary<string, View>();   // FeedGrid / ShelfList
+        private readonly List<string> feedOrder = new List<string>();
         private readonly Dictionary<string, DateTime> loadedAt = new Dictionary<string, DateTime>();
         private readonly View feedHost;
         private View feedView;     // feed on display, if any
@@ -47,6 +49,7 @@ namespace OmegaTube.Ui
         private Rail rail;
         private Screen shown;      // hosted screen on display, if any
         private Timer openTimer, prewarmTimer;
+        private bool prewarmDone;
         private string signature;  // sections as last built: rebuild the rail only when they change
         private int current;       // section shown beside the rail
         private bool inRail;
@@ -76,6 +79,7 @@ namespace OmegaTube.Ui
 
         private void DropEmbedded(string key)
         {
+            embedded[key].OnDestroy();
             embedHost.Remove(embedded[key].Root);
             embedded[key].Root.Dispose();
             embedded.Remove(key);
@@ -98,6 +102,7 @@ namespace OmegaTube.Ui
                 }
                 old.SetFocused(false);
                 old.OnHide();
+                old.OnDestroy();
                 embedHost.Remove(old.Root);
                 old.Root.Dispose();
                 embedded[e.Key] = replacement;
@@ -131,6 +136,7 @@ namespace OmegaTube.Ui
                     ShowSection(current);
                 }
                 Feed?.RefreshProgress();
+                Feed?.Wake();
                 shown?.OnShow();
             }
             RefreshAvatar();
@@ -151,6 +157,14 @@ namespace OmegaTube.Ui
                 prewarmTimer.Stop();
                 prewarmTimer.Dispose();
                 prewarmTimer = null;
+            }
+            // Free GPU textures of all inactive cached tabs before another screen (e.g. 4K PlayerScreen) runs.
+            foreach (View v in feeds.Values)
+            {
+                if (v != feedView && v is IFeedView fv)
+                {
+                    fv.UnloadAll();
+                }
             }
             shown?.OnHide();
         }
@@ -265,8 +279,10 @@ namespace OmegaTube.Ui
                 v.Dispose();
             }
             feeds.Clear();
+            feedOrder.Clear();
             loadedAt.Clear();
             feedView = null;
+            prewarmDone = false;
 
             if (rail != null)
             {
@@ -382,6 +398,7 @@ namespace OmegaTube.Ui
             if (feedView != null)
             {
                 Feed.SetFocused(false);
+                Feed.UnloadAll();
                 feedView.Hide();
             }
             feedView = v;
@@ -392,11 +409,40 @@ namespace OmegaTube.Ui
             }
         }
 
+        private void TouchFeedLru(string key)
+        {
+            feedOrder.Remove(key);
+            feedOrder.Add(key);
+            while (feeds.Count > MaxCachedFeeds)
+            {
+                string evict = null;
+                foreach (string k in feedOrder)
+                {
+                    if (feeds.TryGetValue(k, out View fv) && fv != feedView)
+                    {
+                        evict = k;
+                        break;
+                    }
+                }
+                if (evict == null)
+                {
+                    break;
+                }
+                feedOrder.Remove(evict);
+                View old = feeds[evict];
+                feeds.Remove(evict);
+                loadedAt.Remove(evict);
+                feedHost.Remove(old);
+                old.Dispose();
+            }
+        }
+
         // The entry's feed view, built (hidden) and loading on first use.
         private View FeedFor(Section s)
         {
             if (feeds.TryGetValue(s.Key, out View v))
             {
+                TouchFeedLru(s.Key);
                 return v;
             }
             int shelfTop = GridTop - 20;
@@ -417,6 +463,7 @@ namespace OmegaTube.Ui
             feedHost.Add(v);
             feeds[s.Key] = v;
             loadedAt[s.Key] = DateTime.Now;
+            TouchFeedLru(s.Key);
             return v;
         }
 
@@ -432,12 +479,11 @@ namespace OmegaTube.Ui
             return screen;
         }
 
-        // While the remote rests, builds one entry not opened yet per tick: the hosted screens (whose
-        // construction is the heavy part of their first opening), then the account feeds. Search sections
-        // are left to be opened (each would cost a search request).
+        // While the remote rests, builds one embedded screen (Search/Account/Settings) per tick; feeds are
+        // loaded on demand so unvisited tabs do not consume memory or network at startup.
         private void StartPrewarm()
         {
-            if (prewarmTimer != null)
+            if (prewarmTimer != null || prewarmDone)
             {
                 return;
             }
@@ -456,15 +502,7 @@ namespace OmegaTube.Ui
                         return true;
                     }
                 }
-                foreach (Section s in sections)
-                {
-                    if (s.Embed == null && s.Loader != null && !s.Key.StartsWith("search:") && !feeds.ContainsKey(s.Key))
-                    {
-                        FeedFor(s);
-                        return true;
-                    }
-                }
-                prewarmTimer = null;
+                prewarmDone = true;
                 return false;
             });
             prewarmTimer.Start();

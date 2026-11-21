@@ -23,7 +23,7 @@ namespace OmegaTube.Ui
         private readonly ImageView info;
         private readonly View infoTopPatch;
         private readonly View progress;
-        private TextLabel title, meta;
+        private TextLabel duration, title, meta;
         private Animation zoom;
         private bool focused;
         private bool thumbLoaded;
@@ -71,6 +71,16 @@ namespace OmegaTube.Ui
             }
         }
 
+        private static (int w, int h) ThumbDecodeSize(string url, int displayW, int displayH)
+        {
+            // Never upscale 320x180 mqdefault.jpg thumbnails into larger RGBA GPU textures.
+            if (url != null && url.IndexOf("mqdefault", StringComparison.Ordinal) >= 0)
+            {
+                return (Math.Min(displayW, 320), Math.Min(displayH, 180));
+            }
+            return (displayW, displayH);
+        }
+
         // Texts, duration badge and thumbnail. Text labels are what costs (shaping on the UI thread).
         public void Fill()
         {
@@ -82,7 +92,7 @@ namespace OmegaTube.Ui
             string badge = Item.Live ? T("LIVE") : Item.Duration;
             if (!string.IsNullOrEmpty(badge))
             {
-                var duration = Widgets.Label(" " + badge + " ", Theme.SmallSize - 2, Theme.Text);
+                duration = Widgets.Label(" " + badge + " ", Theme.SmallSize - 2, Theme.Text);
                 duration.BackgroundColor = Item.Live ? Theme.Accent : new Color(0, 0, 0, 0.82f);
                 Widgets.Round(duration, 4);
                 duration.ParentOrigin = Tizen.NUI.ParentOrigin.TopLeft;
@@ -105,7 +115,41 @@ namespace OmegaTube.Ui
             if (!string.IsNullOrEmpty(Item.Thumbnail))
             {
                 thumbLoaded = true;
-                Widgets.RoundedImage(thumb, Item.Thumbnail, Theme.CardRadius, width, (int)thumb.SizeHeight);
+                (int dw, int dh) = ThumbDecodeSize(Item.Thumbnail, width, (int)thumb.SizeHeight);
+                Widgets.RoundedImage(thumb, Item.Thumbnail, Theme.CardRadius, dw, dh);
+            }
+        }
+
+        // Releases GPU thumbnail texture and rendered text surfaces while keeping the lightweight card frame.
+        public void Unload(bool force = false)
+        {
+            if (!Filled || (focused && !force))
+            {
+                return;
+            }
+            Filled = false;
+            if (thumbLoaded)
+            {
+                thumbLoaded = false;
+                thumb.ResourceUrl = "";
+            }
+            if (duration != null)
+            {
+                thumb.Remove(duration);
+                duration.Dispose();
+                duration = null;
+            }
+            if (title != null)
+            {
+                info.Remove(title);
+                title.Dispose();
+                title = null;
+            }
+            if (meta != null)
+            {
+                info.Remove(meta);
+                meta.Dispose();
+                meta = null;
             }
         }
 
@@ -120,7 +164,8 @@ namespace OmegaTube.Ui
                 if (!thumbLoaded && !string.IsNullOrEmpty(item.Thumbnail))
                 {
                     thumbLoaded = true;
-                    Widgets.RoundedImage(thumb, item.Thumbnail, Theme.CardRadius, width, (int)thumb.SizeHeight);
+                    (int dw, int dh) = ThumbDecodeSize(item.Thumbnail, width, (int)thumb.SizeHeight);
+                    Widgets.RoundedImage(thumb, item.Thumbnail, Theme.CardRadius, dw, dh);
                 }
             }
             UpdateProgress();

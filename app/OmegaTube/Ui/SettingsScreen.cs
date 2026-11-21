@@ -586,6 +586,16 @@ namespace OmegaTube.Ui
             index = j;
         }
 
+        public override void OnDestroy()
+        {
+            if (scroll != null)
+            {
+                scroll.Stop();
+                scroll.Dispose();
+                scroll = null;
+            }
+        }
+
         private void Save()
         {
             App.Config.Save();

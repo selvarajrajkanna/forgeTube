@@ -35,6 +35,11 @@ namespace OmegaTube.Ui
         {
         }
 
+        // Called right before Root.Dispose() when a screen is permanently removed.
+        public virtual void OnDestroy()
+        {
+        }
+
         public virtual void SetFocused(bool focused)
         {
         }

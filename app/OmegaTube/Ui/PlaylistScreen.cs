@@ -77,6 +77,12 @@ namespace OmegaTube.Ui
         public override void OnShow()
         {
             grid.RefreshProgress();
+            grid.Wake();
+        }
+
+        public override void OnHide()
+        {
+            grid.UnloadAll();
         }
 
         public override bool OnKey(string key)

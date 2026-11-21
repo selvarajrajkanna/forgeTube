@@ -5,12 +5,14 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <nlohmann/json.hpp>
@@ -33,7 +35,7 @@ std::atomic<int> g_default_audio_delay_ms{0};
 struct omega_player {
     omega::Player impl;
     std::unique_ptr<omega::yt::WatchReporter> history;  // signed-in YouTube playback only
-    nlohmann::json formats = {{"available", nlohmann::json::array()}};  // see omega_player_formats
+    std::string formats_json = "{\"available\":[]}";    // pre-serialized JSON for omega_player_formats
     explicit omega_player(omega::PlayerConfig cfg) : impl(std::move(cfg)) {}
     ~omega_player() { history.reset(); }  // stop pinging before the player goes away
 };
@@ -323,30 +325,31 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                     current_entry["fpsNum"] = vi.fps_num;
                     current_entry["fpsDen"] = vi.fps_den;
                 }
-                p->formats = {{"current", current_entry},  {"available", available}, {"live", info.is_live},
-                              {"client", info.client},
-                              {"container", vi.container == omega::media::Container::WebM ? "webm" : "mp4"},
-                              {"maxWidth", p->impl.tier_width()},
-                              {"maxHeight", p->impl.tier_height()},
-                              {"progressive", p->impl.progressive_scan()},
-                              {"espKnobs", omega::esp::extra_knobs_summary()},
-                              {"colorPrimaries", vi.color_primaries},
-                              {"colorTransfer", vi.transfer_characteristics},
-                              {"colorBits", vi.bits_per_channel},
-                              {"colorRange", vi.color_range},
-                              {"containerHdr", vi.has_hdr},
-                              {"title", info.title}, {"author", info.author}, {"description", info.description},
-                              {"views", info.views}, {"channelId", info.channel_id}, {"audioTrack", audio->audio_track_id},
-                              {"audioCodec", audio ? audio->codecs : ""},
-                              {"audioBitrate", audio ? audio->bitrate : 0}};
-                p->formats["audioTracks"] = audio_tracks_json(info);
+                nlohmann::json formats = {{"current", current_entry},  {"available", available}, {"live", info.is_live},
+                                          {"client", info.client},
+                                          {"container", vi.container == omega::media::Container::WebM ? "webm" : "mp4"},
+                                          {"maxWidth", p->impl.tier_width()},
+                                          {"maxHeight", p->impl.tier_height()},
+                                          {"progressive", p->impl.progressive_scan()},
+                                          {"espKnobs", omega::esp::extra_knobs_summary()},
+                                          {"colorPrimaries", vi.color_primaries},
+                                          {"colorTransfer", vi.transfer_characteristics},
+                                          {"colorBits", vi.bits_per_channel},
+                                          {"colorRange", vi.color_range},
+                                          {"containerHdr", vi.has_hdr},
+                                          {"title", info.title}, {"author", info.author}, {"description", info.description},
+                                          {"views", info.views}, {"channelId", info.channel_id}, {"audioTrack", audio->audio_track_id},
+                                          {"audioCodec", audio ? audio->codecs : ""},
+                                          {"audioBitrate", audio ? audio->bitrate : 0}};
+                formats["audioTracks"] = audio_tracks_json(info);
                 nlohmann::json captions = nlohmann::json::array(), translations = nlohmann::json::array();
                 for (const auto& c : info.captions)
                     captions.push_back({{"url", c.url}, {"lang", c.lang}, {"name", c.name}, {"auto", c.automatic},
                                         {"translatable", c.translatable}});
                 for (const auto& t : info.translations) translations.push_back({{"code", t.first}, {"name", t.second}});
-                p->formats["captions"] = captions;
-                p->formats["translations"] = translations;
+                formats["captions"] = std::move(captions);
+                formats["translations"] = std::move(translations);
+                p->formats_json = formats.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
                 return p;
             }
             if (stream_refused) break;  // not the codec: the other formats of this client would be refused too
@@ -424,6 +427,35 @@ void omega_player_destroy(omega_player* p) { delete p; }
 
 namespace {
 char* to_c_json(const nlohmann::json& j);
+char* to_c_string(const std::string& s) {
+    char* out = static_cast<char*>(malloc(s.size() + 1));
+    memcpy(out, s.c_str(), s.size() + 1);
+    return out;
+}
+void append_json_escaped(std::string& dst, std::string_view src) {
+    dst.push_back('"');
+    for (unsigned char c : src) {
+        switch (c) {
+            case '"': dst.append("\\\""); break;
+            case '\\': dst.append("\\\\"); break;
+            case '\b': dst.append("\\b"); break;
+            case '\f': dst.append("\\f"); break;
+            case '\n': dst.append("\\n"); break;
+            case '\r': dst.append("\\r"); break;
+            case '\t': dst.append("\\t"); break;
+            default:
+                if (c < 0x20) {
+                    char buf[7];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+                    dst.append(buf, 6);
+                } else {
+                    dst.push_back(static_cast<char>(c));
+                }
+                break;
+        }
+    }
+    dst.push_back('"');
+}
 }
 
 char* omega_player_last_error(void) {
@@ -432,7 +464,8 @@ char* omega_player_last_error(void) {
 }
 
 char* omega_player_formats(omega_player* p) {
-    return to_c_json(p ? p->formats : nlohmann::json{{"available", nlohmann::json::array()}});
+    static const std::string kEmpty = "{\"available\":[]}";
+    return to_c_string(p ? p->formats_json : kEmpty);
 }
 
 namespace {
@@ -693,9 +726,21 @@ char* omega_yt_captions(const char* url, const char* translate_to) {
         std::string error;
         if (!omega::yt::fetch_captions(url ? url : "", translate_to ? translate_to : "", cues, error))
             return to_c_json({{"error", error}});
-        nlohmann::json list = nlohmann::json::array();
-        for (const auto& c : cues) list.push_back({{"start", c.start_ms}, {"end", c.end_ms}, {"text", c.text}});
-        return to_c_json({{"cues", list}});
+        std::string out;
+        out.reserve(16 + cues.size() * 64);
+        out.append("{\"cues\":[");
+        for (size_t i = 0; i < cues.size(); ++i) {
+            if (i > 0) out.push_back(',');
+            out.append("{\"start\":");
+            out.append(std::to_string(cues[i].start_ms));
+            out.append(",\"end\":");
+            out.append(std::to_string(cues[i].end_ms));
+            out.append(",\"text\":");
+            append_json_escaped(out, cues[i].text);
+            out.push_back('}');
+        }
+        out.append("]}");
+        return to_c_string(out);
     });
 }
 

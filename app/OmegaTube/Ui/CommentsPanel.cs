@@ -53,10 +53,12 @@ namespace OmegaTube.Ui
             public int Indent;
             public bool RepliesOpen, RepliesLoading, Voting;
             public View View, Highlight;
+            public ImageView Avatar;
+            public bool AvatarLoaded;
             public TextLabel Text, More;
             public View Toolbar;
             public bool Expanded, Truncated;
-            public float Top, Height;
+            public float Top, Height, Y;
         }
 
         public bool EntryOpen => entry != null;
@@ -94,6 +96,8 @@ namespace OmegaTube.Ui
         private bool closed;
         private bool signedIn;
         private static readonly Color FocusedToolIconColor = new Color(0.16f, 0.16f, 0.16f, 1f);
+        private static readonly Color SortIdleBg = new Color(1, 1, 1, 0.10f);
+        private static readonly Color FormFocusBg = new Color(1, 1, 1, 0.08f);
 
         private static string myPhoto, myHandle;
 
@@ -159,6 +163,7 @@ namespace OmegaTube.Ui
             clip.Add(content);
 
             form = new View { Size = new Size(ContentWidth, 56), Position = new Position(Pad, 12) };
+            Widgets.Round(form, 12);
             content.Add(form);
             formAvatar = Widgets.Round(new ImageView { Size = new Size(AvatarSize, AvatarSize), Position = new Position(8, 10), BackgroundColor = Theme.SurfaceHigh }, AvatarSize / 2);
             form.Add(formAvatar);
@@ -276,6 +281,14 @@ namespace OmegaTube.Ui
         {
             CloseEntry();
             Hide();
+            if (entries.Count > 30)
+            {
+                generation++;
+                loading = false;
+                started = false;
+                continuation = "";
+                ClearEntries();
+            }
         }
 
         public void Close()
@@ -460,7 +473,7 @@ namespace OmegaTube.Ui
             form.Show();
             if (!string.IsNullOrEmpty(myPhoto))
             {
-                formAvatar.ResourceUrl = myPhoto;
+                Widgets.RoundedImage(formAvatar, myPhoto, AvatarSize / 2, AvatarSize, AvatarSize);
             }
             formLabel.Text = draft.Length > 0 ? draft : T("Add a comment…");
             formLabel.TextColor = draft.Length > 0 ? Theme.Text : Theme.TextDim;
@@ -471,7 +484,7 @@ namespace OmegaTube.Ui
             int x = indent;
             int w = ContentWidth - x;
             var view = new View { Size = new Size(w, 80), PositionX = x };
-            var highlight = Widgets.Rounded(new Color(1, 1, 1, 0.10f), w + 12, 80, 12);
+            var highlight = Widgets.Rounded(SortIdleBg, w + 12, 80, 12);
             highlight.Position = new Position(-6, -4);
             highlight.Hide();
             view.Add(highlight);
@@ -481,7 +494,6 @@ namespace OmegaTube.Ui
                 Size = new Size(AvatarSize, AvatarSize),
                 Position = new Position(0, 6),
                 BackgroundColor = Theme.SurfaceHigh,
-                ResourceUrl = c.Avatar,
             }, AvatarSize / 2);
             view.Add(avatar);
 
@@ -529,6 +541,7 @@ namespace OmegaTube.Ui
                 Indent = indent,
                 View = view,
                 Highlight = highlight,
+                Avatar = avatar,
                 Text = body,
                 More = more,
                 Toolbar = toolbar,
@@ -662,12 +675,40 @@ namespace OmegaTube.Ui
             float cy = 0;
             foreach (Entry e in entries)
             {
+                e.Y = cy;
                 e.View.PositionY = cy;
                 cy += e.Height;
             }
             list.SizeHeight = cy;
             total = y + cy + 24;
             content.SizeHeight = Math.Max(ViewportHeight, total);
+            UpdateViewport();
+        }
+
+        // Hides far off-screen entries and loads/unloads 36x36 comment avatars around the viewport.
+        private void UpdateViewport()
+        {
+            float viewTop = scrollY - ViewportHeight;
+            float viewBot = scrollY + 2 * ViewportHeight;
+            float avTop = scrollY - 2 * ViewportHeight;
+            float avBot = scrollY + 3 * ViewportHeight;
+            foreach (Entry e in entries)
+            {
+                float top = listTop + e.Y;
+                float bot = top + e.Height;
+                Widgets.SetVisible(e.View, bot >= viewTop && top <= viewBot);
+                bool wantAvatar = !string.IsNullOrEmpty(e.Comment.Avatar) && bot >= avTop && top <= avBot;
+                if (wantAvatar && !e.AvatarLoaded)
+                {
+                    e.AvatarLoaded = true;
+                    Widgets.RoundedImage(e.Avatar, e.Comment.Avatar, AvatarSize / 2, AvatarSize, AvatarSize);
+                }
+                else if (!wantAvatar && e.AvatarLoaded)
+                {
+                    e.AvatarLoaded = false;
+                    e.Avatar.ResourceUrl = "";
+                }
+            }
         }
 
         private float MaxScroll => Math.Max(0, total - ViewportHeight);
@@ -698,15 +739,14 @@ namespace OmegaTube.Ui
         private void Refresh()
         {
             bool sort = focusIndex == 0;
-            sortButton.BackgroundColor = sort ? Theme.CardInfoFocused : new Color(1, 1, 1, 0.10f);
+            sortButton.BackgroundColor = sort ? Theme.CardInfoFocused : SortIdleBg;
             sortLabel.TextColor = sort ? Theme.CardTextFocused : Theme.Text;
-            sortIcon.Color = sort ? new Color(0.16f, 0.16f, 0.16f, 1f) : Color.White;
+            sortIcon.Color = sort ? FocusedToolIconColor : Color.White;
 
             bool field = focusIndex == 1;
             formLine.BackgroundColor = field ? Theme.Text : Theme.TextMuted;
             formLine.SizeHeight = field ? 3 : 2;
-            form.BackgroundColor = field ? new Color(1, 1, 1, 0.08f) : Color.Transparent;
-            Widgets.Round(form, 12);
+            form.BackgroundColor = field ? FormFocusBg : Color.Transparent;
 
             for (int i = 0; i < entries.Count; i++)
             {
@@ -742,6 +782,7 @@ namespace OmegaTube.Ui
             }
             scrollY = Math.Max(0, Math.Min(MaxScroll, scrollY));
             scrollAnim = Widgets.Slide(content, 0, -scrollY, scrollAnim, 160);
+            UpdateViewport();
         }
 
         // Traps all focus inside the comments panel until Back / Escape is pressed.

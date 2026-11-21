@@ -23,6 +23,7 @@ namespace OmegaTube.Ui
         private bool onButton;
         private bool busy;
         private bool loaded;
+        private bool avatarLoaded;
 
         public ChannelScreen(App app, string channelId, string name, string avatarUrl, int subscribed) : base(app)
         {
@@ -37,7 +38,8 @@ namespace OmegaTube.Ui
             avatar = Widgets.Round(new ImageView { Size = new Size(120, 120), Position = new Position(80, 50) }, 60);
             if (!string.IsNullOrEmpty(avatarUrl))
             {
-                avatar.ResourceUrl = avatarUrl;
+                avatarLoaded = true;
+                Widgets.RoundedImage(avatar, avatarUrl, 60, 120, 120);
             }
             Root.Add(avatar);
             nameLabel = Widgets.Label(name ?? "", Theme.TitleSize + 10, Theme.Text, 1100, 64);
@@ -72,9 +74,10 @@ namespace OmegaTube.Ui
                 {
                     nameLabel.Text = page.Title;
                 }
-                if (page.Avatar.Length > 0 && string.IsNullOrEmpty(avatar.ResourceUrl))
+                if (page.Avatar.Length > 0 && !avatarLoaded)
                 {
-                    avatar.ResourceUrl = page.Avatar;
+                    avatarLoaded = true;
+                    Widgets.RoundedImage(avatar, page.Avatar, 60, 120, 120);
                 }
                 subsLabel.Text = page.Subscribers;
                 if (!loaded)
@@ -127,6 +130,12 @@ namespace OmegaTube.Ui
         public override void OnShow()
         {
             grid.RefreshProgress();
+            grid.Wake();
+        }
+
+        public override void OnHide()
+        {
+            grid.UnloadAll();
         }
 
         public override bool OnKey(string key)

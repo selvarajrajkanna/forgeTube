@@ -108,17 +108,84 @@ bool tracking_urls(const std::string& video_id, const std::string& token, std::s
         OLOG("history: tracking player http %d %s", res.status, res.error.c_str());
         return false;
     }
-    try {
-        json r = json::parse(res.body, nullptr, false);
-        if (!r.is_object() || !r.contains("playbackTracking") || !r["playbackTracking"].is_object()) return false;
-        const json& t = r["playbackTracking"];
-        if (t.contains("videostatsPlaybackUrl") && t["videostatsPlaybackUrl"].is_object())
-            playback = t["videostatsPlaybackUrl"].value("baseUrl", "");
-        if (t.contains("videostatsWatchtimeUrl") && t["videostatsWatchtimeUrl"].is_object())
-            watchtime = t["videostatsWatchtimeUrl"].value("baseUrl", "");
-    } catch (const std::exception&) {
-        return false;
-    }
+    // Zero-DOM SAX scan: only extract playbackTracking.{videostatsPlaybackUrl,videostatsWatchtimeUrl}.baseUrl.
+    struct TrackingSax {
+        std::string& playback;
+        std::string& watchtime;
+        int depth = 0;
+        bool next_is_tracking = false;
+        bool in_tracking = false;
+        int next_target = 0;  // 1 = playback, 2 = watchtime
+        int target = 0;
+        bool want_base_url = false;
+
+        bool clear_flags() {
+            if (depth == 1) next_is_tracking = false;
+            else if (depth == 2) next_target = 0;
+            else if (depth == 3) want_base_url = false;
+            return true;
+        }
+        bool null() { return clear_flags(); }
+        bool boolean(bool) { return clear_flags(); }
+        bool number_integer(json::number_integer_t) { return clear_flags(); }
+        bool number_unsigned(json::number_unsigned_t) { return clear_flags(); }
+        bool number_float(json::number_float_t, const std::string&) { return clear_flags(); }
+        bool binary(json::binary_t&) { return clear_flags(); }
+        bool string(std::string& v) {
+            if (depth == 3 && target != 0 && want_base_url) {
+                if (target == 1) playback = std::move(v);
+                else if (target == 2) watchtime = std::move(v);
+                want_base_url = false;
+                if (!playback.empty() && !watchtime.empty()) return false;  // both found: stop scanning
+            }
+            return clear_flags();
+        }
+        bool start_object(std::size_t) {
+            ++depth;
+            if (depth == 2 && next_is_tracking) {
+                in_tracking = true;
+                next_is_tracking = false;
+            } else if (depth == 3 && in_tracking && next_target != 0) {
+                target = next_target;
+                next_target = 0;
+            }
+            return true;
+        }
+        bool end_object() {
+            if (depth == 3) {
+                target = 0;
+                want_base_url = false;
+            } else if (depth == 2) {
+                in_tracking = false;
+                next_target = 0;
+            }
+            --depth;
+            return true;
+        }
+        bool start_array(std::size_t) {
+            clear_flags();
+            ++depth;
+            return true;
+        }
+        bool end_array() {
+            --depth;
+            return true;
+        }
+        bool key(std::string& k) {
+            if (depth == 1) next_is_tracking = (k == "playbackTracking");
+            else if (depth == 2 && in_tracking) {
+                next_target = (k == "videostatsPlaybackUrl")    ? 1
+                              : (k == "videostatsWatchtimeUrl") ? 2
+                                                                : 0;
+            } else if (depth == 3 && target != 0) {
+                want_base_url = (k == "baseUrl");
+            }
+            return true;
+        }
+        bool parse_error(std::size_t, const std::string&, const json::exception&) { return false; }
+    };
+    TrackingSax sax{playback, watchtime};
+    json::sax_parse(res.body, &sax);
     return !playback.empty();
 }
 

@@ -44,6 +44,7 @@ public:
     size_t read_some(void* dst, size_t n);
     std::string read_all(size_t limit = 64 * 1024 * 1024);
     void close();
+    void release_headers();
     void set_large_rcvbuf(bool v) { large_rcvbuf_ = v; }
 
     int status() const { return status_; }
@@ -124,7 +125,8 @@ protected:
 // the refresh_url hook for a fresh URL first.
 class RangeReader : public StreamSource {
 public:
-    RangeReader(std::string url, Headers headers, uint64_t chunk_size = 4 * 1024 * 1024, uint64_t start = 0);
+    RangeReader(std::string url, Headers headers, uint64_t chunk_size = 4 * 1024 * 1024, uint64_t start = 0,
+                bool large_rcvbuf = true);
 
     size_t read(void* dst, size_t n) override;
     uint64_t position() const override { return pos_; }

@@ -38,6 +38,43 @@ namespace OmegaTube.Util
         public static bool Bool(object o, string key, bool fallback = false) =>
             o is Dictionary<string, object> d && d.TryGetValue(key, out object v) && v is bool b ? b : fallback;
 
+        // Allocation-free JsonElement accessors for large / hot native JSON responses.
+        public static bool TryObj(JsonElement el, string key, out JsonElement val)
+        {
+            if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out val) && val.ValueKind == JsonValueKind.Object)
+            {
+                return true;
+            }
+            val = default;
+            return false;
+        }
+
+        public static bool TryArr(JsonElement el, string key, out JsonElement val)
+        {
+            if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out val) && val.ValueKind == JsonValueKind.Array)
+            {
+                return true;
+            }
+            val = default;
+            return false;
+        }
+
+        public static string Str(JsonElement el, string key, string fallback = "") =>
+            el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.String
+                ? (v.GetString() ?? fallback) : fallback;
+
+        public static double Num(JsonElement el, string key, double fallback = 0) =>
+            el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.Number
+                && v.TryGetDouble(out double d) ? d : fallback;
+
+        public static long Long(JsonElement el, string key, long fallback = 0) =>
+            el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.Number
+                ? (v.TryGetInt64(out long l) ? l : (v.TryGetDouble(out double d) ? (long)d : fallback)) : fallback;
+
+        public static bool Bool(JsonElement el, string key, bool fallback = false) =>
+            el.ValueKind == JsonValueKind.Object && el.TryGetProperty(key, out JsonElement v)
+                ? (v.ValueKind == JsonValueKind.True ? true : v.ValueKind == JsonValueKind.False ? false : fallback) : fallback;
+
         private static readonly object TrueBox = true;
         private static readonly object FalseBox = false;
 

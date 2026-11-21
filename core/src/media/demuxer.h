@@ -111,6 +111,7 @@ public:
     // Reads the init segment and the stream index that follows it, when present.
     virtual bool read_header() = 0;
     const std::vector<Segment>& segments() const { return segments_; }
+    std::vector<Segment> take_segments() { return std::move(segments_); }
     // Optional: emit demuxed samples in small batches while streaming a fragment instead of waiting for EOF of the fragment.
     void set_batch_cb(BatchCb cb) { batch_cb_ = std::move(cb); }
     // Appends the samples of the next fragment. Returns false on EOF or error.

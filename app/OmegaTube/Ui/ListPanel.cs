@@ -172,5 +172,16 @@ namespace OmegaTube.Ui
                 lines.PositionY = y;
             }
         }
+
+        protected override void Dispose(DisposeTypes type)
+        {
+            if (scroll != null)
+            {
+                scroll.Stop();
+                scroll.Dispose();
+                scroll = null;
+            }
+            base.Dispose(type);
+        }
     }
 }

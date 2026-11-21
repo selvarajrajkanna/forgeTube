@@ -8,6 +8,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #include "net/http.h"
 #include "util/log.h"
 
@@ -89,6 +93,9 @@ Player::~Player() {
         if (t->demux_thread.joinable()) t->demux_thread.join();
     }
     teardown_esp();
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
 }
 
 bool Player::start() {
@@ -135,7 +142,8 @@ bool Player::start() {
             init_url = t.url;
         }
         if (cfg_.live) src.http = std::make_unique<net::LiveReader>(init_url, cfg_.stream_headers, live_seq);
-        else src.http = std::make_unique<net::RangeReader>(init_url, cfg_.stream_headers);
+        else src.http = std::make_unique<net::RangeReader>(init_url, cfg_.stream_headers, 4 * 1024 * 1024, 0,
+                                                           t.type == esp::STREAM_VIDEO);
         if (!cfg_.live) {
             // Opening: fresh URLs on 403/410, but give up soon if the stream stays refused (the caller then
             // tries another player client); start_track() puts the playback hooks back.
@@ -157,7 +165,7 @@ bool Player::start() {
             return;
         }
         t.info = src.reader->track();
-        t.segments = src.reader->segments();
+        t.segments = src.reader->take_segments();
         if (cfg_.live && !src.reader->read_fragment(first_samples[&t == &video_ ? 0 : 1])) {
             results[idx].error = std::string(stream_name(t.type)) + " live: no first segment (" + src.reader->error() + ")";
             return;
@@ -215,12 +223,6 @@ bool Player::start() {
             }
         }
     }
-    std::deque<media::Sample> saved_live_samples[2];
-    if (cfg_.live && audio_candidates.size() > 1) {
-        saved_live_samples[0] = first_samples[0];
-        saved_live_samples[1] = first_samples[1];
-    }
-
     auto rewind_sources = [&]() -> bool {
         for (size_t i = 0; i < sources.size(); ++i) {
             Track& t = *sources[i].track;
@@ -228,7 +230,8 @@ bool Player::start() {
                 sources[i].http = std::make_unique<net::LiveReader>(t.url, cfg_.stream_headers, live_seq);
             } else if (!t.segments.empty()) {
                 const media::Segment& seg = t.segments.front();
-                sources[i].http = std::make_unique<net::RangeReader>(t.url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset);
+                sources[i].http = std::make_unique<net::RangeReader>(t.url, cfg_.stream_headers, 4 * 1024 * 1024,
+                                                                     seg.offset, t.type == esp::STREAM_VIDEO);
                 net::StreamSource* http = sources[i].http.get();
                 sources[i].reader = media::resume_demuxer(
                     [http, &t](void* dst, size_t n) {
@@ -239,7 +242,8 @@ bool Player::start() {
                     t.info, seg);
                 continue;
             } else {
-                sources[i].http = std::make_unique<net::RangeReader>(t.url, cfg_.stream_headers);
+                sources[i].http = std::make_unique<net::RangeReader>(t.url, cfg_.stream_headers, 4 * 1024 * 1024, 0,
+                                                                     t.type == esp::STREAM_VIDEO);
             }
             net::StreamSource* http = sources[i].http.get();
             sources[i].reader = media::open_demuxer([http, &t](void* dst, size_t n) {
@@ -249,9 +253,9 @@ bool Player::start() {
             });
             if (!sources[i].reader->read_header()) return false;
             if (cfg_.live) {
-                std::deque<media::Sample> discard;
-                if (!sources[i].reader->read_fragment(discard)) return false;
-                first_samples[&t == &video_ ? 0 : 1] = saved_live_samples[&t == &video_ ? 0 : 1];
+                auto& dst = first_samples[&t == &video_ ? 0 : 1];
+                dst.clear();
+                if (!sources[i].reader->read_fragment(dst)) return false;
             }
         }
         return true;
@@ -677,11 +681,20 @@ void Player::stop_track(Track& t) {
     t.cv.notify_all();
     if (t.feed_thread.joinable()) t.feed_thread.join();
     if (t.demux_thread.joinable()) t.demux_thread.join();
-    std::lock_guard<std::mutex> lock(t.mutex);
-    t.queue.clear();
-    t.queued_ms = 0;
-    t.queued_bytes = 0;
-    t.demux_done = false;
+    size_t freed_bytes = 0;
+    {
+        std::lock_guard<std::mutex> lock(t.mutex);
+        freed_bytes = t.queued_bytes;
+        t.queue.clear();
+        t.queued_ms = 0;
+        t.queued_bytes = 0;
+        t.demux_done = false;
+    }
+#if defined(__GLIBC__)
+    if (freed_bytes >= (4u << 20)) malloc_trim(0);
+#else
+    (void)freed_bytes;
+#endif
 }
 
 bool Player::seek(int64_t ms) {
@@ -727,7 +740,8 @@ bool Player::seek(int64_t ms) {
             std::lock_guard<std::mutex> lt(t.mutex);
             url = t.url;
         }
-        auto* http = new net::RangeReader(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset);
+        auto* http = new net::RangeReader(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset,
+                                          t.type == esp::STREAM_VIDEO);
         auto reader = media::resume_demuxer(
             [http, &t](void* dst, size_t n) {
                 size_t got = http->read(dst, n);
@@ -768,6 +782,12 @@ void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource*
             push_samples(t, batch);
             batch.clear();
         }
+        // Enforce queue backpressure mid-fragment so large 4K60 fragments never overshoot max_queue_bytes.
+        std::unique_lock<std::mutex> lock(t.mutex);
+        t.cv.wait(lock, [&] {
+            return !running_ || !t.active ||
+                   (t.queued_ms < cfg_.max_queue_ms && t.queued_bytes < cfg_.max_queue_bytes);
+        });
         return running_ && t.active;
     });
     std::deque<media::Sample> fragment;

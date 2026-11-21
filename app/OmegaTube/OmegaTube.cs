@@ -227,6 +227,7 @@ namespace OmegaTube
             }
             try
             {
+                top.OnDestroy();
                 Window.Default.Remove(top.Root);
                 top.Root.Dispose();
             }
@@ -286,6 +287,7 @@ namespace OmegaTube
             Screen top = stack[stack.Count - 1];
             stack.RemoveAt(stack.Count - 1);
             top.OnHide();
+            top.OnDestroy();
             Window.Default.Remove(top.Root);
             top.Root.Dispose();
             stack.Add(screen);

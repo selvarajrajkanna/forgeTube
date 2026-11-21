@@ -8,8 +8,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string_view>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #include "net/http.h"
 #include "util/log.h"
@@ -86,11 +89,14 @@ JSRuntime* new_runtime() {
 }
 
 std::string read_file(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) return "";
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
+    const std::streamoff sz = in.tellg();
+    if (sz <= 0) return "";
+    std::string out(static_cast<size_t>(sz), '\0');
+    in.seekg(0, std::ios::beg);
+    if (!in.read(out.data(), sz)) return "";
+    return out;
 }
 
 bool write_file(const std::string& path, const std::string& data) {
@@ -196,7 +202,7 @@ void JsSolver::reset() {
     rt_ = nullptr;
 }
 
-bool JsSolver::preprocess(const std::string& player_js, std::string& preprocessed, std::string& error) {
+bool JsSolver::preprocess(std::string&& player_js, std::string& preprocessed, std::string& error) {
     JSRuntime* rt = new_runtime();
     JSContext* ctx = rt ? JS_NewContext(rt) : nullptr;
     if (!ctx) {
@@ -211,9 +217,11 @@ bool JsSolver::preprocess(const std::string& player_js, std::string& preprocesse
               eval_cstr(ctx, omega_ejs_core, std::strlen(omega_ejs_core), "ejs-core", nullptr, error);
     if (ok) {
         set_global_string(ctx, "_player", player_js);
+        std::string().swap(player_js);  // free the ~2.5 MB C++ buffer before QuickJS builds the AST
         // A throwaway n challenge checks that the functions were really found.
         ok = eval_string(ctx,
-                         "(() => { const r = jsc({type: 'player', player: _player, output_preprocessed: true,"
+                         "(() => { const p = _player; delete globalThis._player;"
+                         " const r = jsc({type: 'player', player: p, output_preprocessed: true,"
                          " requests: [{type: 'n', challenges: ['omegatubeprobe00']}]});"
                          " const n = r.responses[0];"
                          " if (n.type !== 'result') throw new Error('n: ' + n.error);"
@@ -222,10 +230,13 @@ bool JsSolver::preprocess(const std::string& player_js, std::string& preprocesse
     }
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
     return ok;
 }
 
-bool JsSolver::load(const std::string& preprocessed, std::string& error) {
+bool JsSolver::load(std::string&& preprocessed, std::string& error) {
     reset();
     rt_ = new_runtime();
     ctx_ = rt_ ? JS_NewContext(rt_) : nullptr;
@@ -236,6 +247,7 @@ bool JsSolver::load(const std::string& preprocessed, std::string& error) {
     }
     // Same instantiation as EJS's core: the preprocessed player fills _result.n / _result.sig.
     set_global_string(ctx_, "_pre", preprocessed);
+    std::string().swap(preprocessed);  // free the ~2.5 MB C++ copy before compiling bytecode
     std::string kinds;
     if (!eval_string(ctx_,
                      "var _fns = {n: null, sig: null}; Function('_result', _pre)(_fns); delete globalThis._pre;"
@@ -249,6 +261,11 @@ bool JsSolver::load(const std::string& preprocessed, std::string& error) {
         reset();
         return false;
     }
+    // Collect temporary bootstrap IIFE / Function cyclic garbage immediately (~5-15 MiB).
+    JS_RunGC(rt_);
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
     return true;
 }
 
@@ -301,6 +318,12 @@ bool Decipher::ensure(std::string& error) {
     checked_ = Clock::now();
     if (solver_ && id == player_id_) return true;
 
+    // Release the previous QuickJS runtime before allocating a new preprocess/load heap on player rotation.
+    if (solver_) {
+        solver_.reset();
+        player_id_.clear();
+        n_cache_.clear();
+    }
     auto t0 = Clock::now();
     std::string base = cache_dir_.empty() ? "" : cache_dir_ + "/player-" + id;
     std::string preprocessed = base.empty() ? "" : read_file(base + ".js");
@@ -316,7 +339,7 @@ bool Decipher::ensure(std::string& error) {
         }
         sts = parse_sts(js.body);
         OLOG("decipher: player %s (%zu bytes, sts %d), preprocessing...", id.c_str(), js.body.size(), sts);
-        if (!JsSolver::preprocess(js.body, preprocessed, error)) return false;
+        if (!JsSolver::preprocess(std::move(js.body), preprocessed, error)) return false;
         if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts)))) {
             OLOG("decipher: could not cache %s", base.c_str());
         } else if (!cache_dir_.empty()) {
@@ -335,7 +358,7 @@ bool Decipher::ensure(std::string& error) {
         }
     }
     auto solver = std::make_unique<JsSolver>();
-    if (!solver->load(preprocessed, error)) return false;
+    if (!solver->load(std::move(preprocessed), error)) return false;
     OLOG("decipher: player %s ready in %lld ms", id.c_str(),
          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()));
     solver_ = std::move(solver);
@@ -363,7 +386,10 @@ bool Decipher::solve_cached(const char* type, const std::string& challenge, std:
         if (!solver_) error = "decipher not ready";
         return false;
     }
-    if (is_n) n_cache_[challenge] = out;
+    if (is_n) {
+        if (n_cache_.size() >= 256) n_cache_.clear();
+        n_cache_[challenge] = out;
+    }
     return true;
 }
 

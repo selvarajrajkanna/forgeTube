@@ -186,7 +186,7 @@ private:
                      const std::string& access_token = "");
     bool ensure_visitor(std::string& error);
     void record_response(const std::string& body);
-    bool capture_response_ = true;
+    bool capture_response_ = false;
     std::string last_response_;
     Refusal refusal_;
     std::vector<std::string> skipped_clients_;

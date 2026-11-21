@@ -136,6 +136,19 @@ namespace OmegaTube.Ui
             UiWork.Request(pump);
         }
 
+        public void UnloadAll()
+        {
+            UiWork.Cancel(pump);
+            foreach (Card c in cards)
+            {
+                c.Unload(force: true);
+            }
+            foreach (Card c in highlights)
+            {
+                c.Unload(force: true);
+            }
+        }
+
         // Centered sign-in / empty-state card (used when a section has no loader, e.g. signed out): an account
         // glyph in a glass circle over the message, instead of a bare line of text in the corner.
         private void ShowEmpty(string message)
@@ -503,13 +516,30 @@ namespace OmegaTube.Ui
             UpdateVisibleRows();
         }
 
-        // Shows the rows around the focus, hides the others; filling is left to UiWork.
+        // Shows the rows around the focus, hides the others; unloads far rows/highlights with 1-row hysteresis.
         private void UpdateVisibleRows()
         {
             EnsureCards();
+            int focusRow = inHighlights ? 0 : focus / Columns;
             for (int i = 0; i < cards.Count; i++)
             {
-                cards[i].SetShown(NearFocus(i / Columns));
+                int row = i / Columns;
+                cards[i].SetShown(NearFocus(row));
+                if (row < focusRow - RowsBefore - 1 || row > focusRow + RowsAfter + 1)
+                {
+                    cards[i].Unload();
+                }
+            }
+            if (highlights.Count > 0)
+            {
+                int first = Math.Max(0, hlFocus - (Columns - 1));
+                for (int i = 0; i < highlights.Count; i++)
+                {
+                    if (focusRow > RowsBefore + 1 || i < first - 2 || i > first + Columns + 2)
+                    {
+                        highlights[i].Unload();
+                    }
+                }
             }
             UiWork.Request(pump);
         }

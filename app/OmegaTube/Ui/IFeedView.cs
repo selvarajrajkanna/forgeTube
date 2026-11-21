@@ -14,6 +14,7 @@ namespace OmegaTube.Ui
         bool Move(string key);
         void RefreshProgress();
         void Refresh();
-        void Wake();   // shown again: resume filling its cards
+        void Wake();       // shown again: resume filling its cards
+        void UnloadAll();  // hidden: release card GPU textures / labels while keeping fetched data
     }
 }

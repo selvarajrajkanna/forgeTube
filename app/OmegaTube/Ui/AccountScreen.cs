@@ -311,7 +311,7 @@ namespace OmegaTube.Ui
             handleLabel.Text = info.Handle ?? "";
             if (!string.IsNullOrEmpty(info.Photo))
             {
-                avatar.ResourceUrl = info.Photo;
+                Widgets.RoundedImage(avatar, info.Photo, 95, 190, 190);
             }
         }
 
@@ -478,6 +478,12 @@ namespace OmegaTube.Ui
         {
             closed = true;
             statusSpin.Stop();
+        }
+
+        public override void OnDestroy()
+        {
+            statusSpin.Stop();
+            statusSpin.Dispose();
         }
     }
 }

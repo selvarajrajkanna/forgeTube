@@ -419,13 +419,18 @@ bool Url::parse(std::string_view url, Url& out) {
     return !out.host.empty();
 }
 
-Connection::Connection() : buf_(64 * 1024) {}
+Connection::Connection() : buf_(16 * 1024) {}
 Connection::~Connection() = default;
+
+void Connection::release_headers() {
+    Headers().swap(headers_);
+}
 
 void Connection::close() {
     transport_.reset();
     reusable_ = false;
     host_key_.clear();
+    release_headers();
     buf_pos_ = buf_len_ = 0;
 }
 
@@ -458,7 +463,8 @@ bool Connection::send(const Request& req) {
     std::string key = (url.tls ? "s:" : "p:") + url.host + ":" + url.port;
     if (!body_done_) close();  // previous body not consumed: cannot reuse
 
-    size_t est = req.method.size() + url.path.size() + url.host.size() + req.body.size() + 128;
+    const bool split_body = req.body.size() > 4096;
+    size_t est = req.method.size() + url.path.size() + url.host.size() + (split_body ? 0 : req.body.size()) + 128;
     for (const auto& h : req.headers) est += h.first.size() + h.second.size() + 4;
     std::string msg;
     msg.reserve(est);
@@ -473,7 +479,7 @@ bool Connection::send(const Request& req) {
         msg.append("Content-Length: ").append(std::to_string(req.body.size())).append("\r\n");
     }
     msg.append("Connection: keep-alive\r\n\r\n");
-    msg.append(req.body);
+    if (!split_body) msg.append(req.body);
 
     // A kept-alive socket may have been closed by the server meanwhile: retry once on a fresh one.
     for (int attempt = 0; attempt < 2; ++attempt) {
@@ -483,7 +489,11 @@ bool Connection::send(const Request& req) {
             fresh = true;
         }
         buf_pos_ = buf_len_ = 0;
-        if (transport_->send(msg.data(), msg.size()) == static_cast<long>(msg.size()) && read_headers()) return true;
+        bool sent = transport_->send(msg.data(), msg.size()) == static_cast<long>(msg.size());
+        if (sent && split_body) {
+            sent = transport_->send(req.body.data(), req.body.size()) == static_cast<long>(req.body.size());
+        }
+        if (sent && read_headers()) return true;
         close();
         if (fresh) {
             if (error_.empty()) error_ = "connection failed";
@@ -705,6 +715,7 @@ public:
 
     void put(std::unique_ptr<Connection> conn) {
         if (!conn || !conn->is_reusable()) return;
+        conn->release_headers();
         std::lock_guard lock(mu_);
         auto now = std::chrono::steady_clock::now();
         for (auto it = entries_.begin(); it != entries_.end();) {
@@ -729,31 +740,58 @@ ConnectionPool& conn_pool() {
     return pool;
 }
 
-bool decompress_body(std::string_view src, bool gzip, std::string& out, size_t limit, bool& too_large) {
+bool read_compressed(Connection& conn, bool gzip, std::string& out, size_t limit, bool& too_large) {
     too_large = false;
-    if (src.empty()) return true;
+    out.clear();
     z_stream zs{};
     if (inflateInit2(&zs, (gzip ? 16 : 0) + MAX_WBITS) != Z_OK) return false;
-    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(src.data()));
-    zs.avail_in = static_cast<uInt>(src.size());
-    out.reserve(std::min(src.size() * 4, limit));
-    char buf[16384];
+    if (conn.content_length() > 0) {
+        out.reserve(std::min<size_t>(static_cast<size_t>(conn.content_length()) * 4, limit));
+    }
+    char in_buf[16384];
+    char out_buf[16384];
     int rc = Z_OK;
+    bool got_any = false;
     while (rc == Z_OK) {
-        zs.next_out = reinterpret_cast<Bytef*>(buf);
-        zs.avail_out = sizeof(buf);
-        rc = inflate(&zs, Z_NO_FLUSH);
-        size_t have = sizeof(buf) - zs.avail_out;
-        if (out.size() + have > limit) {
-            inflateEnd(&zs);
-            out.clear();
-            too_large = true;
-            return false;
+        size_t n = conn.read_some(in_buf, sizeof(in_buf));
+        if (n == 0) {
+            if (!got_any) {
+                inflateEnd(&zs);
+                return conn.body_done() && conn.error().empty();
+            }
+            break;
         }
-        out.append(buf, have);
+        got_any = true;
+        zs.next_in = reinterpret_cast<Bytef*>(in_buf);
+        zs.avail_in = static_cast<uInt>(n);
+        while (rc == Z_OK) {
+            zs.next_out = reinterpret_cast<Bytef*>(out_buf);
+            zs.avail_out = sizeof(out_buf);
+            rc = inflate(&zs, Z_NO_FLUSH);
+            if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) break;
+            size_t have = sizeof(out_buf) - zs.avail_out;
+            if (have > 0) {
+                if (out.size() + have > limit) {
+                    inflateEnd(&zs);
+                    out.clear();
+                    too_large = true;
+                    return false;
+                }
+                out.append(out_buf, have);
+            }
+            if (rc == Z_BUF_ERROR) {
+                rc = Z_OK;
+                break;
+            }
+            if (zs.avail_in == 0 && zs.avail_out > 0) break;
+        }
     }
     inflateEnd(&zs);
-    return rc == Z_STREAM_END;
+    if (rc != Z_STREAM_END) return false;
+    while (!conn.body_done()) {
+        if (conn.read_some(in_buf, sizeof(in_buf)) == 0) break;
+    }
+    return conn.body_done() && conn.error().empty();
 }
 
 Response fetch(const Request& req, size_t max_body) {
@@ -779,45 +817,50 @@ Response fetch(const Request& req, size_t max_body) {
             return res;
         }
         res.status = conn->status();
-        res.body = conn->read_all(max_body);
-        if (res.body.size() >= max_body && !conn->body_done()) {
-            res.body.clear();
-            res.error = "response too large";
-            return res;
+        if (is_redirect(res.status) && redirects < 5) {
+            std::string location = conn->header("Location");
+            if (!location.empty()) {
+                conn->read_all(256 * 1024);
+                current.url = location;
+                if (res.status == 303) {
+                    current.method = "GET";
+                    current.body.clear();
+                }
+                continue;
+            }
         }
-        if (!is_redirect(res.status) || redirects == 5) break;
-        std::string location = conn->header("Location");
-        if (location.empty()) break;
-        current.url = location;
-        if (res.status == 303) {
-            current.method = "GET";
-            current.body.clear();
+        std::string_view encoding = conn->header_view("Content-Encoding");
+        if (iequals(encoding, "gzip") || iequals(encoding, "x-gzip") || iequals(encoding, "deflate")) {
+            bool too_large = false;
+            bool is_gzip = !iequals(encoding, "deflate");
+            if (!read_compressed(*conn, is_gzip, res.body, max_body, too_large)) {
+                res.body.clear();
+                res.error = too_large ? "response too large"
+                                      : (!conn->error().empty() ? conn->error() : "gzip decode failed");
+                if (conn->is_reusable()) conn_pool().put(std::move(conn));
+                return res;
+            }
+        } else {
+            res.body = conn->read_all(max_body);
+            if (res.body.size() >= max_body && !conn->body_done()) {
+                res.body.clear();
+                res.error = "response too large";
+                return res;
+            }
+            if (!conn->error().empty() || !conn->body_done()) {
+                res.error = conn->error().empty() ? "truncated response" : conn->error();
+                return res;
+            }
         }
-    }
-    if (!conn->error().empty() || !conn->body_done()) {
-        res.error = conn->error().empty() ? "truncated response" : conn->error();
-        return res;
-    }
-    std::string_view encoding = conn->header_view("Content-Encoding");
-    if (iequals(encoding, "gzip") || iequals(encoding, "x-gzip") || iequals(encoding, "deflate")) {
-        std::string decoded;
-        bool too_large = false;
-        bool is_gzip = !iequals(encoding, "deflate");
-        if (!decompress_body(res.body, is_gzip, decoded, max_body, too_large)) {
-            res.body.clear();
-            res.error = too_large ? "response too large" : "gzip decode failed";
-            conn_pool().put(std::move(conn));
-            return res;
-        }
-        res.body = std::move(decoded);
+        break;
     }
     conn_pool().put(std::move(conn));
     return res;
 }
 
-RangeReader::RangeReader(std::string url, Headers headers, uint64_t chunk_size, uint64_t start)
+RangeReader::RangeReader(std::string url, Headers headers, uint64_t chunk_size, uint64_t start, bool large_rcvbuf)
     : url_(std::move(url)), headers_(std::move(headers)), chunk_size_(chunk_size), pos_(start) {
-    conn_.set_large_rcvbuf(true);
+    if (large_rcvbuf) conn_.set_large_rcvbuf(true);
 }
 
 bool RangeReader::open_next() {

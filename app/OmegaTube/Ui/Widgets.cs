@@ -28,11 +28,21 @@ namespace OmegaTube.Ui
             return label;
         }
 
-        public static TextLabel Bold(TextLabel label)
+        private static readonly PropertyMap BoldStyle = CreateBoldStyle();
+
+        private static PropertyMap CreateBoldStyle()
         {
             var style = new PropertyMap();
-            style.Add("weight", new PropertyValue("bold"));
-            label.FontStyle = style;
+            using (var weight = new PropertyValue("bold"))
+            {
+                style.Add("weight", weight);
+            }
+            return style;
+        }
+
+        public static TextLabel Bold(TextLabel label)
+        {
+            label.FontStyle = BoldStyle;
             return label;
         }
 
@@ -40,7 +50,10 @@ namespace OmegaTube.Ui
         {
             if (radius > 0f)
             {
-                view.CornerRadius = new Vector4(radius, radius, radius, radius);
+                using (var r = new Vector4(radius, radius, radius, radius))
+                {
+                    view.CornerRadius = r;
+                }
             }
             return view;
         }
@@ -50,18 +63,24 @@ namespace OmegaTube.Ui
         public static void RoundedImage(ImageView iv, string url, float radius, int desiredWidth = 0, int desiredHeight = 0)
         {
             Round(iv, radius);
-            if (desiredWidth > 0 && desiredHeight > 0)
+            if (desiredWidth > 0 && desiredHeight > 0 && !string.IsNullOrEmpty(url))
             {
-                var map = new PropertyMap();
-                map.Add((int)Visual.Property.Type, new PropertyValue((int)Visual.Type.Image));
-                map.Add((int)ImageVisualProperty.URL, new PropertyValue(url));
-                map.Add((int)ImageVisualProperty.DesiredWidth, new PropertyValue(desiredWidth));
-                map.Add((int)ImageVisualProperty.DesiredHeight, new PropertyValue(desiredHeight));
-                iv.Image = map;
+                using (var map = new PropertyMap())
+                using (var typeVal = new PropertyValue((int)Visual.Type.Image))
+                using (var urlVal = new PropertyValue(url))
+                using (var wVal = new PropertyValue(desiredWidth))
+                using (var hVal = new PropertyValue(desiredHeight))
+                {
+                    map.Add((int)Visual.Property.Type, typeVal);
+                    map.Add((int)ImageVisualProperty.URL, urlVal);
+                    map.Add((int)ImageVisualProperty.DesiredWidth, wVal);
+                    map.Add((int)ImageVisualProperty.DesiredHeight, hVal);
+                    iv.Image = map;
+                }
             }
             else
             {
-                iv.ResourceUrl = url;
+                iv.ResourceUrl = url ?? "";
             }
         }
 

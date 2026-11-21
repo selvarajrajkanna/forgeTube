@@ -253,6 +253,15 @@ namespace OmegaTube.Ui
             }
         }
 
+        public void UnloadAll()
+        {
+            UiWork.Cancel(pump);
+            foreach (Card c in cards)
+            {
+                c.Unload(force: true);
+            }
+        }
+
         // Only cards near the focus are shown: far ones would sit at x coordinates the TV's GPU renders
         // unreliably (and hidden actors cost the renderer nothing). Filling them is left to UiWork.
         private void UpdateVisible()
@@ -264,16 +273,24 @@ namespace OmegaTube.Ui
             }
             for (int i = 0; i < cards.Count; i++)
             {
-                cards[i].SetShown(i >= FocusIndex - 2 && i < FocusIndex + VisibleAhead + 2);
+                bool show = i >= FocusIndex - 2 && i < FocusIndex + VisibleAhead + 2;
+                cards[i].SetShown(show);
+                if (i < FocusIndex - 4 || i > FocusIndex + VisibleAhead + 3)
+                {
+                    cards[i].Unload();
+                }
             }
-            RequestWork();
+            if (Shown)
+            {
+                RequestWork();
+            }
         }
 
         // Fills one card on screen or next to it, the focused one first, then rightwards (where the user goes),
         // then the one on the left. Returns false when there is none left to fill.
         public bool BuildNext()
         {
-            if (Disposed)
+            if (Disposed || !Shown)
             {
                 return false;
             }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading.Tasks;
 using OmegaTube.Util;
 
@@ -143,24 +144,24 @@ namespace OmegaTube.Data
     {
         public static Task<FeedPage> Search(string query, string continuation = "")
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtSearch(query, continuation ?? ""))));
+            return Task.Run(() => ParsePage(NativeCore.YtSearch(query, continuation ?? "")));
         }
 
         // The videos after videoId in a playlist / mix (page.Title: the list's name).
         public static Task<FeedPage> Playlist(string videoId, string playlistId)
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtPlaylist(videoId, playlistId))));
+            return Task.Run(() => ParsePage(NativeCore.YtPlaylist(videoId, playlistId)));
         }
 
         // A whole playlist, in order and paged (page.Title on the first page).
         public static Task<FeedPage> PlaylistPage(string playlistId, string continuation = "")
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtPlaylistPage(playlistId, continuation ?? ""))));
+            return Task.Run(() => ParsePage(NativeCore.YtPlaylistPage(playlistId, continuation ?? "")));
         }
 
         public static Task<FeedPage> Channel(string channelId, string continuation = "")
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtChannel(channelId, continuation ?? ""))));
+            return Task.Run(() => ParsePage(NativeCore.YtChannel(channelId, continuation ?? "")));
         }
 
         public static Task<VideoDetails> Details(string videoId)
@@ -189,53 +190,60 @@ namespace OmegaTube.Data
         // continuation: "" = first page, else a page / sort continuation.
         public static Task<CommentPage> Comments(string videoId, string continuation = "")
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.YtComments(videoId, continuation ?? ""));
-                var page = new CommentPage
+            return Task.Run(() => ParseNative(
+                NativeCore.YtComments(videoId, continuation ?? ""),
+                root =>
                 {
-                    Continuation = Json.Str(root, "continuation"), Count = Json.Str(root, "count"),
-                    SortTop = Json.Str(root, "sortTop"), SortNewest = Json.Str(root, "sortNewest"),
-                    CreateParams = Json.Str(root, "createParams"), Disabled = Json.Bool(root, "disabled"),
-                    Error = Json.Str(root, "error", null),
-                };
-                foreach (object o in Json.Arr(root, "items") ?? new List<object>())
-                {
-                    page.Items.Add(ToComment(o));
-                }
-                return page;
-            });
+                    var page = new CommentPage
+                    {
+                        Continuation = Json.Str(root, "continuation"), Count = Json.Str(root, "count"),
+                        SortTop = Json.Str(root, "sortTop"), SortNewest = Json.Str(root, "sortNewest"),
+                        CreateParams = Json.Str(root, "createParams"), Disabled = Json.Bool(root, "disabled"),
+                        Error = Json.Str(root, "error", null),
+                    };
+                    if (Json.TryArr(root, "items", out JsonElement items))
+                    {
+                        foreach (JsonElement o in items.EnumerateArray())
+                        {
+                            page.Items.Add(ToComment(o));
+                        }
+                    }
+                    return page;
+                },
+                err => new CommentPage { Error = err }));
         }
 
         // Returns (the created comment or null, error or null).
         public static Task<(Comment, string)> PostComment(string createParams, string text)
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.YtPostComment(createParams, text));
-                string error = Json.Str(root, "error", null);
-                object c = Json.Obj(root, "comment");
-                return (error == null && c != null ? ToComment(c) : null, error);
-            });
+            return Task.Run(() => ParseNative(
+                NativeCore.YtPostComment(createParams, text),
+                root =>
+                {
+                    string error = Json.Str(root, "error", null);
+                    return (error == null && Json.TryObj(root, "comment", out JsonElement c) ? ToComment(c) : null, error);
+                },
+                err => ((Comment)null, err)));
         }
 
         // A reply in the thread of commentId. Returns (the created reply or null, error or null).
         public static Task<(Comment, string)> PostReply(string videoId, string commentId, string text)
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.YtPostReply(videoId, commentId, text));
-                string error = Json.Str(root, "error", null);
-                object c = Json.Obj(root, "comment");
-                return (error == null && c != null ? ToComment(c) : null, error);
-            });
+            return Task.Run(() => ParseNative(
+                NativeCore.YtPostReply(videoId, commentId, text),
+                root =>
+                {
+                    string error = Json.Str(root, "error", null);
+                    return (error == null && Json.TryObj(root, "comment", out JsonElement c) ? ToComment(c) : null, error);
+                },
+                err => ((Comment)null, err)));
         }
 
         // action: like, unlike, dislike, undislike. Returns the error or null.
         public static Task<string> CommentAction(string videoId, string commentId, string action) =>
             Task.Run(() => Json.Str(Call(NativeCore.YtCommentAction(videoId, commentId, action)), "error", null));
 
-        private static Comment ToComment(object o)
+        private static Comment ToComment(JsonElement o)
         {
             return new Comment
             {
@@ -249,32 +257,71 @@ namespace OmegaTube.Data
 
         public static Task<FeedPage> Related(string videoId, string continuation = "")
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtRelated(videoId, continuation ?? ""))));
+            return Task.Run(() => ParsePage(NativeCore.YtRelated(videoId, continuation ?? "")));
         }
 
         // Signed-in feeds: FEwhat_to_watch (recommended), FEsubscriptions, FEhistory.
         public static Task<FeedPage> Browse(string browseId, string continuation = "")
         {
-            return Task.Run(() => ToPage(Call(NativeCore.YtBrowse(browseId, continuation ?? ""))));
+            return Task.Run(() => ParsePage(NativeCore.YtBrowse(browseId, continuation ?? "")));
         }
 
-        private static FeedPage ToPage(object root)
+        private static FeedPage ParsePage(IntPtr json) =>
+            ParseNative(json, ToPage, err => new FeedPage { Error = err });
+
+        private static FeedPage ToPage(JsonElement root)
         {
+            var page = new FeedPage
             {
-                var page = new FeedPage();
-                page.Error = Json.Str(root, "error", null);
-                page.Items = ToItems(root, "items");
-                page.Highlights = ToItems(root, "highlights");
-                page.Continuation = Json.Str(root, "continuation");
-                page.Title = Json.Str(root, "title");
-                page.Avatar = Json.Str(root, "avatar");
-                page.Subscribers = Json.Str(root, "subscribers");
-                foreach (object s in Json.Arr(root, "shelves") ?? new List<object>())
+                Error = Json.Str(root, "error", null),
+                Items = ToItems(root, "items"),
+                Highlights = ToItems(root, "highlights"),
+                Continuation = Json.Str(root, "continuation"),
+                Title = Json.Str(root, "title"),
+                Avatar = Json.Str(root, "avatar"),
+                Subscribers = Json.Str(root, "subscribers"),
+            };
+            if (Json.TryArr(root, "shelves", out JsonElement shelves))
+            {
+                foreach (JsonElement s in shelves.EnumerateArray())
                 {
-                    page.Shelves.Add(new Shelf { Title = Json.Str(s, "title"), Items = ToItems(s, "items"), Continuation = Json.Str(s, "continuation") });
+                    page.Shelves.Add(new Shelf
+                    {
+                        Title = Json.Str(s, "title"),
+                        Items = ToItems(s, "items"),
+                        Continuation = Json.Str(s, "continuation"),
+                    });
                 }
-                return page;
             }
+            return page;
+        }
+
+        private static List<VideoItem> ToItems(JsonElement root, string key)
+        {
+            var items = new List<VideoItem>();
+            if (!Json.TryArr(root, key, out JsonElement arr))
+            {
+                return items;
+            }
+            items.Capacity = arr.GetArrayLength();
+            foreach (JsonElement o in arr.EnumerateArray())
+            {
+                items.Add(new VideoItem
+                {
+                    Id = Json.Str(o, "id"),
+                    Title = Json.Str(o, "title"),
+                    Channel = Json.Str(o, "channel"),
+                    Duration = Json.Str(o, "duration"),
+                    Views = Json.Str(o, "views"),
+                    Published = Json.Str(o, "published"),
+                    Thumbnail = Json.Str(o, "thumbnail"),
+                    Live = Json.Bool(o, "live"),
+                    WatchedPercent = (int)Json.Long(o, "watched"),
+                    PlaylistId = Json.Str(o, "playlistId"),
+                    Kind = Json.Str(o, "kind", "video"),
+                });
+            }
+            return items;
         }
 
         // Feed items as the core's JSON (and the feed cache) writes them.
@@ -319,21 +366,27 @@ namespace OmegaTube.Data
 
         public static Task<List<SkipSegment>> SponsorSegments(string videoId)
         {
-            return Task.Run(() =>
-            {
-                var list = new List<SkipSegment>();
-                foreach (object o in Json.Arr(Call(NativeCore.SbSegments(videoId)), "segments") ?? new List<object>())
+            return Task.Run(() => ParseNative(
+                NativeCore.SbSegments(videoId),
+                root =>
                 {
-                    list.Add(new SkipSegment
+                    var list = new List<SkipSegment>();
+                    if (Json.TryArr(root, "segments", out JsonElement arr))
                     {
-                        Category = Json.Str(o, "category"),
-                        StartMs = (long)(Json.Num(o, "start") * 1000),
-                        EndMs = (long)(Json.Num(o, "end") * 1000),
-                    });
-                }
-                list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
-                return list;
-            });
+                        foreach (JsonElement o in arr.EnumerateArray())
+                        {
+                            list.Add(new SkipSegment
+                            {
+                                Category = Json.Str(o, "category"),
+                                StartMs = (long)(Json.Num(o, "start") * 1000),
+                                EndMs = (long)(Json.Num(o, "end") * 1000),
+                            });
+                        }
+                    }
+                    list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
+                    return list;
+                },
+                _ => new List<SkipSegment>()));
         }
 
         public static bool SignedIn() => Json.Bool(Call(NativeCore.AuthStatus()), "signedIn");
@@ -361,72 +414,102 @@ namespace OmegaTube.Data
         // What the player resolved (qualities, audio tracks, captions...). No network call.
         public static PlaybackInfo Playback(IntPtr player)
         {
-            object root = Call(NativeCore.PlayerFormats(player));
-            var info = new PlaybackInfo
-            {
-                Live = Json.Bool(root, "live", false),
-                Client = Json.Str(root, "client"),
-                Container = Json.Str(root, "container"),
-                EspKnobs = Json.Str(root, "espKnobs"),
-                MaxWidth = (int)Json.Num(root, "maxWidth"),
-                MaxHeight = (int)Json.Num(root, "maxHeight"),
-                Progressive = Json.Bool(root, "progressive", false),
-                ColorPrimaries = (int)Json.Num(root, "colorPrimaries"),
-                ColorTransfer = (int)Json.Num(root, "colorTransfer"),
-                ColorBits = (int)Json.Num(root, "colorBits"),
-                ColorRange = (int)Json.Num(root, "colorRange"),
-                ContainerHdr = Json.Bool(root, "containerHdr", false),
-                Title = Json.Str(root, "title"),
-                Description = Json.Str(root, "description"),
-                Views = Json.Str(root, "views"),
-                ChannelId = Json.Str(root, "channelId"),
-                AudioTrack = Json.Str(root, "audioTrack"),
-                AudioCodec = Json.Str(root, "audioCodec"),
-                AudioBitrate = (long)Json.Num(root, "audioBitrate"),
-            };
-            object cur = Json.Obj(root, "current");
-            info.Current = cur != null ? ToQuality(cur) : null;
-            foreach (object o in Json.Arr(root, "available") ?? new List<object>())
-            {
-                info.Qualities.Add(ToQuality(o));
-            }
-            foreach (object o in Json.Arr(root, "audioTracks") ?? new List<object>())
-            {
-                info.AudioTracks.Add(new AudioTrack { Id = Json.Str(o, "id"), Name = Json.Str(o, "name"), Default = Json.Bool(o, "default") });
-            }
-            foreach (object o in Json.Arr(root, "captions") ?? new List<object>())
-            {
-                info.Captions.Add(new CaptionTrack
+            return ParseNative(
+                NativeCore.PlayerFormats(player),
+                root =>
                 {
-                    Url = Json.Str(o, "url"), Lang = Json.Str(o, "lang"), Name = Json.Str(o, "name"),
-                    Auto = Json.Bool(o, "auto"), Translatable = Json.Bool(o, "translatable"),
-                });
-            }
-            foreach (object o in Json.Arr(root, "translations") ?? new List<object>())
-            {
-                info.Translations[Json.Str(o, "code")] = Json.Str(o, "name");
-            }
-            return info;
+                    var info = new PlaybackInfo
+                    {
+                        Live = Json.Bool(root, "live", false),
+                        Client = Json.Str(root, "client"),
+                        Container = Json.Str(root, "container"),
+                        EspKnobs = Json.Str(root, "espKnobs"),
+                        MaxWidth = (int)Json.Long(root, "maxWidth"),
+                        MaxHeight = (int)Json.Long(root, "maxHeight"),
+                        Progressive = Json.Bool(root, "progressive", false),
+                        ColorPrimaries = (int)Json.Long(root, "colorPrimaries"),
+                        ColorTransfer = (int)Json.Long(root, "colorTransfer"),
+                        ColorBits = (int)Json.Long(root, "colorBits"),
+                        ColorRange = (int)Json.Long(root, "colorRange"),
+                        ContainerHdr = Json.Bool(root, "containerHdr", false),
+                        Title = Json.Str(root, "title"),
+                        Description = Json.Str(root, "description"),
+                        Views = Json.Str(root, "views"),
+                        ChannelId = Json.Str(root, "channelId"),
+                        AudioTrack = Json.Str(root, "audioTrack"),
+                        AudioCodec = Json.Str(root, "audioCodec"),
+                        AudioBitrate = Json.Long(root, "audioBitrate"),
+                    };
+                    if (Json.TryObj(root, "current", out JsonElement cur))
+                    {
+                        info.Current = ToQuality(cur);
+                    }
+                    if (Json.TryArr(root, "available", out JsonElement avail))
+                    {
+                        foreach (JsonElement o in avail.EnumerateArray())
+                        {
+                            info.Qualities.Add(ToQuality(o));
+                        }
+                    }
+                    if (Json.TryArr(root, "audioTracks", out JsonElement tracks))
+                    {
+                        foreach (JsonElement o in tracks.EnumerateArray())
+                        {
+                            info.AudioTracks.Add(new AudioTrack { Id = Json.Str(o, "id"), Name = Json.Str(o, "name"), Default = Json.Bool(o, "default") });
+                        }
+                    }
+                    if (Json.TryArr(root, "captions", out JsonElement caps))
+                    {
+                        foreach (JsonElement o in caps.EnumerateArray())
+                        {
+                            info.Captions.Add(new CaptionTrack
+                            {
+                                Url = Json.Str(o, "url"), Lang = Json.Str(o, "lang"), Name = Json.Str(o, "name"),
+                                Auto = Json.Bool(o, "auto"), Translatable = Json.Bool(o, "translatable"),
+                            });
+                        }
+                    }
+                    if (Json.TryArr(root, "translations", out JsonElement trans))
+                    {
+                        foreach (JsonElement o in trans.EnumerateArray())
+                        {
+                            info.Translations[Json.Str(o, "code")] = Json.Str(o, "name");
+                        }
+                    }
+                    return info;
+                },
+                _ => new PlaybackInfo());
         }
 
         // Timed subtitle lines of a caption track, machine-translated when translateTo is set. Null on error.
         public static Task<List<CaptionCue>> Captions(string url, string translateTo = "")
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.YtCaptions(url, translateTo ?? ""));
-                if (Json.Str(root, "error", null) != null)
+            return Task.Run(() => ParseNative(
+                NativeCore.YtCaptions(url, translateTo ?? ""),
+                root =>
                 {
-                    return null;
-                }
-                var list = new List<CaptionCue>();
-                foreach (object o in Json.Arr(root, "cues") ?? new List<object>())
-                {
-                    list.Add(new CaptionCue { StartMs = (long)Json.Num(o, "start"), EndMs = (long)Json.Num(o, "end"), Text = Json.Str(o, "text") });
-                }
-                list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
-                return list;
-            });
+                    if (Json.Str(root, "error", null) != null)
+                    {
+                        return null;
+                    }
+                    var list = new List<CaptionCue>();
+                    if (Json.TryArr(root, "cues", out JsonElement cues))
+                    {
+                        list.Capacity = cues.GetArrayLength();
+                        foreach (JsonElement o in cues.EnumerateArray())
+                        {
+                            list.Add(new CaptionCue
+                            {
+                                StartMs = Json.Long(o, "start"),
+                                EndMs = Json.Long(o, "end"),
+                                Text = Json.Str(o, "text"),
+                            });
+                        }
+                    }
+                    list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
+                    return list;
+                },
+                _ => (List<CaptionCue>)null));
         }
 
         public static Task<AccountInfo> Account()
@@ -462,20 +545,37 @@ namespace OmegaTube.Data
 
         public static string ActiveAccountId() => Accounts().Find(a => a.Active)?.Id ?? "";
 
-        private static VideoQuality ToQuality(object o)
+        private static VideoQuality ToQuality(JsonElement o)
         {
             return new VideoQuality
             {
-                Width = (int)Json.Num(o, "width"),
-                Height = (int)Json.Num(o, "height"),
-                Fps = (int)Json.Num(o, "fps"),
-                FpsNum = (int)Json.Num(o, "fpsNum"),
-                FpsDen = (int)Json.Num(o, "fpsDen"),
+                Width = (int)Json.Long(o, "width"),
+                Height = (int)Json.Long(o, "height"),
+                Fps = (int)Json.Long(o, "fps"),
+                FpsNum = (int)Json.Long(o, "fpsNum"),
+                FpsDen = (int)Json.Long(o, "fpsDen"),
                 Codec = Json.Str(o, "codec"),
-                Bitrate = (long)Json.Num(o, "bitrate"),
+                Bitrate = Json.Long(o, "bitrate"),
                 Hdr = Json.Bool(o, "hdr"),
                 HdrMode = Json.Str(o, "hdr_mode")
             };
+        }
+
+        private static T ParseNative<T>(IntPtr json, Func<JsonElement, T> read, Func<string, T> onError)
+        {
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(NativeCore.Utf8(json));
+                return read(doc.RootElement);
+            }
+            catch (Exception e)
+            {
+                return onError(e.Message);
+            }
+            finally
+            {
+                NativeCore.Free(json);
+            }
         }
 
         public static object Call(IntPtr json)

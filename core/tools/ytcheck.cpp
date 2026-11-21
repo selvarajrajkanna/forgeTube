@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 3 && strcmp(argv[1], "--search") == 0) {
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Feed feed;
         std::string error;
         if (!client.search(argv[2], "", feed, error)) {
@@ -86,6 +87,7 @@ int main(int argc, char** argv) {
         std::string token = auth.signed_in() && !getenv("ANON") ? auth.access_token(error) : "";
         error.clear();
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Feed feed;
         if (!client.related(argv[2], "", token, feed, error)) {
             printf("next failed: %s\n", error.c_str());
@@ -100,6 +102,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 4 && strcmp(argv[1], "--playlist") == 0) {
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Feed feed;
         std::string title, error;
         if (!client.playlist(argv[2], argv[3], feed, title, error)) {
@@ -114,6 +117,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "--home") == 0) {
         // Home rows: first page, the next page of rows, then more items of the first row.
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Auth& auth = omega::yt::shared_auth();
         auth.init("omegatube-auth.json");
         std::string error, token = auth.access_token(error);
@@ -138,6 +142,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && strcmp(argv[1], "--playlist-page") == 0) {
         // A whole playlist page by page: --playlist-page <listId> [pages]
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         std::string title, error, cont;
         int pages = argc > 3 ? atoi(argv[3]) : 1;
         for (int p = 0; p < pages; p++) {
@@ -178,6 +183,7 @@ int main(int argc, char** argv) {
         // Saves the raw InnerTube response, to study a layout (live player response, feed shelves).
         // --dump-browse needs the token of a previous --signin (./omegatube-auth.json).
         omega::yt::Client client;
+        client.set_capture_response(true);
         std::string error;
         bool ok;
         if (argv[1][7] == 's') {
@@ -243,6 +249,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 3 && strcmp(argv[1], "--captions") == 0) {
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::VideoInfo info;
         std::string error;
         if (!client.player(argv[2], info, error)) {
@@ -274,6 +281,7 @@ int main(int argc, char** argv) {
         std::string error;
         std::string token = auth.signed_in() ? auth.access_token(error) : "";
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::VideoDetails d;
         if (!client.details(argv[2], token, d, error)) {
             printf("details failed: %s\n", error.c_str());
@@ -289,6 +297,7 @@ int main(int argc, char** argv) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
         auth.init("omegatube-auth.json");
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::CommentPage page;
         std::string error;
         std::string token = auth.signed_in() && !getenv("ANON") ? auth.access_token(error) : "";
@@ -394,6 +403,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::CommentPage page;
         if (!client.comments(argv[2], "", "", page, error) || page.create_params.empty()) {
             printf("no createCommentParams: %s\n", error.c_str());
@@ -409,6 +419,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 3 && strcmp(argv[1], "--channel") == 0) {
         omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Feed feed;
         omega::yt::ChannelInfo header;
         std::string error;
@@ -468,6 +479,7 @@ int main(int argc, char** argv) {
         }
         for (const char* id : {"FEwhat_to_watch", "FEsubscriptions"}) {
             omega::yt::Client client;
+        if (getenv("DUMP")) client.set_capture_response(true);
             omega::yt::Feed feed;
             if (!client.browse(id, "", token, feed, error)) {
                 printf("%s failed: %s\n", id, error.c_str());
