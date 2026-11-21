@@ -17,6 +17,10 @@ set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
 add_subdirectory(${OMEGA_DEPS}/mbedtls-3.6.8 mbedtls EXCLUDE_FROM_ALL)
 if(TARGET mbedcrypto)
     target_compile_options(mbedcrypto PRIVATE -O3)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
+        # Runtime-detected ARMv8-A hardware SHA-256 acceleration (falls back to C if absent).
+        target_compile_definitions(mbedcrypto PRIVATE MBEDTLS_SHA256_USE_ARMV8_A_CRYPTO_IF_PRESENT)
+    endif()
 endif()
 
 # QuickJS-ng (static, PIC): runs the yt-dlp EJS solver on YouTube's player JS (fallback client).

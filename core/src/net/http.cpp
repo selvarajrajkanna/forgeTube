@@ -312,8 +312,8 @@ public:
             error = "tls setup: " + tls_error(rc);
             return false;
         }
-        std::string key = host + ":" + port;
-        tls_sessions().apply(key, &ssl_);
+        session_key_ = host + ":" + port;
+        tls_sessions().apply(session_key_, &ssl_);
         mbedtls_ssl_set_bio(&ssl_, this, &TlsTransport::bio_send, &TlsTransport::bio_recv, nullptr);
         while ((rc = mbedtls_ssl_handshake(&ssl_)) != 0) {
             if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
@@ -326,7 +326,7 @@ public:
             }
             return false;
         }
-        tls_sessions().save(key, &ssl_);
+        tls_sessions().save(session_key_, &ssl_);
         return true;
     }
 
@@ -345,8 +345,11 @@ public:
         for (;;) {
             int rc = mbedtls_ssl_read(&ssl_, static_cast<unsigned char*>(data), n);
             if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
-            // TLS 1.3 servers send session tickets after the handshake; they are not application data.
-            if (rc == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) continue;
+            // TLS 1.3 servers send session tickets after the handshake; save them for resumption.
+            if (rc == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+                if (!session_key_.empty()) tls_sessions().save(session_key_, &ssl_);
+                continue;
+            }
             if (rc == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
             return rc;
         }
@@ -366,6 +369,7 @@ private:
 
     int fd_;
     mbedtls_ssl_context ssl_;
+    std::string session_key_;
 };
 
 }  // namespace
