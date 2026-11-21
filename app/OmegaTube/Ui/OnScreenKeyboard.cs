@@ -18,20 +18,6 @@ namespace OmegaTube.Ui
             new[] { "a", "s", "d", "f", "g", "h", "j", "k", "l", "'" },
             new[] { "z", "x", "c", "v", "b", "n", "m", ",", ".", "-" },
         };
-        private static readonly string[][] Azerty =
-        {
-            new[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            new[] { "a", "z", "e", "r", "t", "y", "u", "i", "o", "p" },
-            new[] { "q", "s", "d", "f", "g", "h", "j", "k", "l", "m" },
-            new[] { "w", "x", "c", "v", "b", "n", "é", "'", ".", "-" },
-        };
-        private static readonly string[][] QwertySpanish =
-        {
-            new[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" },
-            new[] { "q", "w", "e", "r", "t", "y", "u", "i", "o", "p" },
-            new[] { "a", "s", "d", "f", "g", "h", "j", "k", "l", "ñ" },
-            new[] { "z", "x", "c", "v", "b", "n", "m", ",", ".", "-" },
-        };
         private static readonly string[][] Symbols =
         {
             new[] { "à", "â", "ä", "á", "é", "è", "ê", "ë", "í", "î" },
@@ -47,8 +33,7 @@ namespace OmegaTube.Ui
         private bool paintedFocused;
         private bool symbolPage;
 
-        private string[][] KeyLayout => symbolPage ? Symbols
-                                   : Lang == "fr" ? Azerty : Lang == "es" ? QwertySpanish : Qwerty;
+        private string[][] KeyLayout => symbolPage ? Symbols : Qwerty;
 
         public bool IsActionRow => row == ActionRow;
         public int ActionIndex => col;

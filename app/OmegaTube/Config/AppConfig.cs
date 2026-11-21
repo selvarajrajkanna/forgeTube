@@ -111,9 +111,9 @@ namespace OmegaTube.Config
     {
         public List<HomeRow> HomeRows = new List<HomeRow>();
         public PlayerOptions Player = new PlayerOptions();
-        public string UiLanguage = "en"; // app texts (I18n): en | fr | es
-        public string Language = "en";   // InnerTube hl
-        public string Region = "US";     // InnerTube gl
+        public string UiLanguage = "en-IN"; // app texts (I18n): en-IN | en
+        public string Language = "en";      // InnerTube hl
+        public string Region = "IN";        // InnerTube gl
         public bool SponsorBlockEnabled = true;
         public Dictionary<string, SkipMode> SkipModes = new Dictionary<string, SkipMode>();
 
@@ -237,7 +237,7 @@ namespace OmegaTube.Config
             UiLanguage = Json.Str(root, "uiLanguage", UiLanguage);
             if (Array.IndexOf(I18n.Codes, UiLanguage) < 0)
             {
-                UiLanguage = "en";
+                UiLanguage = "en-IN";
             }
             I18n.Lang = UiLanguage;
             Language = Json.Str(root, "language", Language);

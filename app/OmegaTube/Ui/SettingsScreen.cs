@@ -50,7 +50,7 @@ namespace OmegaTube.Ui
         private static readonly int[] Heights = { 720, 1080, 1440, 2160 };
         private static readonly string[] CodecSets = { "av01,vp9,avc1", "vp9,av01,avc1", "avc1,vp9,av01" };
         private static readonly string[] CodecSetLabels = { "AV1 first", "VP9 first", "H.264 first" };
-        private static readonly string[] Locales = { "fr-FR", "fr-BE", "fr-CA", "fr-CH", "en-US", "en-GB", "de-DE", "es-ES", "it-IT", "cs-CZ", "ru-RU" };
+        private static readonly string[] Locales = { "en-IN", "en-US" };
 
         private readonly List<Category> categories = new List<Category>();
         private readonly List<Row> rows = new List<Row>();
@@ -344,7 +344,8 @@ namespace OmegaTube.Ui
                          () => $"{App.Config.Language}-{App.Config.Region}",
                          d =>
                          {
-                             int i = (Array.IndexOf(Locales, App.Config.Language + "-" + App.Config.Region) + d + Locales.Length) % Locales.Length;
+                             int i = Array.IndexOf(Locales, App.Config.Language + "-" + App.Config.Region);
+                             i = (Math.Max(0, i) + d + Locales.Length) % Locales.Length;
                              string[] parts = Locales[i].Split('-');
                              App.Config.Language = parts[0];
                              App.Config.Region = parts[1];
