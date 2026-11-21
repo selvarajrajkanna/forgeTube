@@ -52,10 +52,14 @@ set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(OPUS_FIXED_POINT OFF CACHE BOOL "" FORCE)
 set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
 set(OPUS_FLOAT_APPROX OFF CACHE BOOL "" FORCE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
+    # Tizen TV targets ARMv8-A with guaranteed NEON; inline NEON intrinsics directly without RTCD dispatch.
+    set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(${OMEGA_DEPS}/opus-1.5.2 opus EXCLUDE_FROM_ALL)
 if(TARGET opus)
     set_target_properties(opus PROPERTIES C_VISIBILITY_PRESET hidden)
-    target_compile_options(opus PRIVATE -O3 -w)
+    target_compile_options(opus PRIVATE -O3 -w -fno-math-errno -ffp-contract=fast)
 endif()
 
 set(FAAD_BUILD_CLI OFF CACHE BOOL "" FORCE)
@@ -63,7 +67,8 @@ set(FAAD_APPLY_DRC OFF CACHE BOOL "" FORCE)
 add_subdirectory(${OMEGA_DEPS}/faad2-2.11.4 faad2 EXCLUDE_FROM_ALL)
 if(TARGET faad)
     set_target_properties(faad PROPERTIES C_VISIBILITY_PRESET hidden)
-    target_compile_options(faad PRIVATE -O3 -w)
+    # Override FAAD2's legacy GCC -ffloat-store flag so FPU/NEON registers and hardware FMA are used directly.
+    target_compile_options(faad PRIVATE -O3 -w -fno-float-store -fno-math-errno -ffp-contract=fast)
 endif()
 
 # The EJS solver bundles (embedded as C strings).
