@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstring>
 #include <functional>
@@ -312,7 +313,7 @@ void collect_shelves(const json& j, Feed& out) {
                 if (s.contains("headerRenderer"))
                     if (const json* title = find_key(s["headerRenderer"], "title")) shelf.title = text_of(*title);
                 Feed row;
-                collect(s.value("content", json::object()), row);
+                collect(child_obj(s, "content"), row);
                 if (row.items.empty()) continue;
                 shelf.items = std::move(row.items);
                 shelf.continuation = row.continuation;
@@ -417,7 +418,7 @@ void texts_under(const json& j, const char* key, std::vector<std::string>& out) 
     if (j.is_object()) {
         for (auto it = j.begin(); it != j.end(); ++it) {
             if (it.key() == key && it.value().is_array()) {
-                for (const json& part : it.value()) out.push_back(text_of(part.value("text", json::object())));
+                for (const json& part : it.value()) out.push_back(text_of(child_obj(part, "text")));
             } else {
                 texts_under(it.value(), key, out);
             }
@@ -614,14 +615,14 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         error = "player: invalid json";
         return false;
     }
-    const json& ps = r.value("playabilityStatus", json::object());
+    const json& ps = child_obj(r, "playabilityStatus");
     std::string status = ps.value("status", "");
     if (status != "OK") {
         error = "playability " + status + ": " + ps.value("reason", "");
         refusal_ = {status, ps.value("reason", "")};
         return false;
     }
-    const json& details = r.value("videoDetails", json::object());
+    const json& details = child_obj(r, "videoDetails");
     out.id = video_id;
     out.title = details.value("title", "");
     out.author = details.value("author", "");
@@ -632,15 +633,12 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     out.views = details.value("viewCount", "");
     out.has_audio_loudness = false;
     out.audio_loudness_db = 0.0;
-    const json& pc = r.value("playerConfig", json::object());
-    if (pc.is_object()) {
-        const json& ac = pc.value("audioConfig", json::object());
-        if (ac.is_object() && ac.contains("loudnessDb") && ac["loudnessDb"].is_number()) {
-            out.has_audio_loudness = true;
-            out.audio_loudness_db = ac["loudnessDb"].get<double>();
-        }
+    const json& ac = child_obj(child_obj(r, "playerConfig"), "audioConfig");
+    if (ac.contains("loudnessDb") && ac["loudnessDb"].is_number()) {
+        out.has_audio_loudness = true;
+        out.audio_loudness_db = ac["loudnessDb"].get<double>();
     }
-    parse_captions(r.value("captions", json::object()), out);
+    parse_captions(child_obj(r, "captions"), out);
     out.formats.clear();
     out.user_agent = def.user_agent;
     size_t failed = 0;
@@ -663,6 +661,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         } else {
             if (!f.contains("url")) continue;  // ciphered formats: only through a deciphering client
             fmt.url = f.value("url", "");
+            if (fmt.url.empty()) continue;
         }
         fmt.itag = static_cast<int>(to_int(f, "itag"));
         split_mime(f.value("mimeType", ""), fmt.mime, fmt.codecs);
@@ -769,14 +768,14 @@ bool Client::playlist(const std::string& video_id, const std::string& playlist_i
     // The panel is a window of the list around the current video: keep what comes after it.
     std::vector<FeedItem> all;
     size_t after = 0;
-    for (const json& c : (*panel)["contents"]) {
-        const json& v = c.value("playlistPanelVideoRenderer", json::object());
+    for (const json& c : child_arr(*panel, "contents")) {
+        const json& v = child_obj(c, "playlistPanelVideoRenderer");
         FeedItem item;
         item.video_id = v.value("videoId", "");
         if (item.video_id.empty()) continue;  // unavailable entries
-        item.title = text_of(v.value("title", json::object()));
-        item.channel = text_of(v.value("shortBylineText", json::object()));
-        item.duration = text_of(v.value("lengthText", json::object()));
+        item.title = text_of(child_obj(v, "title"));
+        item.channel = text_of(child_obj(v, "shortBylineText"));
+        item.duration = text_of(child_obj(v, "lengthText"));
         item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
         item.playlist_id = playlist_id;
         if (v.value("selected", false) || item.video_id == video_id) after = all.size() + 1;
@@ -941,11 +940,11 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
     }
     out = VideoDetails{};
     if (const json* primary = find_key(r, "videoPrimaryInfoRenderer"))
-        out.date = text_of(primary->value("dateText", json::object()));
+        out.date = text_of(child_obj(*primary, "dateText"));
     if (const json* owner = find_key(r, "videoOwnerRenderer")) {
-        out.channel = text_of(owner->value("title", json::object()));
-        out.channel_avatar = last_thumbnail(owner->value("thumbnail", json::object()));
-        out.subscribers = text_of(owner->value("subscriberCountText", json::object()));
+        out.channel = text_of(child_obj(*owner, "title"));
+        out.channel_avatar = last_thumbnail(child_obj(*owner, "thumbnail"));
+        out.subscribers = text_of(child_obj(*owner, "subscriberCountText"));
         // The channel link moved from navigationEndpoint into the title runs: take any browseId under the owner.
         if (const json* browse = find_key(*owner, "browseId"))
             if (browse->is_string()) out.channel_id = browse->get<std::string>();
@@ -968,7 +967,7 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
         }
     } else if (const json* seg = find_key(r, "segmentedLikeDislikeButtonRenderer")) {
         if (const json* lb = find_key(*seg, "likeButton"))
-            out.like_count = text_of(lb->value("toggleButtonRenderer", json::object()).value("defaultText", json::object()));
+            out.like_count = text_of(child_obj(child_obj(*lb, "toggleButtonRenderer"), "defaultText"));
     }
     if (out.like_count.find_first_of("0123456789") == std::string::npos) out.like_count.clear();
 
@@ -1023,7 +1022,7 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
     collect(r, out);
     if (const json* meta = find_key(r, "channelMetadataRenderer")) {
         header.title = meta->value("title", "");
-        header.avatar = last_thumbnail(meta->value("avatar", json::object()));
+        header.avatar = last_thumbnail(child_obj(*meta, "avatar"));
     }
     if (const json* page = find_key(r, "pageHeaderViewModel")) {
         std::vector<std::string> parts;
@@ -1067,9 +1066,9 @@ std::string continuation_token(const json& j) {
 // New layout: the thread only holds keys, the texts are commentEntityPayload mutations of frameworkUpdates.
 Comment comment_from_entity(const json& p) {
     Comment c;
-    const json& props = p.value("properties", json::object());
-    const json& author = p.value("author", json::object());
-    const json& toolbar = p.value("toolbar", json::object());
+    const json& props = child_obj(p, "properties");
+    const json& author = child_obj(p, "author");
+    const json& toolbar = child_obj(p, "toolbar");
     c.id = props.value("commentId", "");
     c.text = string_at(props, {"content", "content"});
     c.published = props.value("publishedTime", "");
@@ -1077,7 +1076,7 @@ Comment comment_from_entity(const json& p) {
     c.avatar = author.value("avatarThumbnailUrl", "");
     c.creator = author.value("isCreator", false);
     if (c.avatar.empty())
-        if (const json* src = find_key(p.value("avatar", json::object()), "sources"))
+        if (const json* src = find_key(child_obj(p, "avatar"), "sources"))
             if (src->is_array() && !src->empty()) c.avatar = src->back().value("url", "");
     c.likes = trimmed(toolbar.value("likeCountNotliked", ""));
     if (c.likes == "0") c.likes.clear();
@@ -1091,11 +1090,11 @@ Comment comment_from_entity(const json& p) {
 Comment comment_from_renderer(const json& r) {
     Comment c;
     c.id = r.value("commentId", "");
-    c.author = text_of(r.value("authorText", json::object()));
-    c.avatar = last_thumbnail(r.value("authorThumbnail", json::object()));
-    c.text = text_of(r.value("contentText", json::object()));
-    c.published = text_of(r.value("publishedTimeText", json::object()));
-    c.likes = trimmed(text_of(r.value("voteCount", json::object())));
+    c.author = text_of(child_obj(r, "authorText"));
+    c.avatar = last_thumbnail(child_obj(r, "authorThumbnail"));
+    c.text = text_of(child_obj(r, "contentText"));
+    c.published = text_of(child_obj(r, "publishedTimeText"));
+    c.likes = trimmed(text_of(child_obj(r, "voteCount")));
     c.replies = r.contains("replyCount") ? std::to_string(r.value("replyCount", 0)) : "";
     if (c.replies == "0") c.replies.clear();
     c.creator = r.value("authorIsChannelOwner", false);
@@ -1145,8 +1144,8 @@ void parse_comments(const json& r, CommentPage& out) {
             const std::string& k = it.key();
             const json& v = it.value();
             if (k == "commentsHeaderRenderer" && v.is_object()) {
-                out.count = text_of(v.value("countText", json::object()));
-                if (out.count.empty()) out.count = text_of(v.value("commentsCount", json::object()));
+                out.count = text_of(child_obj(v, "countText"));
+                if (out.count.empty()) out.count = text_of(child_obj(v, "commentsCount"));
                 if (const json* items = find_key(v, "subMenuItems"))
                     if (items->is_array()) {
                         if (items->size() > 0) out.sort_top = continuation_token((*items)[0]);
@@ -1249,8 +1248,7 @@ std::string comment_action_params(int action, bool undo, const std::string& vide
 
 // The account's vote on each comment: the TV client answers the same continuation as WEB, as commentRenderers
 // carrying it. Cosmetic: on any failure the comments simply show no vote.
-void apply_votes(const std::string& token, const std::string& access_token, CommentPage& page) {
-    net::Response res = post_as_account("next", {{"continuation", token}}, access_token);
+void apply_votes(const net::Response& res, CommentPage& page) {
     if (!res.ok()) {
         OLOG("yt: comment votes: http %d", res.status);
         return;
@@ -1337,8 +1335,16 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
             return true;
         }
     }
+    // Fetch the account's votes (TV "next") concurrently with the WEB comments page when signed in.
+    net::Response votes_res;
+    std::thread votes_thread;
+    if (!access_token.empty()) {
+        votes_thread = std::thread([&] { votes_res = post_as_account("next", {{"continuation", token}}, access_token); });
+    }
     json r;
-    if (!next({{"continuation", token}}, r)) return false;
+    bool ok = next({{"continuation", token}}, r);
+    if (votes_thread.joinable()) votes_thread.join();
+    if (!ok) return false;
     try {
         parse_comments(r, out);
     } catch (const json::exception& e) {
@@ -1346,7 +1352,7 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
         return false;
     }
     if (out.create_params.empty()) out.create_params = create_params(video_id, "");
-    if (!access_token.empty() && !out.items.empty()) apply_votes(token, access_token, out);
+    if (!access_token.empty() && !out.items.empty()) apply_votes(votes_res, out);
     OLOG("yt: comments %s%s -> %zu items, count '%s', next %s, post %s", video_id.c_str(),
          continuation.empty() ? "" : " (continuation)", out.items.size(), out.count.c_str(),
          out.continuation.empty() ? "no" : "yes", out.create_params.empty() ? "no" : "yes");
@@ -1477,12 +1483,16 @@ std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, co
     std::vector<const Format*> out;
     out.reserve(info.formats.size());
     for (const Format& f : info.formats)
-        if (f.height <= max_height && pref(codec_of(&f)) < no_match) out.push_back(&f);
+        if (f.height > 0 && f.height <= max_height && pref(codec_of(&f)) < no_match) out.push_back(&f);
+    auto hdr_rank = [](HdrMode m) -> int {
+        if (m == HdrMode::HDR10) return 2;
+        if (m == HdrMode::HLG) return 1;
+        return 0;
+    };
     std::stable_sort(out.begin(), out.end(), [&](const Format* a, const Format* b) {
         if (a->height != b->height) return a->height > b->height;
-        bool a_hdr = (a->hdr_mode != HdrMode::None);
-        bool b_hdr = (b->hdr_mode != HdrMode::None);
-        if (a_hdr != b_hdr) return a_hdr > b_hdr;
+        int ha = hdr_rank(a->hdr_mode), hb = hdr_rank(b->hdr_mode);
+        if (ha != hb) return ha > hb;
         if (a->fps != b->fps) return a->fps > b->fps;
         bool a_prem = (a->itag == 356 || a->itag == 616);
         bool b_prem = (b->itag == 356 || b->itag == 616);
@@ -1521,26 +1531,67 @@ std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string&
         if (!info.is_live && f.mime == "audio/webm" && f.codecs == "opus") return true;
         return false;
     };
-    // The track to play: exact id, else same language ("fr" matches "fr.3" and "fr-FR.3"), else the default.
+    auto is_descriptive = [](const Format& f) {
+        const std::string& name = f.audio_track_name;
+        constexpr std::string_view needle = "descriptive";
+        if (name.size() < needle.size()) return false;
+        for (size_t i = 0; i + needle.size() <= name.size(); ++i) {
+            size_t j = 0;
+            while (j < needle.size() &&
+                   std::tolower(static_cast<unsigned char>(name[i + j])) == static_cast<unsigned char>(needle[j]))
+                ++j;
+            if (j == needle.size()) return true;
+        }
+        return false;
+    };
+    // The track to play: exact id, else same language ("fr" matches "fr.3" and "fr-FR.3", preferring default /
+    // non-descriptive tracks), else the default.
     std::string wanted;
     if (!track.empty()) {
         for (const Format& f : info.formats)
-            if (playable_audio(f) && f.audio_track_id == track) wanted = track;
-        std::string lang = track.substr(0, track.find_first_of(".-"));
-        for (const Format& f : info.formats) {
-            if (!wanted.empty() || !playable_audio(f) || f.audio_track_id.empty()) continue;
-            if (f.audio_track_id.substr(0, f.audio_track_id.find_first_of(".-")) == lang) wanted = f.audio_track_id;
+            if (playable_audio(f) && f.audio_track_id == track) {
+                wanted = track;
+                break;
+            }
+        if (wanted.empty()) {
+            std::string lang = track.substr(0, track.find_first_of(".-"));
+            int best_score = -1;
+            for (const Format& f : info.formats) {
+                if (!playable_audio(f) || f.audio_track_id.empty()) continue;
+                if (f.audio_track_id.substr(0, f.audio_track_id.find_first_of(".-")) != lang) continue;
+                int score = (is_descriptive(f) ? 0 : 2) + (f.audio_default ? 1 : 0);
+                if (score > best_score) {
+                    best_score = score;
+                    wanted = f.audio_track_id;
+                }
+            }
         }
     }
-    if (wanted.empty())
-        for (const Format& f : info.formats)
-            if (playable_audio(f) && f.audio_default) wanted = f.audio_track_id;
+    if (wanted.empty()) {
+        int best_score = -1;
+        for (const Format& f : info.formats) {
+            if (!playable_audio(f) || !f.audio_default) continue;
+            int score = is_descriptive(f) ? 0 : 1;
+            if (score > best_score) {
+                best_score = score;
+                wanted = f.audio_track_id;
+            }
+        }
+    }
     std::vector<const Format*> out;
     for (const Format& f : info.formats) {
         if (!playable_audio(f) || (!wanted.empty() && f.audio_track_id != wanted)) continue;
         out.push_back(&f);
     }
-    std::stable_sort(out.begin(), out.end(), [](const Format* a, const Format* b) {
+    // Weight Opus ~1.35x AAC: 128-160k Opus (itag 251) beats 128k AAC (140), while 256k Premium AAC (141) beats
+    // 128-160k Opus and 128k AAC beats low-bitrate 48-64k Opus (249/250).
+    auto effective_audio_bitrate = [](const Format* f) -> int64_t {
+        int64_t weight = (f->codecs == "opus") ? 135 : 100;
+        return (f->bitrate * weight) / 100;
+    };
+    std::stable_sort(out.begin(), out.end(), [&](const Format* a, const Format* b) {
+        int64_t ea = effective_audio_bitrate(a), eb = effective_audio_bitrate(b);
+        if (ea != eb) return ea > eb;
         bool a_opus = (a->codecs == "opus");
         bool b_opus = (b->codecs == "opus");
         if (a_opus != b_opus) return a_opus > b_opus;
@@ -1557,7 +1608,11 @@ const Format* pick_audio(const VideoInfo& info, const std::string& track) {
 bool fetch_captions(const std::string& url, const std::string& translate_to, std::vector<CaptionCue>& out,
                     std::string& error) {
     net::Request req;
-    req.url = drop_param(drop_param(url, "fmt"), "tlang") + "&fmt=json3";
+    std::string base = drop_param(drop_param(url, "fmt"), "tlang");
+    if (base.find('?') == std::string::npos) base += "?fmt=json3";
+    else if (base.back() == '?' || base.back() == '&') base += "fmt=json3";
+    else base += "&fmt=json3";
+    req.url = std::move(base);
     if (!translate_to.empty()) req.url += "&tlang=" + translate_to;
     req.headers = {{"User-Agent", cfg::str({"innertube", "search", "userAgent"})}};
     net::Response res = net::fetch(req);
@@ -1573,16 +1628,28 @@ bool fetch_captions(const std::string& url, const std::string& translate_to, std
     out.clear();
     // json3: events {tStartMs, dDurationMs, segs:[{utf8}]}; speech-recognition tracks split lines into
     // word segments and add "\n"-only events, which carry nothing to show.
-    for (const json& e : r.value("events", json::array())) {
-        if (!e.contains("segs")) continue;
+    for (const json& e : child_arr(r, "events")) {
+        const json& segs = child_arr(e, "segs");
+        if (segs.empty()) continue;
         CaptionCue cue;
-        for (const json& seg : e["segs"]) cue.text += seg.value("utf8", "");
-        size_t first = cue.text.find_first_not_of(" \n");
+        for (const json& seg : segs)
+            if (seg.is_object()) cue.text += seg.value("utf8", "");
+        size_t first = cue.text.find_first_not_of(" \r\n\t");
         if (first == std::string::npos) continue;
-        cue.text = cue.text.substr(first, cue.text.find_last_not_of(" \n") + 1 - first);
+        cue.text = cue.text.substr(first, cue.text.find_last_not_of(" \r\n\t") + 1 - first);
         cue.start_ms = to_int(e, "tStartMs");
-        cue.end_ms = cue.start_ms + to_int(e, "dDurationMs");
+        int64_t dur = to_int(e, "dDurationMs");
+        cue.end_ms = dur > 0 ? cue.start_ms + dur : 0;
         out.push_back(std::move(cue));
+    }
+    // Infer end_ms for cues that omit dDurationMs (common on ASR / live-originated json3 tracks).
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (out[i].end_ms > out[i].start_ms) continue;
+        if (i + 1 < out.size() && out[i + 1].start_ms > out[i].start_ms) {
+            out[i].end_ms = std::min(out[i + 1].start_ms, out[i].start_ms + int64_t{5000});
+        } else {
+            out[i].end_ms = out[i].start_ms + 3000;
+        }
     }
     OLOG("yt: captions %s -> %zu cues", translate_to.empty() ? "" : ("-> " + translate_to).c_str(), out.size());
     return true;
@@ -1628,7 +1695,7 @@ bool create_comment_request(const char* endpoint, const json& body, const std::s
     if (r.is_object()) {
         try {
             parse_comments(r, page);
-            status = r.value("actionResult", json::object()).value("status", "");
+            status = child_obj(r, "actionResult").value("status", "");
         } catch (const json::exception& e) {
             OLOG("yt: %s answer: %s", endpoint, e.what());
         }
@@ -1728,9 +1795,9 @@ bool account_info(const std::string& access_token, AccountInfo& out, std::string
         error = "accounts_list: no account";
         return false;
     }
-    out.name = text_of(item->value("accountName", json::object()));
-    out.handle = text_of(item->value("channelHandle", json::object()));
-    out.photo = last_thumbnail(item->value("accountPhoto", json::object()));
+    out.name = text_of(child_obj(*item, "accountName"));
+    out.handle = text_of(child_obj(*item, "channelHandle"));
+    out.photo = last_thumbnail(child_obj(*item, "accountPhoto"));
     if (out.photo.compare(0, 2, "//") == 0) out.photo = "https:" + out.photo;
     return true;
 }
