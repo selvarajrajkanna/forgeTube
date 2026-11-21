@@ -3,6 +3,10 @@
 #include <opus.h>
 #include <neaacdec.h>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -24,9 +28,27 @@ constexpr int kTargetChannels = 2;
 constexpr int kFrameSamples = 960;        // 20 ms exact at 48 kHz
 constexpr int kHalfTaps = 80;             // 160-tap Kaiser sinc (~125 dB stopband, flat to 20 kHz)
 constexpr int kTaps = kHalfTaps * 2;
+static_assert(kTaps % 8 == 0, "kTaps must be a multiple of 8 for 2x4-wide NEON MAC");
 constexpr double kKaiserBeta = 12.6;
 constexpr double kSincCutoff = 0.479;
 constexpr double kPi = 3.14159265358979323846;
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+inline float32x4_t neon_fma(float32x4_t acc, float32x4_t a, float32x4_t b) {
+#if defined(__ARM_FEATURE_FMA)
+    return vfmaq_f32(acc, a, b);
+#else
+    return vmlaq_f32(acc, a, b);
+#endif
+}
+
+// 32-bit ARMv8 + AArch64 compatible horizontal sum (avoids AArch64-only vaddvq_f32).
+inline float neon_hsum(float32x4_t v) {
+    float32x2_t pair = vadd_f32(vget_low_f32(v), vget_high_f32(v));
+    pair = vpadd_f32(pair, pair);
+    return vget_lane_f32(pair, 0);
+}
+#endif
 
 double bessel_i0(double x) {
     double sum = 1.0;
@@ -57,8 +79,9 @@ double guard_peak(double v) {
     return v < 0.0 ? -shaped : shaped;
 }
 
-// Double-precision stereo polyphase Kaiser-windowed sinc resampler targeting 48 kHz.
-// When source rate is already 48 kHz, bypasses completely with zero filtering or phase shift.
+// Stereo polyphase Kaiser-windowed sinc resampler targeting 48 kHz.
+// Kernel is designed in double precision (~125 dB stopband) and convolved in float32 (NEON-accelerated
+// on ARMv8, ~136 dB MAC floor vs 144 dB float32 decoder output). Bypasses completely at 48 kHz.
 class SincResampler {
 public:
     void configure(int src_rate) {
@@ -86,13 +109,18 @@ public:
     void reset() {
         phase_num_ = 0;
         phase_pos_ = 0.0;
-        in_buf_.assign(static_cast<size_t>(kHalfTaps - 1) * kTargetChannels, 0.0);
+        if (bypass_) {
+            in_buf_.clear();
+            return;
+        }
+        in_buf_.assign(static_cast<size_t>(kHalfTaps - 1) * kTargetChannels, 0.0f);
     }
 
     int source_rate() const { return src_rate_; }
+    bool configured() const { return src_rate_ > 0; }
     bool active() const { return !bypass_; }
 
-    void process(const double* stereo_in, size_t in_frames, bool emit, std::vector<double>& out) {
+    void process(const float* stereo_in, size_t in_frames, bool emit, std::vector<float>& out) {
         if (in_frames == 0) return;
         if (bypass_) {
             if (emit) out.insert(out.end(), stereo_in, stereo_in + in_frames * kTargetChannels);
@@ -102,9 +130,9 @@ public:
         run_available(emit, out);
     }
 
-    void flush(std::vector<double>& out) {
+    void flush(std::vector<float>& out) {
         if (bypass_ || in_buf_.empty()) return;
-        in_buf_.insert(in_buf_.end(), static_cast<size_t>(kHalfTaps) * kTargetChannels, 0.0);
+        in_buf_.insert(in_buf_.end(), static_cast<size_t>(kHalfTaps) * kTargetChannels, 0.0f);
         run_available(true, out);
     }
 
@@ -113,12 +141,14 @@ private:
         const double cutoff = std::min(kSincCutoff, kSincCutoff * static_cast<double>(kTargetRate) / src_rate_);
         const double i0_beta = bessel_i0(kKaiserBeta);
         const size_t num_rows = rational_ ? up_ : (up_ + 1);
-        coeffs_.assign(num_rows * kTaps, 0.0);
+        coeffs_.assign(num_rows * kTaps, 0.0f);
+        std::array<double, kTaps> tmp{};
 
         for (size_t p = 0; p < num_rows; ++p) {
             const double frac = static_cast<double>(p) / static_cast<double>(up_);
-            double* row = &coeffs_[p * kTaps];
+            float* row = &coeffs_[p * kTaps];
             double norm = 0.0;
+            tmp.fill(0.0);
             for (int k = 0; k < kTaps; ++k) {
                 const int n = k - (kHalfTaps - 1);
                 const double d = frac - static_cast<double>(n);
@@ -129,17 +159,17 @@ private:
                                         ? (2.0 * cutoff)
                                         : (std::sin(2.0 * kPi * cutoff * d) / (kPi * d));
                 const double h = sinc * w;
-                row[k] = h;
+                tmp[k] = h;
                 norm += h;
             }
             if (norm > 0.0) {
                 const double inv = 1.0 / norm;
-                for (int k = 0; k < kTaps; ++k) row[k] *= inv;
+                for (int k = 0; k < kTaps; ++k) row[k] = static_cast<float>(tmp[k] * inv);
             }
         }
     }
 
-    void run_available(bool emit, std::vector<double>& out) {
+    void run_available(bool emit, std::vector<float>& out) {
         const size_t total_frames = in_buf_.size() / kTargetChannels;
         if (total_frames < static_cast<size_t>(kTaps)) return;
         if (emit) {
@@ -152,15 +182,56 @@ private:
         size_t consumed = 0;
         while (consumed + static_cast<size_t>(kTaps) <= total_frames) {
             if (emit) {
-                // Dual accumulator pairs break the 4-cycle FMA latency chain on in-order ARMv8 cores.
-                double acc_l0 = 0.0, acc_l1 = 0.0;
-                double acc_r0 = 0.0, acc_r1 = 0.0;
-                const double* __restrict x = &in_buf_[consumed * kTargetChannels];
+                const float* __restrict x = &in_buf_[consumed * kTargetChannels];
+                float out_l = 0.0f;
+                float out_r = 0.0f;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                // 2x4-wide NEON FMA (8 stereo taps/iter) hides 4-cycle FMA latency on in-order ARMv8 cores.
+                float32x4_t acc_l0 = vdupq_n_f32(0.0f);
+                float32x4_t acc_r0 = vdupq_n_f32(0.0f);
+                float32x4_t acc_l1 = vdupq_n_f32(0.0f);
+                float32x4_t acc_r1 = vdupq_n_f32(0.0f);
                 if (rational_) {
-                    const double* __restrict h = &coeffs_[phase_num_ * kTaps];
+                    const float* __restrict h = &coeffs_[phase_num_ * kTaps];
+                    for (int k = 0; k < kTaps; k += 8) {
+                        const float32x4_t t0 = vld1q_f32(h + k);
+                        const float32x4_t t1 = vld1q_f32(h + k + 4);
+                        const float32x4x2_t s0 = vld2q_f32(x + 2 * k);
+                        const float32x4x2_t s1 = vld2q_f32(x + 2 * k + 8);
+                        acc_l0 = neon_fma(acc_l0, t0, s0.val[0]);
+                        acc_r0 = neon_fma(acc_r0, t0, s0.val[1]);
+                        acc_l1 = neon_fma(acc_l1, t1, s1.val[0]);
+                        acc_r1 = neon_fma(acc_r1, t1, s1.val[1]);
+                    }
+                } else {
+                    const double scaled = phase_pos_ * static_cast<double>(up_);
+                    const size_t p0 = std::min<size_t>(static_cast<size_t>(scaled), up_ - 1);
+                    const float32x4_t alpha_v = vdupq_n_f32(static_cast<float>(scaled - static_cast<double>(p0)));
+                    const float* __restrict h0 = &coeffs_[p0 * kTaps];
+                    const float* __restrict h1 = &coeffs_[(p0 + 1) * kTaps];
+                    for (int k = 0; k < kTaps; k += 8) {
+                        const float32x4_t a0 = vld1q_f32(h0 + k);
+                        const float32x4_t a1 = vld1q_f32(h0 + k + 4);
+                        const float32x4_t t0 = neon_fma(a0, alpha_v, vsubq_f32(vld1q_f32(h1 + k), a0));
+                        const float32x4_t t1 = neon_fma(a1, alpha_v, vsubq_f32(vld1q_f32(h1 + k + 4), a1));
+                        const float32x4x2_t s0 = vld2q_f32(x + 2 * k);
+                        const float32x4x2_t s1 = vld2q_f32(x + 2 * k + 8);
+                        acc_l0 = neon_fma(acc_l0, t0, s0.val[0]);
+                        acc_r0 = neon_fma(acc_r0, t0, s0.val[1]);
+                        acc_l1 = neon_fma(acc_l1, t1, s1.val[0]);
+                        acc_r1 = neon_fma(acc_r1, t1, s1.val[1]);
+                    }
+                }
+                out_l = neon_hsum(vaddq_f32(acc_l0, acc_l1));
+                out_r = neon_hsum(vaddq_f32(acc_r0, acc_r1));
+#else
+                float acc_l0 = 0.0f, acc_l1 = 0.0f;
+                float acc_r0 = 0.0f, acc_r1 = 0.0f;
+                if (rational_) {
+                    const float* __restrict h = &coeffs_[phase_num_ * kTaps];
                     for (int k = 0; k < kTaps; k += 2) {
-                        const double t0 = h[k];
-                        const double t1 = h[k + 1];
+                        const float t0 = h[k];
+                        const float t1 = h[k + 1];
                         acc_l0 += t0 * x[2 * k];
                         acc_r0 += t0 * x[2 * k + 1];
                         acc_l1 += t1 * x[2 * k + 2];
@@ -169,20 +240,23 @@ private:
                 } else {
                     const double scaled = phase_pos_ * static_cast<double>(up_);
                     const size_t p0 = std::min<size_t>(static_cast<size_t>(scaled), up_ - 1);
-                    const double alpha = scaled - static_cast<double>(p0);
-                    const double* __restrict h0 = &coeffs_[p0 * kTaps];
-                    const double* __restrict h1 = &coeffs_[(p0 + 1) * kTaps];
+                    const float alpha = static_cast<float>(scaled - static_cast<double>(p0));
+                    const float* __restrict h0 = &coeffs_[p0 * kTaps];
+                    const float* __restrict h1 = &coeffs_[(p0 + 1) * kTaps];
                     for (int k = 0; k < kTaps; k += 2) {
-                        const double t0 = h0[k] + alpha * (h1[k] - h0[k]);
-                        const double t1 = h0[k + 1] + alpha * (h1[k + 1] - h0[k + 1]);
+                        const float t0 = h0[k] + alpha * (h1[k] - h0[k]);
+                        const float t1 = h0[k + 1] + alpha * (h1[k + 1] - h0[k + 1]);
                         acc_l0 += t0 * x[2 * k];
                         acc_r0 += t0 * x[2 * k + 1];
                         acc_l1 += t1 * x[2 * k + 2];
                         acc_r1 += t1 * x[2 * k + 3];
                     }
                 }
-                out.push_back(acc_l0 + acc_l1);
-                out.push_back(acc_r0 + acc_r1);
+                out_l = acc_l0 + acc_l1;
+                out_r = acc_r0 + acc_r1;
+#endif
+                out.push_back(out_l);
+                out.push_back(out_r);
             }
 
             if (rational_) {
@@ -209,8 +283,8 @@ private:
     size_t phase_num_ = 0;
     double step_double_ = 1.0;
     double phase_pos_ = 0.0;
-    std::vector<double> coeffs_;
-    std::vector<double> in_buf_;
+    std::vector<float> coeffs_;
+    std::vector<float> in_buf_;
 };
 
 // Signal-gated, dry-preserving Spectral Band Extender at 48 kHz (187.5 Hz/bin, 256-pt 75% WOLA, 4.0 ms latency).
@@ -228,7 +302,8 @@ public:
 
     HfExtender() {
         for (int i = 0; i < kFft; ++i) {
-            hann_[i] = 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(i) / static_cast<double>(kFft)));
+            hann_[i] =
+                static_cast<float>(0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(i) / static_cast<double>(kFft))));
         }
         for (int i = 0; i < kFft; ++i) {
             int rev = 0;
@@ -239,43 +314,43 @@ public:
         }
         for (int i = 0; i < kFft / 2; ++i) {
             const double ang = -2.0 * kPi * static_cast<double>(i) / static_cast<double>(kFft);
-            tw_fwd_[i] = std::complex<double>(std::cos(ang), std::sin(ang));
+            tw_fwd_[i] = std::complex<float>(static_cast<float>(std::cos(ang)), static_cast<float>(std::sin(ang)));
         }
         reset_all();
     }
 
     void reset_all() {
-        p_low_hi_ema_ = 0.0;
-        p_pre16_ema_ = 0.0;
-        p_post16_ema_ = 0.0;
-        sib_slow_ema_ = 0.0;
+        p_low_hi_ema_ = 0.0f;
+        p_pre16_ema_ = 0.0f;
+        p_post16_ema_ = 0.0f;
+        sib_slow_ema_ = 0.0f;
         ema_initialized_ = false;
         brickwall_16_ = false;
-        blend_ = 0.0;
-        mode12_blend_ = 0.0;
+        blend_ = 0.0f;
+        mode12_blend_ = 0.0f;
         logged_state_ = -1;
         reset_buffers();
     }
 
     void reset_buffers() {
-        in_ring_.fill(0.0);
-        ola_buf_.fill(0.0);
-        smooth_g16_.fill(0.0);
-        smooth_g12a_.fill(0.0);
-        smooth_g12b_.fill(0.0);
+        in_ring_.fill(0.0f);
+        ola_buf_.fill(0.0f);
+        smooth_g16_.fill(0.0f);
+        smooth_g12a_.fill(0.0f);
+        smooth_g12b_.fill(0.0f);
         hop_fill_ = 0;
         hop_idx_ = 0;
         priming_skip_ = kDelay;
-        sib_duck_ = 1.0;
-        tonal_guard_ = 1.0;
-        src_pwr_ema_ = 0.0;
-        trans_boost_ = 1.0;
+        sib_duck_ = 1.0f;
+        tonal_guard_ = 1.0f;
+        src_pwr_ema_ = 0.0f;
+        trans_boost_ = 1.0f;
     }
 
-    int active_mode() const { return (blend_ > 0.05) ? (mode12_blend_ > 0.5 ? 2 : 1) : 0; }
+    int active_mode() const { return (blend_ > 0.05f) ? (mode12_blend_ > 0.5f ? 2 : 1) : 0; }
 
-    void process(const double* stereo_in, size_t in_frames, bool enabled, bool swb_hint, bool emit,
-                 std::vector<double>& out) {
+    void process(const float* stereo_in, size_t in_frames, bool enabled, bool swb_hint, bool emit,
+                 std::vector<float>& out) {
         if (in_frames == 0) return;
         for (size_t i = 0; i < in_frames; ++i) {
             in_ring_[2 * (kDelay + hop_fill_)] = stereo_in[2 * i];
@@ -288,10 +363,10 @@ public:
         }
     }
 
-    void flush(bool enabled, bool swb_hint, std::vector<double>& out) {
+    void flush(bool enabled, bool swb_hint, std::vector<float>& out) {
         const int real_buffered = (kDelay - priming_skip_) + hop_fill_;
         if (real_buffered <= 0) return;
-        static const double zeros[kFft * kTargetChannels]{};
+        static const float zeros[kFft * kTargetChannels]{};
         const int pad_zeros = kDelay + (hop_fill_ > 0 ? (kHop - hop_fill_) : 0);
         const size_t base_out = out.size();
         process(zeros, static_cast<size_t>(pad_zeros), enabled, swb_hint, true, out);
@@ -301,8 +376,10 @@ public:
     }
 
 private:
+    static constexpr float kLog2ToDb = 3.010299956639812f;   // 10 * log10(2)
+    static constexpr float kDbToLog2 = 0.3321928094887362f;  // 1 / (10 * log10(2))
 
-    void fft_inplace(std::array<std::complex<double>, kFft>& buf, bool inverse) const {
+    void fft_inplace(std::array<std::complex<float>, kFft>& buf, bool inverse) const {
         for (int i = 0; i < kFft; ++i) {
             const int j = bitrev_[i];
             if (i < j) std::swap(buf[i], buf[j]);
@@ -312,112 +389,104 @@ private:
             const int stride = kFft / len;
             for (int start = 0; start < kFft; start += len) {
                 for (int k = 0; k < half; ++k) {
-                    const std::complex<double> w = tw_fwd_[k * stride];
-                    const double wr = w.real();
-                    const double wi = inverse ? -w.imag() : w.imag();
-                    const std::complex<double> rhs = buf[start + k + half];
-                    const double br = rhs.real();
-                    const double bi = rhs.imag();
-                    // Direct real/imag FMA avoids GCC Annex-G __muldc3 libgcc call on every butterfly.
-                    const std::complex<double> t(wr * br - wi * bi, wr * bi + wi * br);
-                    const std::complex<double> u = buf[start + k];
+                    const std::complex<float> w = tw_fwd_[k * stride];
+                    const float wr = w.real();
+                    const float wi = inverse ? -w.imag() : w.imag();
+                    const std::complex<float> rhs = buf[start + k + half];
+                    const float br = rhs.real();
+                    const float bi = rhs.imag();
+                    // Direct real/imag FMA avoids GCC Annex-G __mulsc3 libgcc call on every butterfly.
+                    const std::complex<float> t(wr * br - wi * bi, wr * bi + wi * br);
+                    const std::complex<float> u = buf[start + k];
                     buf[start + k] = u + t;
                     buf[start + k + half] = u - t;
                 }
             }
         }
         if (inverse) {
-            constexpr double inv_n = 1.0 / static_cast<double>(kFft);
+            constexpr float inv_n = 1.0f / static_cast<float>(kFft);
             for (auto& v : buf) {
-                v = std::complex<double>(v.real() * inv_n, v.imag() * inv_n);
+                v = std::complex<float>(v.real() * inv_n, v.imag() * inv_n);
             }
         }
     }
 
-    static double band_avg(const std::array<double, kFft / 2 + 1>& pwr, int lo, int hi) {
-        double s = 0.0;
+    static float band_avg(const std::array<float, kFft / 2 + 1>& pwr, int lo, int hi) {
+        float s = 0.0f;
         for (int k = lo; k <= hi; ++k) s += pwr[k];
-        return s / static_cast<double>(hi - lo + 1);
+        return s / static_cast<float>(hi - lo + 1);
     }
 
-    static std::complex<double> rot_quarter(std::complex<double> z, int step) {
-        switch (step & 3) {
-            case 0: return z;
-            case 1: return {-z.imag(), z.real()};
-            case 2: return {-z.real(), -z.imag()};
-            default: return {z.imag(), -z.real()};
-        }
-    }
-
+    // All shifts (24, 20, 40) are exact multiples of kFft/kHop = 4, so per-hop carrier phase advance
+    // is an integer multiple of 2*pi (zero phase rotation needed between consecutive hops).
     void synthesize_band_stereo(int src_lo, int sub_w, int shift, int step_offset, int fade_in, int fade_out,
-                                double gain_mult, std::array<double, kNumSub>& smooth_gains,
-                                std::array<std::complex<double>, kFft>& dst_spec) const {
+                                float gain_mult, std::array<float, kNumSub>& smooth_gains,
+                                std::array<std::complex<float>, kFft>& dst_spec) const {
         // Precomputed 0.5 * (1 - cos(pi * k / (fade + 1))) ramps for fade=3 and fade=5 (zero runtime trig).
-        static constexpr double kFade3[3] = {0.14644660940672624, 0.5, 0.8535533905932737};
-        static constexpr double kFade5[5] = {0.06698729810778065, 0.25, 0.5, 0.75, 0.9330127018922193};
+        static constexpr float kFade3[3] = {0.14644661f, 0.5f, 0.85355339f};
+        static constexpr float kFade5[5] = {0.06698730f, 0.25f, 0.5f, 0.75f, 0.93301270f};
 
-        std::array<double, kNumSub> src_pwr{};
-        std::array<double, kNumSub> src_db{};
+        std::array<float, kNumSub> src_pwr{};
+        std::array<float, kNumSub> src_db{};
         for (int m = 0; m < kNumSub; ++m) {
             const int s_lo = src_lo + m * sub_w;
-            const double p = band_avg(pwr_, s_lo, s_lo + sub_w - 1);
+            const float p = band_avg(pwr_, s_lo, s_lo + sub_w - 1);
             src_pwr[m] = p;
-            src_db[m] = 10.0 * std::log10(std::max(p, 1e-24));
+            src_db[m] = kLog2ToDb * std::log2f(std::max(p, 1e-24f));
         }
-        if (src_pwr[kNumSub - 1] < 1e-20) {
-            for (double& g : smooth_gains) g *= 0.75;
+        if (src_pwr[kNumSub - 1] < 1e-20f) {
+            for (float& g : smooth_gains) g *= 0.75f;
             return;
         }
 
         // Stereo-linked local slope + downward curvature extrapolation (clamped so HF always rolls off naturally).
-        const double slope_lo = std::clamp(0.5 * (src_db[2] - src_db[0]), -12.0, -0.8);
-        const double slope_hi = std::clamp(0.5 * (src_db[3] - src_db[1]), -12.0, -0.8);
-        const double curv = std::clamp(slope_hi - slope_lo, -2.5, 0.0);
-        const double step_db = std::clamp(slope_hi + 0.35 * curv, -12.0, -1.0);
+        const float slope_lo = std::clamp(0.5f * (src_db[2] - src_db[0]), -12.0f, -0.8f);
+        const float slope_hi = std::clamp(0.5f * (src_db[3] - src_db[1]), -12.0f, -0.8f);
+        const float curv = std::clamp(slope_hi - slope_lo, -2.5f, 0.0f);
+        const float step_db = std::clamp(slope_hi + 0.35f * curv, -12.0f, -1.0f);
 
-        constexpr double kTuckDb = -9.0;  // Tucked -9 dB below natural rolloff baseline
+        constexpr float kTuckDb = -9.0f;  // Tucked -9 dB below natural rolloff baseline
         const int dst_lo = src_lo + shift;
         const int dst_hi = dst_lo + kNumSub * sub_w - 1;
 
         for (int m = 0; m < kNumSub; ++m) {
             const int d_lo = dst_lo + m * sub_w;
             const int d_hi = std::min(d_lo + sub_w - 1, kFft / 2 - 1);
-            const double target_db = src_db[kNumSub - 1] + static_cast<double>(step_offset + m + 1) * step_db + kTuckDb;
-            const double target_pwr = std::pow(10.0, target_db * 0.1);
+            const float target_db = src_db[kNumSub - 1] + static_cast<float>(step_offset + m + 1) * step_db + kTuckDb;
+            const float target_pwr = std::exp2f(target_db * kDbToLog2);
             // Power-complementary cap: only synthesize the missing HF deficit above any surviving real HF energy.
-            const double exist_pwr = (d_lo <= d_hi) ? band_avg(pwr_, d_lo, d_hi) : 0.0;
-            const double deficit_pwr = std::max(0.0, target_pwr - exist_pwr);
-            const double raw_g =
-                (src_pwr[m] > 1e-22 && deficit_pwr > 0.0) ? std::min(std::sqrt(deficit_pwr / src_pwr[m]), 1.25) : 0.0;
+            const float exist_pwr = (d_lo <= d_hi) ? band_avg(pwr_, d_lo, d_hi) : 0.0f;
+            const float deficit_pwr = std::max(0.0f, target_pwr - exist_pwr);
+            const float raw_g =
+                (src_pwr[m] > 1e-22f && deficit_pwr > 0.0f) ? std::min(std::sqrt(deficit_pwr / src_pwr[m]), 1.25f) : 0.0f;
             // Fast 2 ms attack so transients lock immediately; smooth 5 ms release to prevent tail flutter.
-            const double alpha = (raw_g > smooth_gains[m]) ? 0.55 : 0.25;
+            const float alpha = (raw_g > smooth_gains[m]) ? 0.55f : 0.25f;
             smooth_gains[m] += alpha * (raw_g - smooth_gains[m]);
         }
 
-        const int rot_step = (shift * hop_idx_) & 3;
-        const double inv_sub_w = 1.0 / static_cast<double>(sub_w);
-        const double first_center = static_cast<double>(dst_lo) + 0.5 * static_cast<double>(sub_w) - 0.5;
-        const double* const f_in_tab = (fade_in == 5) ? kFade5 : kFade3;
-        const double* const f_out_tab = (fade_out == 5) ? kFade5 : kFade3;
+        const float inv_sub_w = 1.0f / static_cast<float>(sub_w);
+        const float first_center = static_cast<float>(dst_lo) + 0.5f * static_cast<float>(sub_w) - 0.5f;
+        const float* const f_in_tab = (fade_in == 5) ? kFade5 : kFade3;
+        const float* const f_out_tab = (fade_out == 5) ? kFade5 : kFade3;
 
         for (int b = dst_lo; b <= dst_hi; ++b) {
             const int s = b - shift;
             if (s <= 0 || s >= kFft / 2 || b >= kFft / 2) continue;
 
             // Smooth piecewise-linear interpolation across the 4 subband centers (no staircase edges).
-            const double pos = (static_cast<double>(b) - first_center) * inv_sub_w;
-            double sub_g;
-            if (pos <= 0.0) {
+            const float pos = (static_cast<float>(b) - first_center) * inv_sub_w;
+            float sub_g;
+            if (pos <= 0.0f) {
                 sub_g = smooth_gains[0];
-            } else if (pos >= static_cast<double>(kNumSub - 1)) {
+            } else if (pos >= static_cast<float>(kNumSub - 1)) {
                 sub_g = smooth_gains[kNumSub - 1];
             } else {
                 const int idx = static_cast<int>(pos);
-                const double frac = pos - static_cast<double>(idx);
+                const float frac = pos - static_cast<float>(idx);
                 sub_g = smooth_gains[idx] + frac * (smooth_gains[idx + 1] - smooth_gains[idx]);
             }
 
-            double edge = 1.0;
+            float edge = 1.0f;
             if (b - dst_lo < fade_in) {
                 edge *= f_in_tab[b - dst_lo];
             }
@@ -426,148 +495,167 @@ private:
             }
 
             // Apply identical stereo-linked scalar gain to L and R so stereo panning & phase remain locked.
-            const double scale = sub_g * edge * gain_mult;
-            if (scale <= 1e-9) continue;
-            const std::complex<double> rl = rot_quarter(spec_l_[s], rot_step);
-            const std::complex<double> rr = rot_quarter(spec_r_[s], rot_step);
-            const double vlr = rl.real() * scale;
-            const double vli = rl.imag() * scale;
-            const double vrr = rr.real() * scale;
-            const double vri = rr.imag() * scale;
+            const float scale = sub_g * edge * gain_mult;
+            if (scale <= 1e-7f) continue;
+            const std::complex<float> rl = spec_l_[s];
+            const std::complex<float> rr = spec_r_[s];
+            const float vlr = rl.real() * scale;
+            const float vli = rl.imag() * scale;
+            const float vrr = rr.real() * scale;
+            const float vri = rr.imag() * scale;
 
             // Pack L and R Hermitian-symmetrically into one complex spectrum: Y[b] = YL[b] + j*YR[b].
-            dst_spec[b] += std::complex<double>(vlr - vri, vli + vrr);
-            dst_spec[kFft - b] += std::complex<double>(vlr + vri, -vli + vrr);
+            dst_spec[b] += std::complex<float>(vlr - vri, vli + vrr);
+            dst_spec[kFft - b] += std::complex<float>(vlr + vri, -vli + vrr);
         }
     }
 
-    void step_hop(bool enabled, bool swb_hint, bool emit, std::vector<double>& out) {
+    void step_hop(bool enabled, bool swb_hint, bool emit, std::vector<float>& out) {
         if (enabled) {
-            for (int n = 0; n < kFft; ++n) {
-                fft_in_[n] = std::complex<double>(in_ring_[2 * n] * hann_[n], in_ring_[2 * n + 1] * hann_[n]);
-            }
-            fft_inplace(fft_in_, false);
-
-            // Unpack stereo L/R complex bins [0 .. kFft/2] from single dual-real FFT.
-            spec_l_[0] = std::complex<double>(fft_in_[0].real(), 0.0);
-            spec_r_[0] = std::complex<double>(fft_in_[0].imag(), 0.0);
-            pwr_[0] = std::norm(spec_l_[0]) + std::norm(spec_r_[0]);
-            for (int k = 1; k <= kFft / 2; ++k) {
-                const std::complex<double> zk = fft_in_[k];
-                const std::complex<double> zc = std::conj(fft_in_[kFft - k]);
-                spec_l_[k] = 0.5 * (zk + zc);
-                spec_r_[k] = std::complex<double>(0.5 * (zk.imag() - zc.imag()), -0.5 * (zk.real() - zc.real()));
-                pwr_[k] = std::norm(spec_l_[k]) + std::norm(spec_r_[k]);
-            }
-
-            // Shared stereo detection across calibrated 48 kHz bands (df = 187.5 Hz/bin).
-            const double p_body = band_avg(pwr_, 2, 16);       // 375 - 3000 Hz
-            const double p_sib = band_avg(pwr_, 32, 53);       // 6.0 - 9.94 kHz
-            const double p_low_hi = band_avg(pwr_, 45, 61);    // 8.44 - 11.44 kHz
-            const double p_swb_pre = band_avg(pwr_, 51, 61);   // 9.56 - 11.44 kHz
-            const double p_pre16 = band_avg(pwr_, 67, 80);     // 12.56 - 15.00 kHz
-            const double p_src = band_avg(pwr_, 59, 82);       // 11.06 - 15.38 kHz
-            const double p_post16 = band_avg(pwr_, 90, 104);   // 16.88 - 19.50 kHz
-
-            if (p_sib > 0.0) {
-                sib_slow_ema_ = (sib_slow_ema_ <= 0.0) ? p_sib : (0.9925 * sib_slow_ema_ + 0.0075 * p_sib);
-            }
-            const bool sib_spike = (sib_slow_ema_ > 1e-11 && p_sib > 2.6 * sib_slow_ema_);
-            const bool sib_dominant = (p_sib > 8.0 * std::max(p_src, 1e-15)) && (p_sib > 0.20 * std::max(p_body, 1e-15));
-            const double target_duck = (sib_spike || sib_dominant) ? 0.0 : 1.0;
-            // Fast 12 ms attack down on fricatives ("S"/"T"), smooth 120 ms release back up.
-            const double duck_coef = (target_duck < sib_duck_) ? 0.117 : 0.011;
-            sib_duck_ += duck_coef * (target_duck - sib_duck_);
-
-            // Only train the brickwall detector when HF content is musical/non-sibilant and above silence.
-            if (!sib_dominant && p_body > 1e-9 && p_pre16 > 1e-11) {
-                if (!ema_initialized_) {
-                    ema_initialized_ = true;
-                    p_low_hi_ema_ = p_low_hi;
-                    p_pre16_ema_ = p_pre16;
-                    p_post16_ema_ = p_post16;
-                } else {
-                    p_low_hi_ema_ = 0.996 * p_low_hi_ema_ + 0.004 * p_low_hi;
-                    p_pre16_ema_ = 0.996 * p_pre16_ema_ + 0.004 * p_pre16;
-                    p_post16_ema_ = 0.996 * p_post16_ema_ + 0.004 * p_post16;
+            // While completely bypassed on clean Fullband audio, run analysis every 4th hop (187.5 Hz vs 750 Hz)
+            // with 4x scaled EMA steps (same ~330 ms detection time constant at 1/4 the idle CPU).
+            const bool idle_bypass =
+                (blend_ <= 1e-4f && !swb_hint && !brickwall_16_ && mode12_blend_ <= 1e-4f);
+            if (!idle_bypass || hop_idx_ == 0) {
+                for (int n = 0; n < kFft; ++n) {
+                    fft_in_[n] = std::complex<float>(in_ring_[2 * n] * hann_[n], in_ring_[2 * n + 1] * hann_[n]);
                 }
-                const double nat_slope = 10.0 * std::log10(std::max(p_low_hi_ema_, 1e-18) / std::max(p_pre16_ema_, 1e-18));
-                const double cliff16 = 10.0 * std::log10(std::max(p_pre16_ema_, 1e-18) / std::max(p_post16_ema_, 1e-18));
-                brickwall_16_ = (cliff16 >= 20.0) && (cliff16 >= std::max(0.0, nat_slope) + 11.0);
-            }
+                fft_inplace(fft_in_, false);
 
-            const bool swb_active = swb_hint && (p_swb_pre > 1e-10) && (p_pre16 < 0.04 * p_swb_pre);
-            mode12_blend_ += (swb_active ? 0.02 : -0.01);
-            mode12_blend_ = std::clamp(mode12_blend_, 0.0, 1.0);
-
-            const bool want_ext = swb_active || brickwall_16_;
-            blend_ += (want_ext ? 0.003 : -0.002);
-            blend_ = std::clamp(blend_, 0.0, 1.0);
-
-            const int cur_mode = active_mode();
-            if (cur_mode > 0 && logged_state_ != cur_mode) {
-                logged_state_ = cur_mode;
-                OLOG("audio dsp: HF extension active (%s)",
-                     cur_mode == 2 ? "12kHz SWB -> 20kHz" : "16kHz brickwall -> 20kHz");
-            }
-
-            const double eff_gain = blend_ * sib_duck_;
-            if (eff_gain > 1e-4) {
-                const bool use_band12 = (mode12_blend_ > 0.5);
-
-                // Spectral Flatness Measure (SFM) tonality guard + HF transient flux weighting.
-                const int sfm_lo = use_band12 ? 43 : 59;
-                const int sfm_hi = use_band12 ? 62 : 82;
-                const int sfm_n = sfm_hi - sfm_lo + 1;
-                double log_sum = 0.0;
-                double lin_sum = 0.0;
-                for (int k = sfm_lo; k <= sfm_hi; ++k) {
-                    const double p = pwr_[k] + 1e-24;
-                    log_sum += std::log(p);
-                    lin_sum += p;
+                // Unpack stereo L/R complex bins [0 .. kFft/2] from single dual-real FFT.
+                spec_l_[0] = std::complex<float>(fft_in_[0].real(), 0.0f);
+                spec_r_[0] = std::complex<float>(fft_in_[0].imag(), 0.0f);
+                pwr_[0] = std::norm(spec_l_[0]) + std::norm(spec_r_[0]);
+                for (int k = 1; k <= kFft / 2; ++k) {
+                    const std::complex<float> zk = fft_in_[k];
+                    const std::complex<float> zc = std::conj(fft_in_[kFft - k]);
+                    spec_l_[k] = 0.5f * (zk + zc);
+                    spec_r_[k] = std::complex<float>(0.5f * (zk.imag() - zc.imag()), -0.5f * (zk.real() - zc.real()));
+                    pwr_[k] = std::norm(spec_l_[k]) + std::norm(spec_r_[k]);
                 }
-                const double geo_mean = std::exp(log_sum / static_cast<double>(sfm_n));
-                const double arith_mean = lin_sum / static_cast<double>(sfm_n);
-                const double sfm = std::clamp(geo_mean / std::max(arith_mean, 1e-24), 0.0, 1.0);
-                // Damp pure narrowband tones (~-7 dB) to avoid inharmonic metallic zing; keep broadband air/cymbals at 1.0.
-                const double target_tonal = std::clamp(0.45 + 0.55 * ((sfm - 0.06) / 0.44), 0.45, 1.0);
-                tonal_guard_ += 0.20 * (target_tonal - tonal_guard_);
 
-                if (arith_mean > 0.0) {
-                    src_pwr_ema_ = (src_pwr_ema_ <= 0.0) ? arith_mean : (0.96 * src_pwr_ema_ + 0.04 * arith_mean);
+                // Shared stereo detection across calibrated 48 kHz bands (df = 187.5 Hz/bin).
+                const float p_body = band_avg(pwr_, 2, 16);       // 375 - 3000 Hz
+                const float p_sib = band_avg(pwr_, 32, 53);       // 6.0 - 9.94 kHz
+                const float p_low_hi = band_avg(pwr_, 45, 61);    // 8.44 - 11.44 kHz
+                const float p_swb_pre = band_avg(pwr_, 51, 61);   // 9.56 - 11.44 kHz
+                const float p_pre16 = band_avg(pwr_, 67, 80);     // 12.56 - 15.00 kHz
+                const float p_src = band_avg(pwr_, 59, 82);       // 11.06 - 15.38 kHz
+                const float p_post16 = band_avg(pwr_, 90, 104);   // 16.88 - 19.50 kHz
+
+                const float sib_alpha = idle_bypass ? 0.03f : 0.0075f;
+                if (p_sib > 0.0f) {
+                    sib_slow_ema_ =
+                        (sib_slow_ema_ <= 0.0f) ? p_sib : ((1.0f - sib_alpha) * sib_slow_ema_ + sib_alpha * p_sib);
                 }
-                const double flux = arith_mean / std::max(src_pwr_ema_, 1e-24);
-                const double target_trans = std::clamp(1.0 + 0.13 * (flux - 1.3), 1.0, 1.26);
-                const double trans_coef = (target_trans > trans_boost_) ? 0.35 : 0.03;
-                trans_boost_ += trans_coef * (target_trans - trans_boost_);
+                const bool sib_spike = (sib_slow_ema_ > 1e-11f && p_sib > 2.6f * sib_slow_ema_);
+                const bool sib_dominant =
+                    (p_sib > 8.0f * std::max(p_src, 1e-15f)) && (p_sib > 0.20f * std::max(p_body, 1e-15f));
+                const float target_duck = (sib_spike || sib_dominant) ? 0.0f : 1.0f;
+                // Fast 12 ms attack down on fricatives ("S"/"T"), smooth 120 ms release back up.
+                const float duck_coef =
+                    (target_duck < sib_duck_) ? (idle_bypass ? 0.40f : 0.117f) : (idle_bypass ? 0.043f : 0.011f);
+                sib_duck_ += duck_coef * (target_duck - sib_duck_);
 
-                const double shaped_gain = eff_gain * tonal_guard_ * trans_boost_;
-                fft_in_.fill(std::complex<double>(0.0, 0.0));
-                if (!use_band12) {
-                    // Translate [11.06 .. 15.38 kHz] (+24 bins = +4.50 kHz) -> [15.56 .. 19.88 kHz]
-                    synthesize_band_stereo(59, 6, 24, 0, 3, 5, shaped_gain, smooth_g16_, fft_in_);
-                    for (int m = 0; m < kNumSub; ++m) {
-                        smooth_g12a_[m] *= 0.85;
-                        smooth_g12b_[m] *= 0.85;
+                // Only train the brickwall detector when HF content is musical/non-sibilant and above silence.
+                if (!sib_dominant && p_body > 1e-9f && p_pre16 > 1e-11f) {
+                    if (!ema_initialized_) {
+                        ema_initialized_ = true;
+                        p_low_hi_ema_ = p_low_hi;
+                        p_pre16_ema_ = p_pre16;
+                        p_post16_ema_ = p_post16;
+                    } else {
+                        const float bw_alpha = idle_bypass ? 0.016f : 0.004f;
+                        const float bw_keep = 1.0f - bw_alpha;
+                        p_low_hi_ema_ = bw_keep * p_low_hi_ema_ + bw_alpha * p_low_hi;
+                        p_pre16_ema_ = bw_keep * p_pre16_ema_ + bw_alpha * p_pre16;
+                        p_post16_ema_ = bw_keep * p_post16_ema_ + bw_alpha * p_post16;
+                    }
+                    const float nat_slope =
+                        kLog2ToDb * std::log2f(std::max(p_low_hi_ema_, 1e-18f) / std::max(p_pre16_ema_, 1e-18f));
+                    const float cliff16 =
+                        kLog2ToDb * std::log2f(std::max(p_pre16_ema_, 1e-18f) / std::max(p_post16_ema_, 1e-18f));
+                    brickwall_16_ = (cliff16 >= 20.0f) && (cliff16 >= std::max(0.0f, nat_slope) + 11.0f);
+                }
+
+                const bool swb_active = swb_hint && (p_swb_pre > 1e-10f) && (p_pre16 < 0.04f * p_swb_pre);
+                mode12_blend_ += (swb_active ? 0.02f : -0.01f);
+                mode12_blend_ = std::clamp(mode12_blend_, 0.0f, 1.0f);
+
+                const bool want_ext = swb_active || brickwall_16_;
+                blend_ += (want_ext ? (idle_bypass ? 0.012f : 0.003f) : -0.002f);
+                blend_ = std::clamp(blend_, 0.0f, 1.0f);
+
+                const int cur_mode = active_mode();
+                if (cur_mode > 0 && logged_state_ != cur_mode) {
+                    logged_state_ = cur_mode;
+                    OLOG("audio dsp: HF extension active (%s)",
+                         cur_mode == 2 ? "12kHz SWB -> 20kHz" : "16kHz brickwall -> 20kHz");
+                }
+
+                const float eff_gain = blend_ * sib_duck_;
+                if (eff_gain > 1e-4f) {
+                    const float w12 = mode12_blend_;
+                    const float w16 = 1.0f - w12;
+                    const bool dom_band12 = (w12 > 0.5f);
+
+                    // Spectral Flatness Measure (SFM) tonality guard + HF transient flux weighting.
+                    const int sfm_lo = dom_band12 ? 43 : 59;
+                    const int sfm_hi = dom_band12 ? 62 : 82;
+                    const int sfm_n = sfm_hi - sfm_lo + 1;
+                    float log_sum = 0.0f;
+                    float lin_sum = 0.0f;
+                    for (int k = sfm_lo; k <= sfm_hi; ++k) {
+                        const float p = pwr_[k] + 1e-24f;
+                        log_sum += std::log2f(p);
+                        lin_sum += p;
+                    }
+                    const float geo_mean = std::exp2f(log_sum / static_cast<float>(sfm_n));
+                    const float arith_mean = lin_sum / static_cast<float>(sfm_n);
+                    const float sfm = std::clamp(geo_mean / std::max(arith_mean, 1e-24f), 0.0f, 1.0f);
+                    // Damp pure narrowband tones (~-7 dB) to avoid inharmonic metallic zing; keep broadband air/cymbals at 1.0.
+                    const float target_tonal = std::clamp(0.45f + 0.55f * ((sfm - 0.06f) / 0.44f), 0.45f, 1.0f);
+                    tonal_guard_ += 0.20f * (target_tonal - tonal_guard_);
+
+                    if (arith_mean > 0.0f) {
+                        src_pwr_ema_ = (src_pwr_ema_ <= 0.0f) ? arith_mean : (0.96f * src_pwr_ema_ + 0.04f * arith_mean);
+                    }
+                    const float flux = arith_mean / std::max(src_pwr_ema_, 1e-24f);
+                    const float target_trans = std::clamp(1.0f + 0.13f * (flux - 1.3f), 1.0f, 1.26f);
+                    const float trans_coef = (target_trans > trans_boost_) ? 0.35f : 0.03f;
+                    trans_boost_ += trans_coef * (target_trans - trans_boost_);
+
+                    const float shaped_gain = eff_gain * tonal_guard_ * trans_boost_;
+                    fft_in_.fill(std::complex<float>(0.0f, 0.0f));
+                    if (w16 > 1e-4f) {
+                        // Translate [11.06 .. 15.38 kHz] (+24 bins = +4.50 kHz) -> [15.56 .. 19.88 kHz]
+                        synthesize_band_stereo(59, 6, 24, 0, 3, 5, shaped_gain * w16, smooth_g16_, fft_in_);
+                    } else {
+                        for (float& g : smooth_g16_) g *= 0.85f;
+                    }
+                    if (w12 > 1e-4f) {
+                        // SWB 12 kHz Opus: [8.06 .. 11.63 kHz] -> [11.81 .. 15.38 kHz] (+20) and [15.56 .. 19.13 kHz] (+40)
+                        synthesize_band_stereo(43, 5, 20, 0, 3, 3, shaped_gain * w12, smooth_g12a_, fft_in_);
+                        synthesize_band_stereo(43, 5, 40, kNumSub, 3, 5, shaped_gain * w12, smooth_g12b_, fft_in_);
+                    } else {
+                        for (int m = 0; m < kNumSub; ++m) {
+                            smooth_g12a_[m] *= 0.85f;
+                            smooth_g12b_[m] *= 0.85f;
+                        }
+                    }
+                    fft_inplace(fft_in_, true);
+                    constexpr float inv_ola = 1.0f / 1.5f;
+                    for (int n = 0; n < kFft; ++n) {
+                        const float ws = hann_[n] * inv_ola;
+                        ola_buf_[2 * n] += fft_in_[n].real() * ws;
+                        ola_buf_[2 * n + 1] += fft_in_[n].imag() * ws;
                     }
                 } else {
-                    // SWB 12 kHz Opus: [8.06 .. 11.63 kHz] -> [11.81 .. 15.38 kHz] (+20) and [15.56 .. 19.13 kHz] (+40)
-                    synthesize_band_stereo(43, 5, 20, 0, 3, 3, shaped_gain, smooth_g12a_, fft_in_);
-                    synthesize_band_stereo(43, 5, 40, kNumSub, 3, 5, shaped_gain, smooth_g12b_, fft_in_);
-                    for (double& g : smooth_g16_) g *= 0.85;
-                }
-                fft_inplace(fft_in_, true);
-                constexpr double inv_ola = 1.0 / 1.5;
-                for (int n = 0; n < kFft; ++n) {
-                    const double ws = hann_[n] * inv_ola;
-                    ola_buf_[2 * n] += fft_in_[n].real() * ws;
-                    ola_buf_[2 * n + 1] += fft_in_[n].imag() * ws;
-                }
-            } else {
-                for (int m = 0; m < kNumSub; ++m) {
-                    smooth_g16_[m] *= 0.85;
-                    smooth_g12a_[m] *= 0.85;
-                    smooth_g12b_[m] *= 0.85;
+                    for (int m = 0; m < kNumSub; ++m) {
+                        smooth_g16_[m] *= 0.85f;
+                        smooth_g12a_[m] *= 0.85f;
+                        smooth_g12b_[m] *= 0.85f;
+                    }
                 }
             }
         }
@@ -590,42 +678,42 @@ private:
             }
         }
 
-        std::memmove(in_ring_.data(), in_ring_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(double));
-        std::memmove(ola_buf_.data(), ola_buf_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(double));
-        std::fill(ola_buf_.begin() + 2 * kDelay, ola_buf_.end(), 0.0);
+        std::memmove(in_ring_.data(), in_ring_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(float));
+        std::memmove(ola_buf_.data(), ola_buf_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(float));
+        std::fill(ola_buf_.begin() + 2 * kDelay, ola_buf_.end(), 0.0f);
         hop_idx_ = (hop_idx_ + 1) & 3;
     }
 
-    std::array<double, kFft> hann_{};
+    std::array<float, kFft> hann_{};
     std::array<int, kFft> bitrev_{};
-    std::array<std::complex<double>, kFft / 2> tw_fwd_{};
+    std::array<std::complex<float>, kFft / 2> tw_fwd_{};
 
-    std::array<double, kFft * kTargetChannels> in_ring_{};
-    std::array<double, kFft * kTargetChannels> ola_buf_{};
-    std::array<std::complex<double>, kFft> fft_in_{};
-    std::array<std::complex<double>, kFft / 2 + 1> spec_l_{};
-    std::array<std::complex<double>, kFft / 2 + 1> spec_r_{};
-    std::array<double, kFft / 2 + 1> pwr_{};
-    std::array<double, kNumSub> smooth_g16_{};
-    std::array<double, kNumSub> smooth_g12a_{};
-    std::array<double, kNumSub> smooth_g12b_{};
+    std::array<float, kFft * kTargetChannels> in_ring_{};
+    std::array<float, kFft * kTargetChannels> ola_buf_{};
+    std::array<std::complex<float>, kFft> fft_in_{};
+    std::array<std::complex<float>, kFft / 2 + 1> spec_l_{};
+    std::array<std::complex<float>, kFft / 2 + 1> spec_r_{};
+    std::array<float, kFft / 2 + 1> pwr_{};
+    std::array<float, kNumSub> smooth_g16_{};
+    std::array<float, kNumSub> smooth_g12a_{};
+    std::array<float, kNumSub> smooth_g12b_{};
 
     int hop_fill_ = 0;
     int hop_idx_ = 0;
     int priming_skip_ = kDelay;
 
-    double p_low_hi_ema_ = 0.0;
-    double p_pre16_ema_ = 0.0;
-    double p_post16_ema_ = 0.0;
-    double sib_slow_ema_ = 0.0;
+    float p_low_hi_ema_ = 0.0f;
+    float p_pre16_ema_ = 0.0f;
+    float p_post16_ema_ = 0.0f;
+    float sib_slow_ema_ = 0.0f;
     bool ema_initialized_ = false;
     bool brickwall_16_ = false;
-    double blend_ = 0.0;
-    double mode12_blend_ = 0.0;
-    double sib_duck_ = 1.0;
-    double tonal_guard_ = 1.0;
-    double src_pwr_ema_ = 0.0;
-    double trans_boost_ = 1.0;
+    float blend_ = 0.0f;
+    float mode12_blend_ = 0.0f;
+    float sib_duck_ = 1.0f;
+    float tonal_guard_ = 1.0f;
+    float src_pwr_ema_ = 0.0f;
+    float trans_boost_ = 1.0f;
     int logged_state_ = -1;
 };
 
@@ -652,9 +740,9 @@ struct Pipeline::Impl {
 
     SincResampler resampler;
     HfExtender hf_extender;
-    std::vector<double> work_in;
-    std::vector<double> resampled_buf;
-    std::vector<double> out_fifo;
+    std::vector<float> work_in;
+    std::vector<float> resampled_buf;
+    std::vector<float> out_fifo;
     std::vector<std::vector<uint8_t>> free_bufs;
 
     void reclaim_frames(std::vector<PcmFrame>& out) {
@@ -699,14 +787,14 @@ struct Pipeline::Impl {
 
     double tpdf() { return uniform_half() - uniform_half(); }
 
-    void pack_samples(const double* stereo, size_t frames, std::vector<uint8_t>& bytes) {
+    void pack_samples(const float* stereo, size_t frames, std::vector<uint8_t>& bytes) {
         const size_t bps = static_cast<size_t>(pcm_bits / 8);
         bytes.resize(frames * kTargetChannels * bps);
         uint8_t* dst = bytes.data();
 
         if (pcm_bits == 32) {
             for (size_t i = 0; i < frames * kTargetChannels; ++i) {
-                const double v = guard_peak(stereo[i] * gain);
+                const double v = guard_peak(static_cast<double>(stereo[i]) * gain);
                 const long long q = std::llrint(v * 2147483647.0);
                 const uint32_t u = static_cast<uint32_t>(
                     static_cast<int32_t>(std::clamp<long long>(q, INT32_MIN, INT32_MAX)));
@@ -719,7 +807,7 @@ struct Pipeline::Impl {
         } else if (pcm_bits == 24) {
             constexpr double inv_24 = 1.0 / 8388607.0;
             for (size_t i = 0; i < frames * kTargetChannels; ++i) {
-                const double v = guard_peak(stereo[i] * gain) + tpdf() * inv_24;
+                const double v = guard_peak(static_cast<double>(stereo[i]) * gain) + tpdf() * inv_24;
                 const long long q = std::llrint(v * 8388607.0);
                 const uint32_t u = static_cast<uint32_t>(
                     static_cast<int32_t>(std::clamp<long long>(q, -8388608LL, 8388607LL)));
@@ -733,7 +821,7 @@ struct Pipeline::Impl {
             for (size_t f = 0; f < frames; ++f) {
                 double* errs[2] = {&ns_err_l, &ns_err_r};
                 for (int c = 0; c < kTargetChannels; ++c) {
-                    const double v = guard_peak(stereo[f * kTargetChannels + c] * gain);
+                    const double v = guard_peak(static_cast<double>(stereo[f * kTargetChannels + c]) * gain);
                     const double target = v * 32767.0;
                     const double shaped = target + tpdf() + 0.5 * (*errs[c]);
                     const long long q = std::llrint(std::clamp(shaped, -32768.0, 32767.0));
@@ -843,7 +931,11 @@ bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double 
             return false;
         }
         impl_->aac_rate = static_cast<int>(sr);
-        impl_->resampler.configure(impl_->aac_rate);
+        // Implicit-SBR HE-AAC reports the half base rate (22.05/24 kHz) until frame 1 decodes;
+        // defer table creation in that case so we don't build and discard a 320-phase Kaiser table.
+        if (impl_->aac_rate > 24000) {
+            impl_->resampler.configure(impl_->aac_rate);
+        }
     } else {
         return false;
     }
@@ -909,8 +1001,8 @@ bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool em
             return impl_->frames_decoded > 0;
         }
         if (!pcm || fi.samples == 0 || fi.channels == 0) return true;
-        if (fi.samplerate > 0 && static_cast<int>(fi.samplerate) != impl_->aac_rate) {
-            impl_->aac_rate = static_cast<int>(fi.samplerate);
+        if (!impl_->resampler.configured() || (fi.samplerate > 0 && static_cast<int>(fi.samplerate) != impl_->aac_rate)) {
+            if (fi.samplerate > 0) impl_->aac_rate = static_cast<int>(fi.samplerate);
             impl_->resampler.configure(impl_->aac_rate);
         }
         impl_->aac_native_sbr = (fi.sbr == SBR_UPSAMPLED || fi.sbr == SBR_DOWNSAMPLED);
@@ -944,27 +1036,37 @@ bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool em
         }
     }
 
-    impl_->work_in.resize(decoded_frames * kTargetChannels);
+    const float* stereo_ptr = decoded_ptr;
     if (dec_ch == 1) {
+        impl_->work_in.resize(decoded_frames * kTargetChannels);
         for (size_t i = 0; i < decoded_frames; ++i) {
-            const double s = static_cast<double>(decoded_ptr[i]);
+            const float s = decoded_ptr[i];
             impl_->work_in[2 * i] = s;
             impl_->work_in[2 * i + 1] = s;
         }
-    } else {
+        stereo_ptr = impl_->work_in.data();
+    } else if (dec_ch > 2) {
+        impl_->work_in.resize(decoded_frames * kTargetChannels);
         for (size_t i = 0; i < decoded_frames; ++i) {
-            impl_->work_in[2 * i] = static_cast<double>(decoded_ptr[static_cast<size_t>(dec_ch) * i]);
-            impl_->work_in[2 * i + 1] = static_cast<double>(decoded_ptr[static_cast<size_t>(dec_ch) * i + 1]);
+            impl_->work_in[2 * i] = decoded_ptr[static_cast<size_t>(dec_ch) * i];
+            impl_->work_in[2 * i + 1] = decoded_ptr[static_cast<size_t>(dec_ch) * i + 1];
         }
+        stereo_ptr = impl_->work_in.data();
     }
 
     // Resample to 48 kHz unconditionally while priming so FIR history warms up smoothly too.
-    impl_->resampled_buf.clear();
-    impl_->resampler.process(impl_->work_in.data(), decoded_frames, true, impl_->resampled_buf);
+    // At native 48 kHz (e.g. Opus), feed stereo_ptr straight into HfExtender with zero extra copies.
+    const float* rate48_ptr = stereo_ptr;
+    size_t rate48_frames = decoded_frames;
+    if (impl_->resampler.active()) {
+        impl_->resampled_buf.clear();
+        impl_->resampler.process(stereo_ptr, decoded_frames, true, impl_->resampled_buf);
+        rate48_ptr = impl_->resampled_buf.data();
+        rate48_frames = impl_->resampled_buf.size() / kTargetChannels;
+    }
 
     const bool allow_ext = !(impl_->aac && impl_->aac_native_sbr);
-    impl_->hf_extender.process(impl_->resampled_buf.data(), impl_->resampled_buf.size() / kTargetChannels, allow_ext,
-                               impl_->opus_is_swb, emit_output, impl_->out_fifo);
+    impl_->hf_extender.process(rate48_ptr, rate48_frames, allow_ext, impl_->opus_is_swb, emit_output, impl_->out_fifo);
     impl_->hf_mode.store(allow_ext ? impl_->hf_extender.active_mode() : 0, std::memory_order_relaxed);
     if (emit_output) {
         impl_->drain_chunks(out, false);
@@ -988,7 +1090,9 @@ void Pipeline::flush(std::vector<PcmFrame>& out) {
 
 int Pipeline::output_sample_rate() const { return kTargetRate; }
 int Pipeline::output_channels() const { return kTargetChannels; }
-int Pipeline::source_sample_rate() const { return impl_->resampler.source_rate(); }
+int Pipeline::source_sample_rate() const {
+    return impl_->resampler.source_rate() > 0 ? impl_->resampler.source_rate() : impl_->aac_rate;
+}
 int Pipeline::pcm_bits() const { return impl_->pcm_bits; }
 int Pipeline::hf_mode() const { return impl_->hf_mode.load(std::memory_order_relaxed); }
 double Pipeline::attenuation_db() const { return impl_->atten_db; }
