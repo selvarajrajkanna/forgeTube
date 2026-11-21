@@ -44,7 +44,7 @@ struct PlayerConfig {
     int hdr_mode = 0;               // 0 None, 1 HDR10, 2 HLG
     int64_t max_queue_ms = 30000;   // demuxed read-ahead per stream (network side)
     size_t max_queue_bytes = 48u << 20;  // ...and its memory cap (4K VP9 runs at 20-40 Mb/s)
-    int64_t feed_ahead_ms = 15000;  // how far ahead of the playback clock we submit to ESPlayer
+    int64_t feed_ahead_ms = 6000;   // how far ahead of the playback clock we submit to ESPlayer
 };
 
 struct PlayerStats {
@@ -99,6 +99,7 @@ private:
         std::deque<media::Sample> queue;
         int64_t queued_ms = 0;
         size_t queued_bytes = 0;
+        std::atomic<uint64_t> buffer_wake_seq{0};
         bool demux_done = false;
         std::atomic<bool> ready_to_feed{false};
         std::atomic<bool> packet_fed{false};

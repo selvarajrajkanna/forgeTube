@@ -589,10 +589,17 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
             }
 
             if (can_stream) {
-                for (const Run& run : runs_) {
-                    if (run.data_start > offset_ && !skip(run.data_start - offset_)) {
+                constexpr size_t kStreamBatch = 12;
+                bool streamed_any = false;
+                auto rollback_if_unflushed = [&] {
+                    if (!streamed_any) {
                         out.resize(initial_out);
                         next_dts_ = initial_dts;
+                    }
+                };
+                for (const Run& run : runs_) {
+                    if (run.data_start > offset_ && !skip(run.data_start - offset_)) {
+                        rollback_if_unflushed();
                         error_ = "truncated box";
                         return false;
                     }
@@ -604,8 +611,7 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
                             size_t got = read_(s.data.data(), sz);
                             offset_ += got;
                             if (got != sz) {
-                                out.resize(initial_out);
-                                next_dts_ = initial_dts;
+                                rollback_if_unflushed();
                                 error_ = "truncated box";
                                 return false;
                             }
@@ -616,11 +622,17 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
                         s.key = !(run.flags[i] & 0x10000);
                         out.push_back(std::move(s));
                         next_dts_ += run.durations[i];
+                        if (batch_cb_ && out.size() >= kStreamBatch) {
+                            streamed_any = true;
+                            if (!batch_cb_(out)) {
+                                runs_.clear();
+                                return false;
+                            }
+                        }
                     }
                 }
                 if (mdat_end > offset_ && !skip(mdat_end - offset_)) {
-                    out.resize(initial_out);
-                    next_dts_ = initial_dts;
+                    rollback_if_unflushed();
                     error_ = "truncated box";
                     return false;
                 }

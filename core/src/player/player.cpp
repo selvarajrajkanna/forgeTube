@@ -762,6 +762,14 @@ void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource*
     std::unique_ptr<media::Demuxer> reader(reader_raw);
     std::unique_ptr<net::StreamSource> source(source_raw);
     const std::string initial_url = source->url();
+    reader->set_batch_cb([this, &t](std::deque<media::Sample>& batch) {
+        if (!running_ || !t.active) return false;
+        if (!batch.empty()) {
+            push_samples(t, batch);
+            batch.clear();
+        }
+        return running_ && t.active;
+    });
     std::deque<media::Sample> fragment;
     while (running_) {
         {
@@ -773,13 +781,14 @@ void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource*
         if (!running_ || !t.active) break;
         fragment.clear();
         if (!reader->read_fragment(fragment)) {
+            if (!running_ || !t.active) break;
             OLOG("%s demux: end at byte %llu/%lld (%s%s%s)", stream_name(t.type),
                  static_cast<unsigned long long>(source->position()), static_cast<long long>(source->total_size()),
                  reader->error().empty() ? "eof" : reader->error().c_str(), source->error().empty() ? "" : ", http: ",
                  source->error().c_str());
             break;
         }
-        push_samples(t, fragment);
+        if (!fragment.empty()) push_samples(t, fragment);
     }
     std::lock_guard<std::mutex> lock(t.mutex);
     if (source->url() != initial_url && t.url == initial_url) {
@@ -804,16 +813,29 @@ bool Player::submit_es_packet(Track& t, esp::StreamType type, const uint8_t* dat
     if (type == esp::STREAM_VIDEO && has_color_info_) {
         pkt.matroska_color_info = &color_info_;
     }
+    int wait_ms = 10;
+    int oom_retries = 0;
     for (;;) {
+        const uint64_t seq_before = t.buffer_wake_seq.load(std::memory_order_acquire);
         const int st = api_->submit_packet(handle_, &pkt);
         if (st == esp::SUBMIT_SUCCESS) {
             mark_track_fed(t);
             return true;
         }
-        if (st == esp::SUBMIT_FULL || st == esp::SUBMIT_NOT_PREPARED) {
-            std::unique_lock<std::mutex> lock(t.mutex);
-            t.cv.wait_for(lock, std::chrono::milliseconds(50), [&] { return !running_ || !t.active; });
+        if (st == esp::SUBMIT_FULL || st == esp::SUBMIT_NOT_PREPARED || st == esp::SUBMIT_OUT_OF_MEMORY) {
+            if (st == esp::SUBMIT_OUT_OF_MEMORY && ++oom_retries == 10) {
+                OLOG("%s feed: ESPlayer OOM at pts=%lld size=%u, waiting for decoder headroom", stream_name(type),
+                     static_cast<long long>(pts_ms), pkt.buffer_size);
+            }
+            bool woken = false;
+            {
+                std::unique_lock<std::mutex> lock(t.mutex);
+                woken = t.cv.wait_for(lock, std::chrono::milliseconds(wait_ms), [&] {
+                    return !running_ || !t.active || t.buffer_wake_seq.load(std::memory_order_relaxed) != seq_before;
+                });
+            }
             if (!running_ || !t.active) return false;
+            wait_ms = woken ? 10 : std::min(wait_ms * 2, 40);
             continue;
         }
         OLOG("%s feed: submit status %d at pts=%lld size=%u", stream_name(type), st,
@@ -894,7 +916,7 @@ void Player::feed_loop(Track& t) {
         // After a seek (or a live start) the audio segment starts a bit before the video keyframe.
         if (t.type == esp::STREAM_AUDIO && s.pts_ms < feed_from_ms_) continue;
         if (!submit_es_packet(t, t.type, s.data.data(), s.data.size(), s.pts_ms, s.duration_ms)) return;
-        t.submitted_ms = s.pts_ms;
+        t.submitted_ms = s.pts_ms + s.duration_ms;
         if (t.type == esp::STREAM_VIDEO) {
             br_bytes += s.data.size();
             br_dur_ms += std::max<int64_t>(1, s.duration_ms);
@@ -1048,6 +1070,7 @@ void Player::on_buffer_status(esp::StreamType type, esp::BufferStatus status, vo
         {
             std::lock_guard<std::mutex> lock(t.mutex);
             queued = t.queued_ms;
+            ++t.buffer_wake_seq;
         }
         t.cv.notify_all();
         OLOG("%s buffer underrun: position=%lld submitted=%lld (lead %lld ms) demux queue=%lld ms", stream_name(type),
@@ -1055,7 +1078,11 @@ void Player::on_buffer_status(esp::StreamType type, esp::BufferStatus status, vo
              static_cast<long long>(t.submitted_ms - p->position_ms_), static_cast<long long>(queued));
     } else if (status != esp::BUFFER_OVERRUN) {
         Track& t = type == esp::STREAM_VIDEO ? p->video_ : p->audio_;
-        p->notify_track(t);
+        {
+            std::lock_guard<std::mutex> lock(t.mutex);
+            ++t.buffer_wake_seq;
+        }
+        t.cv.notify_all();
     }
 }
 
@@ -1071,6 +1098,7 @@ void Player::on_ready_to_prepare(esp::StreamType type, void* self) {
     {
         std::lock_guard<std::mutex> lock(t.mutex);
         t.ready_to_feed = true;
+        ++t.buffer_wake_seq;
     }
     t.cv.notify_all();
 }
@@ -1092,6 +1120,7 @@ void Player::on_ready_to_seek(esp::StreamType type, uint64_t time_ms, void* self
     {
         std::lock_guard<std::mutex> lock(t.mutex);
         t.ready_to_feed = true;
+        ++t.buffer_wake_seq;
     }
     t.cv.notify_all();
 }
@@ -1099,7 +1128,13 @@ void Player::on_ready_to_seek(esp::StreamType type, uint64_t time_ms, void* self
 void Player::on_seek_done(void* self) {
     auto* p = static_cast<Player*>(self);
     p->seek_pending_ = false;
-    for (Track* t : {&p->video_, &p->audio_}) p->notify_track(*t);
+    for (Track* t : {&p->video_, &p->audio_}) {
+        {
+            std::lock_guard<std::mutex> lock(t->mutex);
+            ++t->buffer_wake_seq;
+        }
+        t->cv.notify_all();
+    }
     OLOG("esp seek_done");
 }
 

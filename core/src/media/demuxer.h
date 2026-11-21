@@ -104,11 +104,15 @@ struct Sample {
 class Demuxer {
 public:
     using ReadFn = std::function<size_t(void*, size_t)>;
+    // Optional incremental batch sink during read_fragment(). Returning false aborts the fragment early (seek/stop).
+    using BatchCb = std::function<bool(std::deque<Sample>&)>;
     virtual ~Demuxer() = default;
 
     // Reads the init segment and the stream index that follows it, when present.
     virtual bool read_header() = 0;
     const std::vector<Segment>& segments() const { return segments_; }
+    // Optional: emit demuxed samples in small batches while streaming a fragment instead of waiting for EOF of the fragment.
+    void set_batch_cb(BatchCb cb) { batch_cb_ = std::move(cb); }
     // Appends the samples of the next fragment. Returns false on EOF or error.
     virtual bool read_fragment(std::deque<Sample>& out) = 0;
 
@@ -119,6 +123,7 @@ protected:
     TrackInfo track_;
     std::string error_;
     std::vector<Segment> segments_;
+    BatchCb batch_cb_;
 };
 
 // Sniffs the container (MP4 or WebM) from the first bytes and returns the matching reader.

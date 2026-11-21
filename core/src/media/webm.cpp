@@ -388,6 +388,31 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
     auto& buf = frag_buf_;
     const size_t first = out.size();
     bool in_cluster = false;
+    bool streamed_any = false;
+    constexpr size_t kStreamBatch = 12;
+    auto rollback_if_unflushed = [&] {
+        if (!streamed_any) out.resize(first);
+    };
+    auto flush_ready_batch = [&]() -> bool {
+        // Keep the newest frame in `out` as 1-frame lookahead so every flushed frame gets its exact duration_ms.
+        if (!batch_cb_ || out.size() <= first + kStreamBatch) return true;
+        const size_t ready = out.size() - 1;
+        std::deque<Sample> batch;
+        for (size_t i = first; i < ready; ++i) {
+            if (out[i + 1].pts_ms > out[i].pts_ms) {
+                out[i].duration_ms = out[i + 1].pts_ms - out[i].pts_ms;
+                last_delta_ms_ = out[i].duration_ms;
+            } else {
+                out[i].duration_ms = track_.default_duration ? track_.default_duration : last_delta_ms_;
+            }
+            batch.push_back(std::move(out[i]));
+        }
+        Sample tail = std::move(out.back());
+        out.resize(first);
+        out.push_back(std::move(tail));
+        streamed_any = true;
+        return batch_cb_(batch);
+    };
     for (;;) {
         uint32_t id;
         uint64_t size = 0;
@@ -396,7 +421,7 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             has_pending_ = false;
             id = pending_id_;
         } else if (!read_element_header(id, size, unknown)) {
-            if (out.size() > first) {
+            if (out.size() > first || streamed_any) {
                 finish_cluster(out, first);
                 return true;
             }
@@ -415,12 +440,13 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             continue;
         }
         if (unknown) {
+            rollback_if_unflushed();
             error_ = "unknown-size element";
             return false;
         }
         if (id == kSimpleBlock) {
             if (size > kMaxElemBytes) {
-                out.resize(first);
+                rollback_if_unflushed();
                 error_ = "element too large";
                 return false;
             }
@@ -428,7 +454,7 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             uint64_t track = 0;
             bool ignored = false;
             if (!read_vint(track, false, ignored) || offset_ > elem_end || elem_end - offset_ < 3) {
-                out.resize(first);
+                rollback_if_unflushed();
                 if (error_.empty()) error_ = "bad block header";
                 return false;
             }
@@ -436,14 +462,14 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             size_t hgot = read_(hdr, 3);
             offset_ += hgot;
             if (hgot != 3) {
-                out.resize(first);
+                rollback_if_unflushed();
                 error_ = "truncated element";
                 return false;
             }
             const uint64_t payload_len = elem_end - offset_;
             if (track != track_.track_number) {
                 if (!skip(payload_len)) {
-                    out.resize(first);
+                    rollback_if_unflushed();
                     error_ = "truncated element";
                     return false;
                 }
@@ -452,7 +478,7 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             const int16_t rel = static_cast<int16_t>(hdr[0] << 8 | hdr[1]);
             const uint8_t flags = hdr[2];
             if (flags & 0x06) {
-                out.resize(first);
+                rollback_if_unflushed();
                 error_ = "laced blocks are not supported";
                 return false;
             }
@@ -462,7 +488,7 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
                 size_t pgot = read_(s.data.data(), s.data.size());
                 offset_ += pgot;
                 if (pgot != s.data.size()) {
-                    out.resize(first);
+                    rollback_if_unflushed();
                     error_ = "truncated element";
                     return false;
                 }
@@ -471,9 +497,10 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             s.pts_ms = (ns + 500000) / 1000000;
             s.key = (flags & 0x80) != 0;
             out.push_back(std::move(s));
+            if (!flush_ready_batch()) return false;
         } else if (id == kTimecode || id == kBlockGroup) {
             if (!read_exact(buf, size)) {
-                out.resize(first);
+                rollback_if_unflushed();
                 error_ = "truncated element";
                 return false;
             }
@@ -488,12 +515,13 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
                     else if (gid == kReferenceBlock) has_reference = true;
                 });
                 if (block && !parse_block(block, block_size, false, has_reference, out)) {
-                    out.resize(first);
+                    rollback_if_unflushed();
                     return false;
                 }
+                if (block && !flush_ready_batch()) return false;
             }
         } else if (!skip(size)) {  // Cues / Tags / Void / CRC-32 ...
-            out.resize(first);
+            rollback_if_unflushed();
             error_ = "truncated element";
             return false;
         }
