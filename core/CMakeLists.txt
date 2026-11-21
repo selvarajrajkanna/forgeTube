@@ -14,13 +14,13 @@ set(GEN_FILES OFF CACHE BOOL "" FORCE)
 set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
 set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
 set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
-add_subdirectory(${OMEGA_DEPS}/mbedtls-3.6.7 mbedtls EXCLUDE_FROM_ALL)
+add_subdirectory(${OMEGA_DEPS}/mbedtls-3.6.8 mbedtls EXCLUDE_FROM_ALL)
 if(TARGET mbedcrypto)
     target_compile_options(mbedcrypto PRIVATE -O3)
 endif()
 
 # QuickJS-ng (static, PIC): runs the yt-dlp EJS solver on YouTube's player JS (fallback client).
-set(OMEGA_QUICKJS ${OMEGA_DEPS}/quickjs-0.17.0)
+set(OMEGA_QUICKJS ${OMEGA_DEPS}/quickjs-0.18.0)
 add_library(omega_quickjs STATIC ${OMEGA_QUICKJS}/dtoa.c ${OMEGA_QUICKJS}/libregexp.c ${OMEGA_QUICKJS}/libunicode.c
             ${OMEGA_QUICKJS}/quickjs.c)
 set_target_properties(omega_quickjs PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hidden)
@@ -30,7 +30,7 @@ target_include_directories(omega_quickjs PUBLIC ${OMEGA_QUICKJS})
 target_link_libraries(omega_quickjs PUBLIC m)
 
 # zlib (static, PIC, inflate-only): gzip decompression for HTTP API responses.
-set(OMEGA_ZLIB ${OMEGA_DEPS}/zlib-1.3.1)
+set(OMEGA_ZLIB ${OMEGA_DEPS}/zlib-1.4)
 add_library(omega_zlib STATIC
     ${OMEGA_ZLIB}/adler32.c
     ${OMEGA_ZLIB}/crc32.c
@@ -43,7 +43,7 @@ set_target_properties(omega_zlib PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hi
 target_compile_options(omega_zlib PRIVATE -O3 -w)
 target_include_directories(omega_zlib PUBLIC ${OMEGA_ZLIB})
 
-# Opus 1.5.2 (floating-point) & FAAD2 2.11.4 (floating-point, DRC off): clean software decode for PCM DSP.
+# Opus 1.6.1 (floating-point) & FAAD2 2.11.4 (floating-point, DRC off): clean software decode for PCM DSP.
 set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
 set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -56,7 +56,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
     # Tizen TV targets ARMv8-A with guaranteed NEON; inline NEON intrinsics directly without RTCD dispatch.
     set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
 endif()
-add_subdirectory(${OMEGA_DEPS}/opus-1.5.2 opus EXCLUDE_FROM_ALL)
+add_subdirectory(${OMEGA_DEPS}/opus-1.6.1 opus EXCLUDE_FROM_ALL)
 if(TARGET opus)
     set_target_properties(opus PROPERTIES C_VISIBILITY_PRESET hidden)
     target_compile_options(opus PRIVATE -O3 -w -fno-math-errno -ffp-contract=fast)

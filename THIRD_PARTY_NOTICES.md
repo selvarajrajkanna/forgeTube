@@ -10,8 +10,8 @@ OmegaTube reuses the following work. Thanks to their authors.
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) 3.6 | fetched by `scripts/fetch-deps.sh`, linked into the core | Apache-2.0 |
 | [nlohmann/json](https://github.com/nlohmann/json) 3.12 | fetched by `scripts/fetch-deps.sh` | MIT |
 | [QR Code generator](https://github.com/nayuki/QR-Code-generator) by Project Nayuki | fetched by `scripts/fetch-deps.sh` | MIT |
-| [QuickJS-ng](https://github.com/quickjs-ng/quickjs) 0.17 (C) Fabrice Bellard, Charlie Gordon and the quickjs-ng contributors | fetched by `scripts/fetch-deps.sh`, linked into the core (fallback client deciphering) | MIT |
-| [Opus](https://opus-codec.org) 1.5.2 (C) Xiph.Org Foundation and contributors | fetched by `scripts/fetch-deps.sh`, linked into the core (floating-point Opus decoding) | BSD-3-Clause |
+| [QuickJS-ng](https://github.com/quickjs-ng/quickjs) 0.18 (C) Fabrice Bellard, Charlie Gordon and the quickjs-ng contributors | fetched by `scripts/fetch-deps.sh`, linked into the core (fallback client deciphering) | MIT |
+| [Opus](https://opus-codec.org) 1.6.1 (C) Xiph.Org Foundation and contributors | fetched by `scripts/fetch-deps.sh`, linked into the core (floating-point Opus decoding) | BSD-3-Clause |
 | [FAAD2](https://github.com/knik0/faad2) 2.11.4 (C) Nero AG and contributors | fetched by `scripts/fetch-deps.sh`, linked into the core (floating-point AAC decoding) | GPL-2.0-or-later |
 | [yt-dlp EJS](https://github.com/yt-dlp/ejs) 0.8 solver, bundling [meriyah](https://github.com/meriyah/meriyah) (ISC) and [astring](https://github.com/davidbonnet/astring) (MIT) | fetched by `scripts/fetch-deps.sh`, embedded in the core | Unlicense, ISC, MIT |
 | Mozilla CA certificate bundle, as packaged by [curl](https://curl.se/docs/caextract.html) | fetched by `scripts/fetch-deps.sh`, embedded in the core | MPL-2.0 |
