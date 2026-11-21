@@ -130,10 +130,27 @@ void peek_moof_timing(std::span<const uint8_t> moof, uint32_t default_dur, uint6
     });
 }
 
+constexpr uint64_t kMaxBoxBytes = 128ULL << 20;
+
+// Overflow-safe (a * b) / c for 64-bit timestamps without relying on __int128 (unavailable on 32-bit ARM).
+uint64_t mul_div_u64(uint64_t a, uint64_t b, uint64_t c) {
+    if (c == 0) return 0;
+    if (b == c) return a;
+    return (a / c) * b + ((a % c) * b) / c;
+}
+
+int64_t mul_div_i64(int64_t a, uint64_t b, uint64_t c) {
+    if (c == 0) return 0;
+    if (b == c) return a;
+    bool neg = a < 0;
+    uint64_t mag = neg ? (static_cast<uint64_t>(-(a + 1)) + 1ULL) : static_cast<uint64_t>(a);
+    uint64_t res = mul_div_u64(mag, b, c);
+    return neg ? -static_cast<int64_t>(res) : static_cast<int64_t>(res);
+}
+
 }  // namespace
 
 bool Fmp4Reader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
-    constexpr uint64_t kMaxBoxBytes = 128ULL << 20;
     if (n > kMaxBoxBytes) {
         error_ = "box too large";
         return false;
@@ -142,6 +159,18 @@ bool Fmp4Reader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
     size_t got = n ? read_(buf.data(), buf.size()) : 0;
     offset_ += got;
     return got == n;
+}
+
+bool Fmp4Reader::skip(uint64_t n) {
+    uint8_t tmp[16 * 1024];
+    while (n > 0) {
+        size_t want = static_cast<size_t>(std::min<uint64_t>(n, sizeof tmp));
+        size_t got = read_(tmp, want);
+        offset_ += got;
+        if (got != want) return false;
+        n -= got;
+    }
+    return true;
 }
 
 bool Fmp4Reader::read_box_header(uint32_t& type, uint64_t& payload) {
@@ -249,10 +278,12 @@ void Fmp4Reader::parse_sidx(std::span<const uint8_t> sidx, uint64_t sidx_end) {
         uint32_t size = c.u32() & 0x7fffffff;
         uint32_t duration = c.u32();
         c.skip(4);  // SAP info
-        int64_t start_ticks = static_cast<int64_t>(time) - track_.media_time * static_cast<int64_t>(timescale) /
-                                                                static_cast<int64_t>(track_.timescale);
-        uint64_t dts = time * track_.timescale / timescale;
-        segments_.push_back({offset, std::max<int64_t>(start_ticks, 0) * 1000 / timescale, dts});
+        int64_t media_shift = mul_div_i64(track_.media_time, timescale, track_.timescale);
+        int64_t start_ticks = static_cast<int64_t>(time) - media_shift;
+        uint64_t dts = mul_div_u64(time, track_.timescale, timescale);
+        int64_t start_ms = static_cast<int64_t>(mul_div_u64(static_cast<uint64_t>(std::max<int64_t>(start_ticks, 0)),
+                                                            1000ULL, timescale));
+        segments_.push_back({offset, start_ms, dts});
         offset += size;
         time += duration;
     }
@@ -498,35 +529,117 @@ bool Fmp4Reader::parse_moof(std::span<const uint8_t> moof, uint64_t moof_start) 
 bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
     auto& buf = frag_buf_;
     for (;;) {
-        uint64_t box_start, payload_start;
-        uint32_t type;
+        uint64_t box_start = 0, payload_start = 0, payload = 0;
+        uint32_t type = 0;
+        bool from_pending = false;
         if (has_pending_) {
             has_pending_ = false;
+            from_pending = true;
             type = pending_type_;
             box_start = pending_start_;
             payload_start = pending_payload_start_;
             buf.swap(pending_);
+            payload = buf.size();
         } else {
             box_start = offset_;
-            uint64_t payload;
             if (!read_box_header(type, payload)) return false;
             payload_start = offset_;
-            if (!read_exact(buf, payload)) {
+        }
+
+        if (type == fourcc("moof")) {
+            if (!from_pending && !read_exact(buf, payload)) {
                 error_ = "truncated box";
                 return false;
             }
-        }
-        if (type == fourcc("moof")) {
             if (!parse_moof(buf, box_start)) {
                 error_ = "moof without trun";
                 return false;
             }
         } else if (type == fourcc("mdat") && !runs_.empty()) {
+            if (payload > kMaxBoxBytes) {
+                error_ = "box too large";
+                return false;
+            }
+            const uint64_t mdat_end = payload_start + payload;
             const double to_ms = 1000.0 / track_.timescale;
+            const size_t initial_out = out.size();
+            const uint64_t initial_dts = next_dts_;
+
+            // Fast zero-copy path (100% of YouTube DASH fMP4): verify runs are monotonic inside mdat
+            // and stream each sample straight into Sample::data without retaining a multi-MB frag_buf_.
+            bool can_stream = !from_pending && mdat_end >= payload_start;
+            if (can_stream) {
+                uint64_t cursor = payload_start;
+                for (const Run& run : runs_) {
+                    uint64_t at = run.data_start;
+                    if (at < cursor || at > mdat_end) {
+                        can_stream = false;
+                        break;
+                    }
+                    for (uint32_t sz : run.sizes) {
+                        if (sz > mdat_end - at) {
+                            can_stream = false;
+                            break;
+                        }
+                        at += sz;
+                    }
+                    if (!can_stream) break;
+                    cursor = at;
+                }
+            }
+
+            if (can_stream) {
+                for (const Run& run : runs_) {
+                    if (run.data_start > offset_ && !skip(run.data_start - offset_)) {
+                        out.resize(initial_out);
+                        next_dts_ = initial_dts;
+                        error_ = "truncated box";
+                        return false;
+                    }
+                    for (size_t i = 0; i < run.sizes.size(); ++i) {
+                        Sample s;
+                        const size_t sz = run.sizes[i];
+                        if (sz > 0) {
+                            s.data.resize(sz);
+                            size_t got = read_(s.data.data(), sz);
+                            offset_ += got;
+                            if (got != sz) {
+                                out.resize(initial_out);
+                                next_dts_ = initial_dts;
+                                error_ = "truncated box";
+                                return false;
+                            }
+                        }
+                        int64_t pts = static_cast<int64_t>(next_dts_) + run.ctos[i] - track_.media_time;
+                        s.pts_ms = static_cast<int64_t>(std::max<int64_t>(pts, 0) * to_ms + 0.5);
+                        s.duration_ms = static_cast<int64_t>(run.durations[i] * to_ms + 0.5);
+                        s.key = !(run.flags[i] & 0x10000);
+                        out.push_back(std::move(s));
+                        next_dts_ += run.durations[i];
+                    }
+                }
+                if (mdat_end > offset_ && !skip(mdat_end - offset_)) {
+                    out.resize(initial_out);
+                    next_dts_ = initial_dts;
+                    error_ = "truncated box";
+                    return false;
+                }
+                runs_.clear();
+                return true;
+            }
+
+            // Fallback for non-monotonic runs or pre-buffered mdat.
+            if (!from_pending && !read_exact(buf, payload)) {
+                error_ = "truncated box";
+                return false;
+            }
+            const uint64_t buf_end = payload_start + buf.size();
             for (const Run& run : runs_) {
                 uint64_t at = run.data_start;
                 for (size_t i = 0; i < run.sizes.size(); ++i) {
-                    if (at < payload_start || at + run.sizes[i] > payload_start + buf.size()) {
+                    if (at < payload_start || at > buf_end || run.sizes[i] > buf_end - at) {
+                        out.resize(initial_out);
+                        next_dts_ = initial_dts;
                         error_ = "sample outside mdat";
                         return false;
                     }
@@ -544,6 +657,11 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
             }
             runs_.clear();
             return true;
+        } else if (!from_pending) {
+            if (!skip(payload)) {
+                error_ = "truncated box";
+                return false;
+            }
         }
     }
 }

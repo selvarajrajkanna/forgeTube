@@ -501,6 +501,26 @@ size_t Connection::raw_read(void* dst, size_t n) {
         return got;
     }
     if (!transport_) return 0;
+    // Buffer small reads (box/EBML headers, audio frames) through buf_ to avoid per-sample syscalls,
+    // while large reads (>= 4 KiB video frames) stream zero-copy straight into dst.
+    if (n < 4096) {
+        size_t want = (!chunked_ && remaining_ > 0)
+                          ? std::min<size_t>(buf_.size(), static_cast<size_t>(remaining_))
+                          : buf_.size();
+        long r = transport_->recv(buf_.data(), want);
+        if (r < 0) {
+            error_ = "recv error " + std::to_string(r);
+            return 0;
+        }
+        buf_pos_ = 0;
+        buf_len_ = static_cast<size_t>(r);
+        size_t got = std::min(n, buf_len_);
+        if (got > 0) {
+            memcpy(dst, buf_.data(), got);
+            buf_pos_ = got;
+        }
+        return got;
+    }
     long r = transport_->recv(dst, n);
     if (r < 0) {
         error_ = "recv error " + std::to_string(r);

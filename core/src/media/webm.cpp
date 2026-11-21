@@ -1,5 +1,6 @@
 #include "media/webm.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 
@@ -102,6 +103,8 @@ void for_each_element(Cursor c, Fn&& fn) {
     }
 }
 
+constexpr uint64_t kMaxElemBytes = 128ULL << 20;
+
 }  // namespace
 
 bool WebmReader::read_vint(uint64_t& value, bool keep_marker, bool& unknown) {
@@ -135,7 +138,6 @@ bool WebmReader::read_element_header(uint32_t& id, uint64_t& size, bool& unknown
 }
 
 bool WebmReader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
-    constexpr uint64_t kMaxElemBytes = 128ULL << 20;
     if (n > kMaxElemBytes) {
         error_ = "element too large";
         return false;
@@ -219,7 +221,7 @@ bool WebmReader::parse_info(std::span<const uint8_t> info) {
         error_ = "bad TimecodeScale";
         return false;
     }
-    track_.timescale = static_cast<uint32_t>(1000000000ull / timecode_scale_);
+    track_.timescale = static_cast<uint32_t>(std::max<uint64_t>(1, 1000000000ull / timecode_scale_));
     return true;
 }
 
@@ -321,18 +323,25 @@ void WebmReader::parse_cues(std::span<const uint8_t> cues) {
     segments_.clear();
     for_each_element(Cursor{cues.data(), cues.data() + cues.size()}, [&](uint32_t id, Cursor point) {
         if (id != kCuePoint) return;
-        uint64_t time = 0, position = 0, track = 0;
+        uint64_t time = 0, position = 0;
         bool have_position = false;
         for_each_element(point, [&](uint32_t pid, Cursor c) {
-            if (pid == kCueTime) time = to_uint(c);
-            else if (pid == kCueTrackPositions && !have_position) {
+            if (pid == kCueTime) {
+                time = to_uint(c);
+            } else if (pid == kCueTrackPositions && !have_position) {
+                uint64_t tnum = 0, pos = 0;
+                bool got_pos = false;
                 for_each_element(c, [&](uint32_t tid, Cursor t) {
-                    if (tid == kCueTrack) track = to_uint(t);
-                    else if (tid == kCueClusterPosition) position = to_uint(t), have_position = true;
+                    if (tid == kCueTrack) tnum = to_uint(t);
+                    else if (tid == kCueClusterPosition) { pos = to_uint(t); got_pos = true; }
                 });
+                if (got_pos && (!tnum || !track_.track_number || tnum == track_.track_number)) {
+                    position = pos;
+                    have_position = true;
+                }
             }
         });
-        if (!have_position || (track && track != track_.track_number)) return;
+        if (!have_position) return;
         int64_t ms = static_cast<int64_t>(time * timecode_scale_ / 1000000);
         segments_.push_back({segment_data_ + position, ms, 0});
     });
@@ -409,15 +418,67 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             error_ = "unknown-size element";
             return false;
         }
-        if (id == kTimecode || id == kSimpleBlock || id == kBlockGroup) {
+        if (id == kSimpleBlock) {
+            if (size > kMaxElemBytes) {
+                out.resize(first);
+                error_ = "element too large";
+                return false;
+            }
+            const uint64_t elem_end = offset_ + size;
+            uint64_t track = 0;
+            bool ignored = false;
+            if (!read_vint(track, false, ignored) || offset_ > elem_end || elem_end - offset_ < 3) {
+                out.resize(first);
+                if (error_.empty()) error_ = "bad block header";
+                return false;
+            }
+            uint8_t hdr[3];
+            size_t hgot = read_(hdr, 3);
+            offset_ += hgot;
+            if (hgot != 3) {
+                out.resize(first);
+                error_ = "truncated element";
+                return false;
+            }
+            const uint64_t payload_len = elem_end - offset_;
+            if (track != track_.track_number) {
+                if (!skip(payload_len)) {
+                    out.resize(first);
+                    error_ = "truncated element";
+                    return false;
+                }
+                continue;
+            }
+            const int16_t rel = static_cast<int16_t>(hdr[0] << 8 | hdr[1]);
+            const uint8_t flags = hdr[2];
+            if (flags & 0x06) {
+                out.resize(first);
+                error_ = "laced blocks are not supported";
+                return false;
+            }
+            Sample s;
+            if (payload_len > 0) {
+                s.data.resize(static_cast<size_t>(payload_len));
+                size_t pgot = read_(s.data.data(), s.data.size());
+                offset_ += pgot;
+                if (pgot != s.data.size()) {
+                    out.resize(first);
+                    error_ = "truncated element";
+                    return false;
+                }
+            }
+            int64_t ns = std::max<int64_t>(0, (cluster_time_ + rel) * static_cast<int64_t>(timecode_scale_));
+            s.pts_ms = (ns + 500000) / 1000000;
+            s.key = (flags & 0x80) != 0;
+            out.push_back(std::move(s));
+        } else if (id == kTimecode || id == kBlockGroup) {
             if (!read_exact(buf, size)) {
+                out.resize(first);
                 error_ = "truncated element";
                 return false;
             }
             if (id == kTimecode) {
                 cluster_time_ = static_cast<int64_t>(to_uint(Cursor{buf.data(), buf.data() + buf.size()}));
-            } else if (id == kSimpleBlock) {
-                if (!parse_block(buf.data(), buf.size(), true, false, out)) return false;
             } else {
                 const uint8_t* block = nullptr;
                 size_t block_size = 0;
@@ -426,9 +487,13 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
                     if (gid == kBlock) block = c.p, block_size = c.left();
                     else if (gid == kReferenceBlock) has_reference = true;
                 });
-                if (block && !parse_block(block, block_size, false, has_reference, out)) return false;
+                if (block && !parse_block(block, block_size, false, has_reference, out)) {
+                    out.resize(first);
+                    return false;
+                }
             }
         } else if (!skip(size)) {  // Cues / Tags / Void / CRC-32 ...
+            out.resize(first);
             error_ = "truncated element";
             return false;
         }

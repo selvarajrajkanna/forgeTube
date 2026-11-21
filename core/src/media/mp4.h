@@ -31,6 +31,7 @@ private:
 
     bool read_box_header(uint32_t& type, uint64_t& payload);
     bool read_exact(std::vector<uint8_t>& buf, uint64_t n);
+    bool skip(uint64_t n);
     bool parse_moov(std::span<const uint8_t> moov);
     bool parse_moof(std::span<const uint8_t> moof, uint64_t moof_start);
     void parse_sidx(std::span<const uint8_t> sidx, uint64_t sidx_end);
