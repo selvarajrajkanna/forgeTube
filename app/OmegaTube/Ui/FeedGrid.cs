@@ -186,6 +186,8 @@ namespace OmegaTube.Ui
         protected override void Dispose(DisposeTypes type)
         {
             UiWork.Cancel(pump);
+            if (scroll != null) { scroll.Stop(); scroll.Dispose(); scroll = null; }
+            if (hlScroll != null) { hlScroll.Stop(); hlScroll.Dispose(); hlScroll = null; }
             base.Dispose(type);
         }
 
@@ -282,12 +284,22 @@ namespace OmegaTube.Ui
             }
             loading = true;
             int gen = generation;
-            FeedPage page = await loader(fresh ? continuation : "");
+            FeedPage page;
+            try
+            {
+                page = await loader(fresh ? continuation : "");
+            }
+            finally
+            {
+                if (gen == generation)
+                {
+                    loading = false;
+                }
+            }
             if (gen != generation || Disposed)
             {
                 return;  // the grid switched to another feed meanwhile
             }
-            loading = false;
             if (!initialLoadNotified)
             {
                 initialLoadNotified = true;

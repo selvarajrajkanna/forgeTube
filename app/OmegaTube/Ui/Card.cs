@@ -178,6 +178,17 @@ namespace OmegaTube.Ui
             }
         }
 
+        protected override void Dispose(DisposeTypes type)
+        {
+            if (zoom != null)
+            {
+                zoom.Stop();
+                zoom.Dispose();
+                zoom = null;
+            }
+            base.Dispose(type);
+        }
+
         private void ApplyFocusColors()
         {
             Color infoColor = focused ? Theme.CardInfoFocused : Theme.CardInfo;

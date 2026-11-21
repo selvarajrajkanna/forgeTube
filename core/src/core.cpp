@@ -67,8 +67,10 @@ namespace {
 omega_player* start_youtube(void* window, int width, int height, omega::yt::Client& client,
                             const omega::yt::VideoInfo& info, const omega::yt::Format* video,
                             const omega::yt::Format* audio, int64_t start_ms,
-                            const std::vector<std::string>& skipped_clients, bool& stream_refused) {
+                            const std::vector<std::string>& skipped_clients, bool& stream_refused,
+                            std::string& start_error) {
     stream_refused = false;
+    start_error.clear();
     OLOG("youtube: video itag %d %dx%d@%d %s %lld kb/s, audio itag %d %s %d Hz", video->itag, video->width,
          video->height, video->fps, video->codecs.c_str(), static_cast<long long>(video->bitrate / 1000), audio->itag,
          audio->codecs.c_str(), audio->audio_sample_rate);
@@ -118,7 +120,8 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.app_runtitle = "YouTube";
     auto* p = new omega_player(std::move(cfg));
     if (!p->impl.start()) {
-        OLOG("player start failed: %s", p->impl.error().c_str());
+        start_error = p->impl.error();
+        OLOG("player start failed: %s", start_error.c_str());
         stream_refused = p->impl.stream_refused();
         delete p;
         return nullptr;
@@ -203,26 +206,33 @@ void omega_yt_preload(const char* video_id) {
         }
         g_preload.in_flight = vid;
     }
-    omega::yt::Client client;
-    omega::yt::VideoInfo info;
-    std::string error;
-    const bool ok = client.player(vid, info, error) && !info.formats.empty();
-    {
+    bool ok = false;
+    try {
+        omega::yt::Client client;
+        omega::yt::VideoInfo info;
+        std::string error;
+        ok = client.player(vid, info, error) && !info.formats.empty();
+        {
+            std::lock_guard<std::mutex> lock(g_preload_mutex);
+            if (g_preload.in_flight == vid) g_preload.in_flight.clear();
+            if (ok) {
+                g_preload.video_id = vid;
+                g_preload.info = std::move(info);
+                g_preload.ts = std::chrono::steady_clock::now();
+                OLOG("youtube %s: preloaded (%zu formats)", vid.c_str(), g_preload.info.formats.size());
+            }
+        }
+    } catch (const std::exception& e) {
+        OLOG("youtube %s: preload exception: %s", vid.c_str(), e.what());
         std::lock_guard<std::mutex> lock(g_preload_mutex);
         if (g_preload.in_flight == vid) g_preload.in_flight.clear();
-        if (ok) {
-            g_preload.video_id = vid;
-            g_preload.info = std::move(info);
-            g_preload.ts = std::chrono::steady_clock::now();
-            OLOG("youtube %s: preloaded (%zu formats)", vid.c_str(), g_preload.info.formats.size());
-        }
     }
     g_preload_cv.notify_all();
 }
 
 omega_player* omega_player_create_youtube(void* window, int width, int height, const char* video_id,
                                           int max_height, const char* codecs, int64_t start_ms,
-                                          const char* audio_track) {
+                                          const char* audio_track) try {
     omega::yt::Client client;
     omega::yt::VideoInfo info;
     std::string error;
@@ -273,17 +283,17 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
         // A codec the TV refuses (ESPlayer rejects its stream info) is dropped and the next best format tried.
         std::vector<std::string> refused;
         bool stream_refused = false;
+        std::string last_start_error;
         for (const omega::yt::Format* video : videos) {
             if (std::find(refused.begin(), refused.end(), video->video_codec()) != refused.end()) continue;
             omega_player* p = start_youtube(window, width, height, client, info, video, audio, start_ms,
-                                            skipped_clients, stream_refused);
+                                            skipped_clients, stream_refused, last_start_error);
             if (!p && !stream_refused && audio->codecs == "opus" && fallback_aac) {
                 // If the TV refused Opus audio rather than the video codec, retry with AAC.
-                std::vector<std::string> last = omega::log::tail(1);
-                if (!last.empty() && last.back().find("audio Opus") != std::string::npos) {
+                if (last_start_error.find("audio Opus") != std::string::npos) {
                     audio = fallback_aac;
                     p = start_youtube(window, width, height, client, info, video, audio, start_ms,
-                                      skipped_clients, stream_refused);
+                                      skipped_clients, stream_refused, last_start_error);
                 }
             }
             if (p) {
@@ -343,8 +353,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
             refused.push_back(video->video_codec());
         }
         if (!stream_refused) {
-            std::vector<std::string> last = omega::log::tail(1);  // "player start failed: ..."
-            set_play_error("player", "", "", last.empty() ? "" : last.back());
+            set_play_error("player", "", "", last_start_error);
             return nullptr;
         }
         OLOG("youtube %s: streams refused for %s, trying another player client", video_id, info.client.c_str());
@@ -364,6 +373,10 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
             return nullptr;
         }
     }
+} catch (const std::exception& e) {
+    OLOG("youtube %s: exception: %s", video_id ? video_id : "-", e.what());
+    set_play_error("player", "", "", e.what());
+    return nullptr;
 }
 
 void omega_player_toggle_pause(omega_player* p) {
@@ -431,6 +444,19 @@ char* to_c_json(const nlohmann::json& j) {
     return out;
 }
 
+template <typename Fn>
+char* c_api_json_guard(const char* name, Fn fn) {
+    try {
+        return fn();
+    } catch (const std::exception& e) {
+        OLOG("%s: exception: %s", name, e.what());
+        return to_c_json({{"error", e.what()}});
+    } catch (...) {
+        OLOG("%s: unknown exception", name);
+        return to_c_json({{"error", "internal error"}});
+    }
+}
+
 nlohmann::json items_json(const std::vector<omega::yt::FeedItem>& list) {
     nlohmann::json items = nlohmann::json::array();
     for (const auto& it : list)
@@ -463,117 +489,134 @@ nlohmann::json feed_json(const omega::yt::Feed& feed) {
 }  // namespace
 
 char* omega_yt_search(const char* query, const char* continuation) {
-    omega::yt::Feed feed;
-    std::string error;
-    if (!omega::yt::shared_client().search(query ? query : "", continuation ? continuation : "", feed, error))
-        return to_c_json({{"error", error}});
-    return to_c_json(feed_json(feed));
+    return c_api_json_guard("omega_yt_search", [&] {
+        omega::yt::Feed feed;
+        std::string error;
+        if (!omega::yt::shared_client().search(query ? query : "", continuation ? continuation : "", feed, error))
+            return to_c_json({{"error", error}});
+        return to_c_json(feed_json(feed));
+    });
 }
 
 namespace {
 
+std::mutex g_device_code_mutex;
 omega::yt::DeviceCode g_device_code;  // last code from omega_auth_begin (poll only receives its id)
 
 }  // namespace
 
 char* omega_yt_browse(const char* browse_id, const char* continuation) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    omega::yt::Feed feed;
-    if (!omega::yt::shared_client().browse(browse_id ? browse_id : "", continuation ? continuation : "", token, feed,
-                                           error))
-        return to_c_json({{"error", error}});
-    return to_c_json(feed_json(feed));
+    return c_api_json_guard("omega_yt_browse", [&] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        omega::yt::Feed feed;
+        if (!omega::yt::shared_client().browse(browse_id ? browse_id : "", continuation ? continuation : "", token, feed,
+                                               error))
+            return to_c_json({{"error", error}});
+        return to_c_json(feed_json(feed));
+    });
 }
 
 char* omega_yt_playlist(const char* video_id, const char* playlist_id) {
-    omega::yt::Feed feed;
-    std::string title, error;
-    if (!omega::yt::shared_client().playlist(video_id ? video_id : "", playlist_id ? playlist_id : "", feed, title,
-                                             error))
-        return to_c_json({{"error", error}});
-    nlohmann::json j = feed_json(feed);
-    j["title"] = title;
-    return to_c_json(j);
+    return c_api_json_guard("omega_yt_playlist", [&] {
+        omega::yt::Feed feed;
+        std::string title, error;
+        if (!omega::yt::shared_client().playlist(video_id ? video_id : "", playlist_id ? playlist_id : "", feed, title,
+                                                 error))
+            return to_c_json({{"error", error}});
+        nlohmann::json j = feed_json(feed);
+        j["title"] = title;
+        return to_c_json(j);
+    });
 }
 
 char* omega_yt_playlist_page(const char* playlist_id, const char* continuation) {
-    omega::yt::Feed feed;
-    std::string title, error;
-    if (!omega::yt::shared_client().playlist_page(playlist_id ? playlist_id : "", continuation ? continuation : "",
-                                                  feed, title, error))
-        return to_c_json({{"error", error}});
-    nlohmann::json j = feed_json(feed);
-    j["title"] = title;
-    return to_c_json(j);
+    return c_api_json_guard("omega_yt_playlist_page", [&] {
+        omega::yt::Feed feed;
+        std::string title, error;
+        if (!omega::yt::shared_client().playlist_page(playlist_id ? playlist_id : "", continuation ? continuation : "",
+                                                      feed, title, error))
+            return to_c_json({{"error", error}});
+        nlohmann::json j = feed_json(feed);
+        j["title"] = title;
+        return to_c_json(j);
+    });
 }
 
 char* omega_yt_related(const char* video_id, const char* continuation) {
-    omega::yt::Feed feed;
-    std::string error;
-    std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
-    error.clear();
-    if (!omega::yt::shared_client().related(video_id ? video_id : "", continuation ? continuation : "", token, feed, error))
-        return to_c_json({{"error", error}});
-    return to_c_json(feed_json(feed));
+    return c_api_json_guard("omega_yt_related", [&] {
+        omega::yt::Feed feed;
+        std::string error;
+        std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
+        error.clear();
+        if (!omega::yt::shared_client().related(video_id ? video_id : "", continuation ? continuation : "", token, feed, error))
+            return to_c_json({{"error", error}});
+        return to_c_json(feed_json(feed));
+    });
 }
 
 char* omega_yt_details(const char* video_id) {
-    std::string id = video_id ? video_id : "", error;
-    std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
-    omega::yt::VideoDetails d;
-    if (!omega::yt::shared_client().details(id, token, d, error)) return to_c_json({{"error", error}});
-    return to_c_json({{"channelId", d.channel_id},
-                      {"channel", d.channel},
-                      {"channelAvatar", d.channel_avatar},
-                      {"subscribers", d.subscribers},
-                      {"date", d.date},
-                      {"likeStatus", d.like_status},
-                      {"likeCount", d.like_count},
-                      {"subscribed", d.subscribed}});
+    return c_api_json_guard("omega_yt_details", [&] {
+        std::string id = video_id ? video_id : "", error;
+        std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
+        omega::yt::VideoDetails d;
+        if (!omega::yt::shared_client().details(id, token, d, error)) return to_c_json({{"error", error}});
+        return to_c_json({{"channelId", d.channel_id},
+                          {"channel", d.channel},
+                          {"channelAvatar", d.channel_avatar},
+                          {"subscribers", d.subscribers},
+                          {"date", d.date},
+                          {"likeStatus", d.like_status},
+                          {"likeCount", d.like_count},
+                          {"subscribed", d.subscribed}});
+    });
 }
 
 namespace {
 
 // Runs an account action with a fresh access token: {"ok":true} or {"error"}.
 template <typename Fn>
-char* account_action(Fn action) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    if (!action(token, error)) return to_c_json({{"error", error}});
-    return to_c_json({{"ok", true}});
+char* account_action(const char* name, Fn action) {
+    return c_api_json_guard(name, [&] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        if (!action(token, error)) return to_c_json({{"error", error}});
+        return to_c_json({{"ok", true}});
+    });
 }
 
 }  // namespace
 
 char* omega_yt_rate(const char* video_id, const char* rating) {
     std::string id = video_id ? video_id : "", r = rating ? rating : "none";
-    return account_action([&](const std::string& token, std::string& error) {
+    return account_action("omega_yt_rate", [&](const std::string& token, std::string& error) {
         return omega::yt::rate_video(id, r, token, error);
     });
 }
 
 char* omega_yt_subscribe(const char* channel_id, int subscribe) {
     std::string id = channel_id ? channel_id : "";
-    return account_action([&](const std::string& token, std::string& error) {
+    return account_action("omega_yt_subscribe", [&](const std::string& token, std::string& error) {
         return omega::yt::set_subscribed(id, subscribe != 0, token, error);
     });
 }
 
 char* omega_yt_channel(const char* channel_id, const char* continuation) {
-    omega::yt::Feed feed;
-    omega::yt::ChannelInfo header;
-    std::string error;
-    if (!omega::yt::shared_client().channel(channel_id ? channel_id : "", continuation ? continuation : "", feed, header,
-                                            error))
-        return to_c_json({{"error", error}});
-    nlohmann::json j = feed_json(feed);
-    j["title"] = header.title;
-    j["avatar"] = header.avatar;
-    j["subscribers"] = header.subscribers;
-    return to_c_json(j);
+    return c_api_json_guard("omega_yt_channel", [&] {
+        omega::yt::Feed feed;
+        omega::yt::ChannelInfo header;
+        std::string error;
+        if (!omega::yt::shared_client().channel(channel_id ? channel_id : "", continuation ? continuation : "", feed, header,
+                                                error))
+            return to_c_json({{"error", error}});
+        nlohmann::json j = feed_json(feed);
+        j["title"] = header.title;
+        j["avatar"] = header.avatar;
+        j["subscribers"] = header.subscribers;
+        return to_c_json(j);
+    });
 }
 
 namespace {
@@ -588,71 +631,83 @@ nlohmann::json comment_json(const omega::yt::Comment& c) {
 }  // namespace
 
 char* omega_yt_comments(const char* video_id, const char* continuation) {
-    omega::yt::CommentPage page;
-    std::string error;
-    std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
-    error.clear();  // no token: the comments still load, without the account's votes
-    if (!omega::yt::shared_client().comments(video_id ? video_id : "", continuation ? continuation : "", token, page, error))
-        return to_c_json({{"error", error}});
-    nlohmann::json items = nlohmann::json::array();
-    for (const auto& c : page.items) items.push_back(comment_json(c));
-    return to_c_json({{"items", items},
-                      {"continuation", page.continuation},
-                      {"count", page.count},
-                      {"sortTop", page.sort_top},
-                      {"sortNewest", page.sort_newest},
-                      {"createParams", page.create_params},
-                      {"disabled", page.disabled}});
+    return c_api_json_guard("omega_yt_comments", [&] {
+        omega::yt::CommentPage page;
+        std::string error;
+        std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
+        error.clear();  // no token: the comments still load, without the account's votes
+        if (!omega::yt::shared_client().comments(video_id ? video_id : "", continuation ? continuation : "", token, page, error))
+            return to_c_json({{"error", error}});
+        nlohmann::json items = nlohmann::json::array();
+        for (const auto& c : page.items) items.push_back(comment_json(c));
+        return to_c_json({{"items", items},
+                          {"continuation", page.continuation},
+                          {"count", page.count},
+                          {"sortTop", page.sort_top},
+                          {"sortNewest", page.sort_newest},
+                          {"createParams", page.create_params},
+                          {"disabled", page.disabled}});
+    });
 }
 
 char* omega_yt_post_comment(const char* create_params, const char* text) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    omega::yt::Comment c;
-    if (!omega::yt::post_comment(create_params ? create_params : "", text ? text : "", token, c, error))
-        return to_c_json({{"error", error}});
-    nlohmann::json comment = c.id.empty() && c.text.empty() ? nlohmann::json() : comment_json(c);
-    return to_c_json({{"ok", true}, {"comment", comment}});
+    return c_api_json_guard("omega_yt_post_comment", [&] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        omega::yt::Comment c;
+        if (!omega::yt::post_comment(create_params ? create_params : "", text ? text : "", token, c, error))
+            return to_c_json({{"error", error}});
+        nlohmann::json comment = c.id.empty() && c.text.empty() ? nlohmann::json() : comment_json(c);
+        return to_c_json({{"ok", true}, {"comment", comment}});
+    });
 }
 
 char* omega_yt_post_reply(const char* video_id, const char* comment_id, const char* text) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    omega::yt::Comment c;
-    if (!omega::yt::post_reply(video_id ? video_id : "", comment_id ? comment_id : "", text ? text : "", token, c, error))
-        return to_c_json({{"error", error}});
-    nlohmann::json comment = c.id.empty() && c.text.empty() ? nlohmann::json() : comment_json(c);
-    return to_c_json({{"ok", true}, {"comment", comment}});
+    return c_api_json_guard("omega_yt_post_reply", [&] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        omega::yt::Comment c;
+        if (!omega::yt::post_reply(video_id ? video_id : "", comment_id ? comment_id : "", text ? text : "", token, c, error))
+            return to_c_json({{"error", error}});
+        nlohmann::json comment = c.id.empty() && c.text.empty() ? nlohmann::json() : comment_json(c);
+        return to_c_json({{"ok", true}, {"comment", comment}});
+    });
 }
 
 char* omega_yt_comment_action(const char* video_id, const char* comment_id, const char* action) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    if (!omega::yt::comment_action(video_id ? video_id : "", comment_id ? comment_id : "", action ? action : "", token, error))
-        return to_c_json({{"error", error}});
-    return to_c_json({{"ok", true}});
+    return c_api_json_guard("omega_yt_comment_action", [&] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        if (!omega::yt::comment_action(video_id ? video_id : "", comment_id ? comment_id : "", action ? action : "", token, error))
+            return to_c_json({{"error", error}});
+        return to_c_json({{"ok", true}});
+    });
 }
 
 char* omega_yt_captions(const char* url, const char* translate_to) {
-    std::vector<omega::yt::CaptionCue> cues;
-    std::string error;
-    if (!omega::yt::fetch_captions(url ? url : "", translate_to ? translate_to : "", cues, error))
-        return to_c_json({{"error", error}});
-    nlohmann::json list = nlohmann::json::array();
-    for (const auto& c : cues) list.push_back({{"start", c.start_ms}, {"end", c.end_ms}, {"text", c.text}});
-    return to_c_json({{"cues", list}});
+    return c_api_json_guard("omega_yt_captions", [&] {
+        std::vector<omega::yt::CaptionCue> cues;
+        std::string error;
+        if (!omega::yt::fetch_captions(url ? url : "", translate_to ? translate_to : "", cues, error))
+            return to_c_json({{"error", error}});
+        nlohmann::json list = nlohmann::json::array();
+        for (const auto& c : cues) list.push_back({{"start", c.start_ms}, {"end", c.end_ms}, {"text", c.text}});
+        return to_c_json({{"cues", list}});
+    });
 }
 
 char* omega_sb_segments(const char* video_id) {
-    std::vector<omega::yt::SkipSegment> segments;
-    std::string error;
-    if (!omega::yt::sponsor_segments(video_id ? video_id : "", segments, error)) return to_c_json({{"error", error}});
-    nlohmann::json list = nlohmann::json::array();
-    for (const auto& s : segments) list.push_back({{"category", s.category}, {"start", s.start_s}, {"end", s.end_s}});
-    return to_c_json({{"segments", list}});
+    return c_api_json_guard("omega_sb_segments", [&] {
+        std::vector<omega::yt::SkipSegment> segments;
+        std::string error;
+        if (!omega::yt::sponsor_segments(video_id ? video_id : "", segments, error)) return to_c_json({{"error", error}});
+        nlohmann::json list = nlohmann::json::array();
+        for (const auto& s : segments) list.push_back({{"category", s.category}, {"start", s.start_s}, {"end", s.end_s}});
+        return to_c_json({{"segments", list}});
+    });
 }
 
 void omega_init(const char* data_dir) {
@@ -667,9 +722,11 @@ void omega_init(const char* data_dir) {
 }
 
 char* omega_config_refresh(void) {
-    std::string error;
-    if (!omega::cfg::refresh(error)) return to_c_json({{"error", error}});
-    return to_c_json({{"ok", true}});
+    return c_api_json_guard("omega_config_refresh", [] {
+        std::string error;
+        if (!omega::cfg::refresh(error)) return to_c_json({{"error", error}});
+        return to_c_json({{"ok", true}});
+    });
 }
 
 void omega_set_locale(const char* language, const char* region) {
@@ -698,96 +755,121 @@ int omega_report_available(void) { return omega::cfg::str({"reports", "paste"}).
 // empty: the text is the raw body; otherwise a form with the text in that field plus reports.params.
 // Either way the service must answer with the paste's https URL.
 char* omega_report_upload(const char* text) {
-    omega::net::Request req;
-    req.method = "POST";
-    req.url = omega::cfg::str({"reports", "paste"});
-    if (req.url.empty()) return to_c_json({{"error", "no log service configured"}});
-    std::string field = omega::cfg::str({"reports", "field"});
-    if (field.empty()) {
-        req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "text/plain; charset=utf-8"}};
-        req.body = text ? text : "";
-    } else {
-        req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "application/x-www-form-urlencoded"}};
-        req.body = field + "=" + form_escape(text ? text : "");
-        std::string params = omega::cfg::str({"reports", "params"});
-        if (!params.empty()) req.body += "&" + params;
-    }
-    omega::net::Response res = omega::net::fetch(req);
-    if (!res.ok()) {
-        OLOG("report upload: HTTP %d %s", res.status, res.error.c_str());
-        return to_c_json({{"error", res.error.empty() ? "HTTP " + std::to_string(res.status) : res.error}});
-    }
-    std::string url = res.body;
-    while (!url.empty() && isspace(static_cast<unsigned char>(url.back()))) url.pop_back();
-    if (url.rfind("https://", 0) != 0) return to_c_json({{"error", "unexpected answer"}});
-    // 206: some services (paste.rs) keep only the beginning of a text over their size limit.
-    return to_c_json({{"url", url}, {"partial", res.status == 206}});
+    return c_api_json_guard("omega_report_upload", [&] {
+        omega::net::Request req;
+        req.method = "POST";
+        req.url = omega::cfg::str({"reports", "paste"});
+        if (req.url.empty()) return to_c_json({{"error", "no log service configured"}});
+        std::string field = omega::cfg::str({"reports", "field"});
+        if (field.empty()) {
+            req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "text/plain; charset=utf-8"}};
+            req.body = text ? text : "";
+        } else {
+            req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "application/x-www-form-urlencoded"}};
+            req.body = field + "=" + form_escape(text ? text : "");
+            std::string params = omega::cfg::str({"reports", "params"});
+            if (!params.empty()) req.body += "&" + params;
+        }
+        omega::net::Response res = omega::net::fetch(req);
+        if (!res.ok()) {
+            OLOG("report upload: HTTP %d %s", res.status, res.error.c_str());
+            return to_c_json({{"error", res.error.empty() ? "HTTP " + std::to_string(res.status) : res.error}});
+        }
+        std::string url = res.body;
+        while (!url.empty() && isspace(static_cast<unsigned char>(url.back()))) url.pop_back();
+        if (url.rfind("https://", 0) != 0) return to_c_json({{"error", "unexpected answer"}});
+        // 206: some services (paste.rs) keep only the beginning of a text over their size limit.
+        return to_c_json({{"url", url}, {"partial", res.status == 206}});
+    });
 }
 
-char* omega_auth_status(void) { return to_c_json({{"signedIn", omega::yt::shared_auth().signed_in()}}); }
+char* omega_auth_status(void) {
+    return c_api_json_guard("omega_auth_status", [] {
+        return to_c_json({{"signedIn", omega::yt::shared_auth().signed_in()}});
+    });
+}
 
 char* omega_auth_begin(void) {
-    omega::yt::DeviceCode code;
-    std::string error;
-    if (!omega::yt::shared_auth().begin(code, error)) return to_c_json({{"error", error}});
-    g_device_code = code;
-    return to_c_json({{"deviceCode", code.device_code},
-                      {"userCode", code.user_code},
-                      {"verificationUrl", code.verification_url},
-                      {"qrUrl", omega::yt::prefilled_verification_url(code.verification_url, code.user_code)},
-                      {"interval", code.interval_s},
-                      {"expiresIn", code.expires_in_s}});
+    return c_api_json_guard("omega_auth_begin", [] {
+        omega::yt::DeviceCode code;
+        std::string error;
+        if (!omega::yt::shared_auth().begin(code, error)) return to_c_json({{"error", error}});
+        {
+            std::lock_guard<std::mutex> lock(g_device_code_mutex);
+            g_device_code = code;
+        }
+        return to_c_json({{"deviceCode", code.device_code},
+                          {"userCode", code.user_code},
+                          {"verificationUrl", code.verification_url},
+                          {"qrUrl", omega::yt::prefilled_verification_url(code.verification_url, code.user_code)},
+                          {"interval", code.interval_s},
+                          {"expiresIn", code.expires_in_s}});
+    });
 }
 
 char* omega_auth_poll(const char* device_code) {
-    omega::yt::DeviceCode code = g_device_code;
-    if (device_code) code.device_code = device_code;
-    std::string error;
-    static const char* names[] = {"pending", "slow_down", "done", "denied", "expired", "failed"};
-    omega::yt::PollResult r = omega::yt::shared_auth().poll(code, error);
-    if (r == omega::yt::PollResult::Done) {
-        // Cache the new account's profile so the picker can show its name/avatar without another round-trip.
-        std::string e;
-        std::string token = omega::yt::shared_auth().access_token(e);
-        omega::yt::AccountInfo info;
-        if (!token.empty() && omega::yt::account_info(token, info, e))
-            omega::yt::shared_auth().cache_profile(omega::yt::shared_auth().active_id(), info.name, info.handle, info.photo);
-    }
-    return to_c_json({{"status", names[static_cast<int>(r)]}, {"error", error}});
+    return c_api_json_guard("omega_auth_poll", [&] {
+        omega::yt::DeviceCode code;
+        {
+            std::lock_guard<std::mutex> lock(g_device_code_mutex);
+            code = g_device_code;
+        }
+        if (device_code) code.device_code = device_code;
+        std::string error;
+        static const char* names[] = {"pending", "slow_down", "done", "denied", "expired", "failed"};
+        omega::yt::PollResult r = omega::yt::shared_auth().poll(code, error);
+        if (r == omega::yt::PollResult::Done) {
+            // Cache the new account's profile so the picker can show its name/avatar without another round-trip.
+            std::string e;
+            std::string token = omega::yt::shared_auth().access_token(e);
+            omega::yt::AccountInfo info;
+            if (!token.empty() && omega::yt::account_info(token, info, e))
+                omega::yt::shared_auth().cache_profile(omega::yt::shared_auth().active_id(), info.name, info.handle, info.photo);
+        }
+        return to_c_json({{"status", names[static_cast<int>(r)]}, {"error", error}});
+    });
 }
 
 void omega_auth_sign_out(void) { omega::yt::shared_auth().sign_out(); }
 
 char* omega_auth_account(void) {
-    std::string error;
-    std::string token = omega::yt::shared_auth().access_token(error);
-    if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
-    omega::yt::AccountInfo account;
-    if (!omega::yt::account_info(token, account, error)) return to_c_json({{"error", error}});
-    omega::yt::shared_auth().cache_profile(omega::yt::shared_auth().active_id(), account.name, account.handle, account.photo);
-    return to_c_json({{"name", account.name}, {"handle", account.handle}, {"photo", account.photo}});
+    return c_api_json_guard("omega_auth_account", [] {
+        std::string error;
+        std::string token = omega::yt::shared_auth().access_token(error);
+        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        omega::yt::AccountInfo account;
+        if (!omega::yt::account_info(token, account, error)) return to_c_json({{"error", error}});
+        omega::yt::shared_auth().cache_profile(omega::yt::shared_auth().active_id(), account.name, account.handle, account.photo);
+        return to_c_json({{"name", account.name}, {"handle", account.handle}, {"photo", account.photo}});
+    });
 }
 
 // All signed-in accounts for the picker: {"accounts":[{"id","name","handle","photo","active"}]}.
 char* omega_auth_accounts(void) {
-    nlohmann::json arr = nlohmann::json::array();
-    std::string active = omega::yt::shared_auth().active_id();
-    for (const auto& a : omega::yt::shared_auth().accounts())
-        arr.push_back({{"id", a.id}, {"name", a.name}, {"handle", a.handle}, {"photo", a.photo}, {"active", a.id == active}});
-    return to_c_json({{"accounts", arr}});
+    return c_api_json_guard("omega_auth_accounts", [] {
+        nlohmann::json arr = nlohmann::json::array();
+        std::string active = omega::yt::shared_auth().active_id();
+        for (const auto& a : omega::yt::shared_auth().accounts())
+            arr.push_back({{"id", a.id}, {"name", a.name}, {"handle", a.handle}, {"photo", a.photo}, {"active", a.id == active}});
+        return to_c_json({{"accounts", arr}});
+    });
 }
 
 // Makes the account with this id active. {"ok":true} or {"error"}.
 char* omega_auth_switch(const char* id) {
-    if (!omega::yt::shared_auth().switch_to(id ? id : "")) return to_c_json({{"error", "no such account"}});
-    return to_c_json({{"ok", true}});
+    return c_api_json_guard("omega_auth_switch", [&] {
+        if (!omega::yt::shared_auth().switch_to(id ? id : "")) return to_c_json({{"error", "no such account"}});
+        return to_c_json({{"ok", true}});
+    });
 }
 
 char* omega_yt_suggest(const char* query) {
-    std::vector<std::string> list;
-    std::string error;
-    if (!omega::yt::suggest(query ? query : "", list, error)) return to_c_json({{"error", error}});
-    return to_c_json({{"suggestions", list}});
+    return c_api_json_guard("omega_yt_suggest", [&] {
+        std::vector<std::string> list;
+        std::string error;
+        if (!omega::yt::suggest(query ? query : "", list, error)) return to_c_json({{"error", error}});
+        return to_c_json({{"suggestions", list}});
+    });
 }
 
 void omega_free(void* p) { free(p); }

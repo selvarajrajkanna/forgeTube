@@ -1,8 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -29,6 +31,8 @@ private:
     int64_t length_ms_;
     PositionFn position_;
     std::atomic<bool> stop_{false};
+    std::mutex mu_;
+    std::condition_variable cv_;
     std::thread thread_;
 };
 

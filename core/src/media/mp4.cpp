@@ -1,5 +1,6 @@
 #include "media/mp4.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace omega::media {
@@ -110,7 +111,11 @@ void peek_moof_timing(std::span<const uint8_t> moof, uint32_t default_dur, uint6
                 uint32_t count = c.u32();
                 if (flags & 0x1) c.skip(4);
                 if (flags & 0x4) c.skip(4);
-                for (uint32_t i = 0; i < count && c.has(1); ++i) {
+                size_t entry_bytes = ((flags & 0x100) ? 4 : 0) + ((flags & 0x200) ? 4 : 0) +
+                                     ((flags & 0x400) ? 4 : 0) + ((flags & 0x800) ? 4 : 0);
+                uint32_t max_count = entry_bytes ? static_cast<uint32_t>(c.left() / entry_bytes) : std::min<uint32_t>(count, 65536);
+                count = std::min(count, max_count);
+                for (uint32_t i = 0; i < count; ++i) {
                     uint32_t d = (flags & 0x100) ? c.u32() : def_duration;
                     if (flags & 0x200) c.skip(4);
                     if (flags & 0x400) c.skip(4);
@@ -128,6 +133,11 @@ void peek_moof_timing(std::span<const uint8_t> moof, uint32_t default_dur, uint6
 }  // namespace
 
 bool Fmp4Reader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
+    constexpr uint64_t kMaxBoxBytes = 128ULL << 20;
+    if (n > kMaxBoxBytes) {
+        error_ = "box too large";
+        return false;
+    }
     buf.resize(static_cast<size_t>(n));
     size_t got = n ? read_(buf.data(), buf.size()) : 0;
     offset_ += got;
@@ -315,7 +325,7 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
                                             for_each_box(se, [&](uint32_t ct, Cursor cc) {
                                                 if (ct == config) {
                                                     if (config == fourcc("av1C")) {
-                                                        if (cc.left() > 4) {
+                                                        if (cc.left() >= 4) {
                                                             uint8_t flags = cc.p[2];
                                                             if (flags & 0x40) track_.bits_per_channel = 10;
                                                             if (flags & 0x20) track_.bits_per_channel = 12;
@@ -409,9 +419,9 @@ bool Fmp4Reader::parse_moov(std::span<const uint8_t> moov) {
             });
         }
     });
-    // VP9 decoders need no configuration record (the frame headers carry everything).
+    // VP9 and AV1 (with empty configOBUs) decoders need no configuration record (frame headers carry sequence OBUs).
     if (track_.codec == Codec::Unknown || track_.timescale == 0 ||
-        (track_.codec_data.empty() && track_.codec != Codec::VP9)) {
+        (track_.codec_data.empty() && track_.codec != Codec::VP9 && track_.codec != Codec::AV1)) {
         error_ = "unsupported or incomplete moov";
         return false;
     }
@@ -424,12 +434,17 @@ bool Fmp4Reader::parse_moof(std::span<const uint8_t> moof, uint64_t moof_start) 
     for_each_box(root, [&](uint32_t type, Cursor traf) {
         if (type != fourcc("traf")) return;
         uint64_t base = moof_start;
+        uint64_t next_data_pos = moof_start;
+        bool has_prev_run = false;
         uint32_t def_duration = track_.default_duration, def_size = track_.default_size, def_flags = track_.default_flags;
         for_each_box(traf, [&](uint32_t t, Cursor c) {
             if (t == fourcc("tfhd")) {
                 uint32_t flags = c.u32() & 0xffffff;
                 c.skip(4);  // track_ID
-                if (flags & 0x1) base = c.u64();
+                if (flags & 0x1) {
+                    base = c.u64();
+                    next_data_pos = base;
+                }
                 if (flags & 0x2) c.skip(4);
                 if (flags & 0x8) def_duration = c.u32();
                 if (flags & 0x10) def_size = c.u32();
@@ -444,22 +459,35 @@ bool Fmp4Reader::parse_moof(std::span<const uint8_t> moof, uint64_t moof_start) 
                 uint32_t flags = vf & 0xffffff;
                 uint32_t count = c.u32();
                 Run run;
+                if (flags & 0x1) {
+                    int32_t data_offset = static_cast<int32_t>(c.u32());
+                    run.data_start = base + static_cast<uint64_t>(static_cast<int64_t>(data_offset));
+                } else {
+                    run.data_start = has_prev_run ? next_data_pos : base;
+                }
+                uint32_t first_flags = (flags & 0x4) ? c.u32() : def_flags;
+                size_t entry_bytes = ((flags & 0x100) ? 4 : 0) + ((flags & 0x200) ? 4 : 0) +
+                                     ((flags & 0x400) ? 4 : 0) + ((flags & 0x800) ? 4 : 0);
+                uint32_t max_count = entry_bytes ? static_cast<uint32_t>(c.left() / entry_bytes) : std::min<uint32_t>(count, 65536);
+                count = std::min(count, max_count);
                 run.durations.reserve(count);
                 run.sizes.reserve(count);
                 run.flags.reserve(count);
                 run.ctos.reserve(count);
-                int32_t data_offset = (flags & 0x1) ? static_cast<int32_t>(c.u32()) : 0;
-                run.data_start = base + static_cast<uint64_t>(static_cast<int64_t>(data_offset));
-                uint32_t first_flags = (flags & 0x4) ? c.u32() : def_flags;
-                for (uint32_t i = 0; i < count && c.has(1); ++i) {
+                uint64_t run_bytes = 0;
+                for (uint32_t i = 0; i < count; ++i) {
                     run.durations.push_back((flags & 0x100) ? c.u32() : def_duration);
-                    run.sizes.push_back((flags & 0x200) ? c.u32() : def_size);
+                    uint32_t sz = (flags & 0x200) ? c.u32() : def_size;
+                    run.sizes.push_back(sz);
+                    run_bytes += sz;
                     uint32_t sf = (flags & 0x400) ? c.u32() : (i == 0 && (flags & 0x4) ? first_flags : def_flags);
                     run.flags.push_back(sf);
                     uint32_t cto = (flags & 0x800) ? c.u32() : 0;
                     run.ctos.push_back(version == 0 ? static_cast<int32_t>(std::min<uint32_t>(cto, INT32_MAX))
                                                     : static_cast<int32_t>(cto));
                 }
+                next_data_pos = run.data_start + run_bytes;
+                has_prev_run = true;
                 runs_.push_back(std::move(run));
             }
         });

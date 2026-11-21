@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -340,7 +341,11 @@ int64_t to_int(const json& j, const char* key) {
     auto it = j.find(key);
     if (it == j.end()) return 0;
     if (it->is_number()) return it->get<int64_t>();
-    if (it->is_string()) return std::stoll(it->get<std::string>());
+    if (it->is_string()) {
+        const std::string& s = it->get_ref<const std::string&>();
+        int64_t v = 0;
+        if (std::from_chars(s.data(), s.data() + s.size(), v).ec == std::errc{}) return v;
+    }
     return 0;
 }
 
@@ -462,12 +467,18 @@ bool Client::ensure_visitor(std::string& error) {
             return false;
         }
         at += key.size();
-        g_visitor_data = res.body.substr(at, res.body.find('"', at) - at);
+        size_t end = res.body.find('"', at);
+        if (end == std::string::npos || end == at) {
+            error = "VISITOR_DATA malformed";
+            return false;
+        }
+        g_visitor_data = res.body.substr(at, end - at);
         const std::string ver_key = "\"INNERTUBE_CLIENT_VERSION\":\"";
         size_t v = res.body.find(ver_key);
         if (v != std::string::npos) {
             v += ver_key.size();
-            g_web_client_version = res.body.substr(v, res.body.find('"', v) - v);
+            size_t vend = res.body.find('"', v);
+            if (vend != std::string::npos && vend > v) g_web_client_version = res.body.substr(v, vend - v);
         }
         if (g_web_client_version.empty()) g_web_client_version = cfg::str({"innertube", "search", "clientVersion"});
         OLOG("yt: visitorData %zu chars, web client %s", g_visitor_data.size(), g_web_client_version.c_str());
@@ -597,7 +608,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
         return false;
     }
 
-    last_response_ = res.body;
+    record_response(res.body);
     json r = json::parse(res.body, nullptr, false);
     if (r.is_discarded()) {
         error = "player: invalid json";
@@ -718,7 +729,7 @@ bool Client::search(const std::string& query, const std::string& continuation, F
         error = "search: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    last_response_ = res.body;
+    record_response(res.body);
     json r = json::parse(res.body, nullptr, false);
     if (r.is_discarded()) {
         error = "search: invalid json";
@@ -799,7 +810,7 @@ bool Client::playlist_page(const std::string& playlist_id, const std::string& co
         error = http_error("playlist", res);
         return false;
     }
-    last_response_ = res.body;
+    record_response(res.body);
     json r = json::parse(res.body, nullptr, false);
     if (r.is_discarded()) {
         error = "playlist: invalid json";
@@ -1002,7 +1013,7 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
         error = http_error("channel", res);
         return false;
     }
-    last_response_ = res.body;
+    record_response(res.body);
     json r = json::parse(res.body, nullptr, false);
     if (r.is_discarded()) {
         error = "channel: invalid json";
@@ -1292,7 +1303,7 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
             error = http_error("comments", res);
             return false;
         }
-        last_response_ = res.body;
+        record_response(res.body);
         r = json::parse(res.body, nullptr, false);
         if (r.is_discarded()) {
             error = "comments: invalid json";
@@ -1359,7 +1370,7 @@ bool Client::browse(const std::string& browse_id, const std::string& continuatio
         error = "browse " + browse_id + ": " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    last_response_ = res.body;
+    record_response(res.body);
     json r = json::parse(res.body, nullptr, false);
     if (r.is_discarded()) {
         error = "browse: invalid json";
@@ -1406,8 +1417,16 @@ bool suggest(const std::string& query, std::vector<std::string>& out, std::strin
     return true;
 }
 
+void Client::record_response(const std::string& body) {
+    if (!capture_response_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_response_ = body;
+}
+
 Client& shared_client() {
     static Client client;
+    static std::once_flag init_once;
+    std::call_once(init_once, [] { client.set_capture_response(false); });
     return client;
 }
 

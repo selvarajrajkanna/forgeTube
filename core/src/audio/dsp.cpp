@@ -792,13 +792,17 @@ bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double 
     impl_->hf_mode.store(0, std::memory_order_relaxed);
 
     if (track.codec == media::Codec::Opus) {
-        int ch = track.channels > 0 ? std::clamp<int>(static_cast<int>(track.channels), 1, 2) : 2;
+        int ch = track.channels > 0 ? static_cast<int>(track.channels) : 2;
         int gain_q8 = 0;
         impl_->opus_pre_skip_init = 0;
         if (track.codec_data.size() >= 19 && std::memcmp(track.codec_data.data(), "OpusHead", 8) == 0) {
-            ch = std::clamp<int>(static_cast<int>(track.codec_data[9]), 1, 2);
+            ch = static_cast<int>(track.codec_data[9]);
             impl_->opus_pre_skip_init = static_cast<int>(le16(track.codec_data.data() + 10));
             gain_q8 = static_cast<int>(sle16(track.codec_data.data() + 16));
+        }
+        if (ch < 1 || ch > 2) {
+            OLOG("audio dsp: unsupported Opus channel count (%d)", ch);
+            return false;
         }
         impl_->opus_pre_skip_left = impl_->opus_pre_skip_init;
         impl_->opus_channels = ch;

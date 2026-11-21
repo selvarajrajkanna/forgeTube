@@ -78,7 +78,7 @@ namespace OmegaTube
                 }
                 if (splash != null)
                 {
-                    window.Remove(splash);
+                    splash.Dismiss();
                     splash = null;
                 }
                 PushReport(BugReport.Describe(e), true);
@@ -164,12 +164,13 @@ namespace OmegaTube
             {
                 if (splash != null)
                 {
-                    splash.Hide();   // it keeps the remote otherwise
+                    splash.Dismiss();   // stops timers/animations and hands the remote back
                     splash = null;
                 }
                 if (dialog != null)
                 {
                     Window.Default.Remove(dialog);
+                    dialog.Dispose();
                     dialog = null;
                 }
                 PushReport(BugReport.Describe(e) + "\n(in " + where + ")", false, true);
@@ -203,11 +204,14 @@ namespace OmegaTube
             }
         }
 
-        public void Pop()
+        public void Pop(bool showBelow = true)
         {
             if (stack.Count <= 1)
             {
-                Confirm(I18n.T("Do you want to quit omegatube-modern?"), Exit);
+                if (showBelow)
+                {
+                    Confirm(I18n.T("Do you want to quit omegatube-modern?"), Exit);
+                }
                 return;
             }
             Screen top = stack[stack.Count - 1];
@@ -229,6 +233,10 @@ namespace OmegaTube
             catch (Exception e)
             {
                 Tizen.Log.Error("omegatube-modern", "pop Dispose: " + e);
+            }
+            if (!showBelow)
+            {
+                return;
             }
             Screen below = stack[stack.Count - 1];
             below.Root.Show();
@@ -339,19 +347,34 @@ namespace OmegaTube
 
         protected override void OnResume()
         {
-            if (stack.Count > 0)
+            UiGuard.Run("resume", () =>
             {
-                stack[stack.Count - 1].OnResume();
-            }
+                if (stack.Count > 0)
+                {
+                    Screen top = stack[stack.Count - 1];
+                    if (!top.Root.Visibility)
+                    {
+                        top.Root.Show();
+                        top.OnShow();
+                    }
+                    else
+                    {
+                        top.OnResume();
+                    }
+                }
+            });
             base.OnResume();
         }
 
         protected override void OnPause()
         {
-            if (stack.Count > 0)
+            UiGuard.Run("pause", () =>
             {
-                stack[stack.Count - 1].OnPause();
-            }
+                if (stack.Count > 0)
+                {
+                    stack[stack.Count - 1].OnPause();
+                }
+            });
             base.OnPause();
         }
 
@@ -360,8 +383,19 @@ namespace OmegaTube
             MediaKeyGrabber.ReleaseMediaKeys();
             while (stack.Count > 1)
             {
-                Pop();   // never reaches the quit question (the last screen stays)
+                Pop(showBelow: false);
             }
+            if (stack.Count == 1)
+            {
+                try
+                {
+                    stack[0].OnHide();
+                }
+                catch (Exception)
+                {
+                }
+            }
+            PlayerScreen.WaitPendingTeardown(1500);
             base.OnTerminate();
         }
 

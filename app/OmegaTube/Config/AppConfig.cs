@@ -159,7 +159,9 @@ namespace OmegaTube.Config
         {
             try
             {
-                File.WriteAllText(path, Json.Write(ToJson()));
+                string tmp = path + ".tmp";
+                File.WriteAllText(tmp, Json.Write(ToJson()));
+                File.Move(tmp, path, overwrite: true);
             }
             catch (Exception e)
             {

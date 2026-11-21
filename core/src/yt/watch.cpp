@@ -108,10 +108,17 @@ bool tracking_urls(const std::string& video_id, const std::string& token, std::s
         OLOG("history: tracking player http %d %s", res.status, res.error.c_str());
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
-    const json& t = r.is_object() ? r.value("playbackTracking", json::object()) : json::object();
-    playback = t.value("videostatsPlaybackUrl", json::object()).value("baseUrl", "");
-    watchtime = t.value("videostatsWatchtimeUrl", json::object()).value("baseUrl", "");
+    try {
+        json r = json::parse(res.body, nullptr, false);
+        if (!r.is_object() || !r.contains("playbackTracking") || !r["playbackTracking"].is_object()) return false;
+        const json& t = r["playbackTracking"];
+        if (t.contains("videostatsPlaybackUrl") && t["videostatsPlaybackUrl"].is_object())
+            playback = t["videostatsPlaybackUrl"].value("baseUrl", "");
+        if (t.contains("videostatsWatchtimeUrl") && t["videostatsWatchtimeUrl"].is_object())
+            watchtime = t["videostatsWatchtimeUrl"].value("baseUrl", "");
+    } catch (const std::exception&) {
+        return false;
+    }
     return !playback.empty();
 }
 
@@ -123,14 +130,18 @@ WatchReporter::WatchReporter(std::string video_id, int64_t length_ms, PositionFn
 }
 
 WatchReporter::~WatchReporter() {
-    stop_ = true;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        stop_ = true;
+    }
+    cv_.notify_all();
     if (thread_.joinable()) thread_.join();
 }
 
 void WatchReporter::run() {
     std::string error;
     std::string token = shared_auth().access_token(error);
-    if (token.empty()) return;  // signed out: nothing to report
+    if (token.empty() || stop_) return;  // signed out or stopped: nothing to report
     std::string playback, watchtime;
     if (!tracking_urls(video_id_, token, playback, watchtime)) {
         OLOG("history: no tracking URLs for %s", video_id_.c_str());
@@ -149,7 +160,10 @@ void WatchReporter::run() {
     int64_t span_start = -1, last = -1;
     int waited = 0;
     while (!stop_) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return stop_.load(); });
+        }
         int64_t pos = position_();
         bool final_report = stop_;
         if (pos >= 0) {
@@ -160,6 +174,7 @@ void WatchReporter::run() {
         waited = 0;
         // Nothing new since the last report; the final one is still sent (it carries the resume point).
         if (span_start < 0 || (last <= span_start && !final_report)) continue;
+        if (watchtime.empty()) continue;
         token = shared_auth().access_token(error);
         if (token.empty()) return;
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();

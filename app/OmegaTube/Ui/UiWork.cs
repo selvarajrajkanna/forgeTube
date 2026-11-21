@@ -19,6 +19,7 @@ namespace OmegaTube.Ui
         private static readonly Stopwatch clock = Stopwatch.StartNew();
         private static long lastKey = -QuietMs;
         private static Timer timer;
+        private static bool running;
         private static int next;
 
         public static bool Moving => clock.ElapsedMilliseconds - lastKey < QuietMs;
@@ -41,6 +42,10 @@ namespace OmegaTube.Ui
             {
                 timer = new Timer(TickMs);
                 timer.Tick += Tick;
+            }
+            if (!running)
+            {
+                running = true;
                 timer.Start();
             }
         }
@@ -58,7 +63,7 @@ namespace OmegaTube.Ui
             {
                 if (pumps.Count == 0)
                 {
-                    timer = null;
+                    running = false;
                     return false;
                 }
                 next %= pumps.Count;

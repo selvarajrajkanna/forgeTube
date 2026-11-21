@@ -1,7 +1,7 @@
 #include "yt/auth.h"
 
 #include <algorithm>
-#include <ctime>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -83,7 +83,12 @@ bool scrape_identity(std::string& id, std::string& secret, std::string& error) {
         return false;
     }
     src += 5;
-    std::string url = page.body.substr(src, page.body.find('"', src) - src);
+    size_t src_end = page.body.find('"', src);
+    if (src_end == std::string::npos || src_end == src) {
+        error = "base-js src malformed";
+        return false;
+    }
+    std::string url = page.body.substr(src, src_end - src);
     if (url.compare(0, 2, "//") == 0) url = "https:" + url;
     else if (url.compare(0, 1, "/") == 0) url = "https://www.youtube.com" + url;
     req.url = url;
@@ -99,12 +104,16 @@ bool scrape_identity(std::string& id, std::string& secret, std::string& error) {
         return false;
     }
     size_t id_begin = c + marker.size(), id_end = bundle.body.find('"', id_begin);
-    size_t key = bundle.body.find(":\"", id_end);
+    size_t key = id_end == std::string::npos ? std::string::npos : bundle.body.find(":\"", id_end);
     if (id_end == std::string::npos || key == std::string::npos) {
         error = "client secret not found";
         return false;
     }
     size_t secret_begin = key + 2, secret_end = bundle.body.find('"', secret_begin);
+    if (secret_end == std::string::npos || secret_end == secret_begin) {
+        error = "client secret malformed";
+        return false;
+    }
     id = bundle.body.substr(id_begin, id_end - id_begin);
     secret = bundle.body.substr(secret_begin, secret_end - secret_begin);
     return !id.empty() && !secret.empty();
@@ -134,7 +143,7 @@ void Auth::init(const std::string& store_path) {
     accounts_.clear();
     active_id_.clear();
     access_token_.clear();
-    access_expires_at_ = 0;
+    access_expires_at_ = {};
     load_store_locked();
     OLOG("auth: %zu account(s) loaded", accounts_.size());
 }
@@ -194,7 +203,6 @@ void Auth::load_store_locked() {
 
 void Auth::save_locked() {
     if (store_path_.empty()) return;
-    std::ofstream out(store_path_, std::ios::trunc);
     json arr = json::array();
     for (const auto& a : accounts_) {
         arr.push_back({{"id", a.id},
@@ -205,28 +213,47 @@ void Auth::save_locked() {
                        {"handle", a.handle},
                        {"photo", a.photo}});
     }
-    out << json{{"v", 2}, {"active", active_id_}, {"accounts", arr}}.dump();
+    std::string payload = json{{"v", 2}, {"active", active_id_}, {"accounts", arr}}.dump();
+    std::string tmp = store_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out || !out.write(payload.data(), static_cast<std::streamsize>(payload.size()))) return;
+    }
+    std::rename(tmp.c_str(), store_path_.c_str());
 }
 
-bool Auth::ensure_identity(std::string& error) {
-    if (!client_id_.empty()) return true;
-    std::string scrape_error;
-    if (scrape_identity(client_id_, client_secret_, scrape_error)) {
+bool Auth::ensure_identity(std::string& id_out, std::string& secret_out) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!client_id_.empty()) {
+            id_out = client_id_;
+            secret_out = client_secret_;
+            return true;
+        }
+    }
+    std::string scraped_id, scraped_secret, scrape_error;
+    if (scrape_identity(scraped_id, scraped_secret, scrape_error)) {
         OLOG("auth: TV client id from bundle");
     } else {
         OLOG("auth: %s, using fallback client id", scrape_error.c_str());
-        client_id_ = fallback_id();
-        client_secret_ = fallback_secret();
+        scraped_id = fallback_id();
+        scraped_secret = fallback_secret();
     }
-    (void)error;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client_id_.empty()) {
+        client_id_ = scraped_id;
+        client_secret_ = scraped_secret;
+    }
+    id_out = client_id_;
+    secret_out = client_secret_;
     return true;
 }
 
 bool Auth::begin(DeviceCode& out, std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!ensure_identity(error)) return false;
+    std::string cid, csec;
+    if (!ensure_identity(cid, csec)) return false;
     int status = 0;
-    json j = post_form(kDeviceCodeUrl, "client_id=" + form_escape(client_id_) + "&scope=" + form_escape(cfg::str({"oauth", "scope"})), status,
+    json j = post_form(kDeviceCodeUrl, "client_id=" + form_escape(cid) + "&scope=" + form_escape(cfg::str({"oauth", "scope"})), status,
                        error);
     if (!error.empty()) return false;
     if (status != 200 || !j.is_object() || !j.contains("device_code")) {
@@ -243,24 +270,27 @@ bool Auth::begin(DeviceCode& out, std::string& error) {
 }
 
 PollResult Auth::poll(const DeviceCode& code, std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::string cid, csec;
+    if (!ensure_identity(cid, csec)) return PollResult::Failed;
     int status = 0;
     json j = post_form(kTokenUrl,
-                       "client_id=" + form_escape(client_id_) + "&client_secret=" + form_escape(client_secret_) +
+                       "client_id=" + form_escape(cid) + "&client_secret=" + form_escape(csec) +
                            "&device_code=" + form_escape(code.device_code) +
                            "&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code",
                        status, error);
     if (!error.empty()) return PollResult::Failed;
     if (status == 200 && j.is_object() && j.contains("refresh_token")) {
+        std::lock_guard<std::mutex> lock(mutex_);
         Account acc;
         acc.id = next_id_locked();
         acc.refresh_token = j.value("refresh_token", "");
-        acc.client_id = client_id_;
-        acc.client_secret = client_secret_;
+        acc.client_id = cid;
+        acc.client_secret = csec;
         accounts_.push_back(acc);
         active_id_ = acc.id;  // the newly added account becomes active
         access_token_ = j.value("access_token", "");
-        access_expires_at_ = static_cast<int64_t>(time(nullptr)) + j.value("expires_in", 3600) - 60;
+        access_expires_at_ =
+            std::chrono::steady_clock::now() + std::chrono::seconds(std::max(60, j.value("expires_in", 3600) - 60));
         save_locked();
         OLOG("auth: signed in (%zu account(s))", accounts_.size());
         return PollResult::Done;
@@ -274,48 +304,54 @@ PollResult Auth::poll(const DeviceCode& code, std::string& error) {
     return PollResult::Failed;
 }
 
-bool Auth::refresh_locked(std::string& error) {
-    Account* a = active_locked();
-    if (!a) {
-        error = "signed out";
-        return false;
+std::string Auth::access_token(std::string& error) {
+    std::string req_id, refresh_tok, cid, csec;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        Account* a = active_locked();
+        if (!a || a->refresh_token.empty()) return "";
+        if (!access_token_.empty() && std::chrono::steady_clock::now() < access_expires_at_) {
+            return access_token_;
+        }
+        req_id = a->id;
+        refresh_tok = a->refresh_token;
+        cid = a->client_id.empty() ? fallback_id() : a->client_id;
+        csec = a->client_secret.empty() ? fallback_secret() : a->client_secret;
     }
-    std::string id = a->client_id.empty() ? fallback_id() : a->client_id;
-    std::string secret = a->client_secret.empty() ? fallback_secret() : a->client_secret;
+
     int status = 0;
     json j = post_form(kTokenUrl,
-                       "grant_type=refresh_token&refresh_token=" + form_escape(a->refresh_token) +
-                           "&client_id=" + form_escape(id) + "&client_secret=" + form_escape(secret),
+                       "grant_type=refresh_token&refresh_token=" + form_escape(refresh_tok) +
+                           "&client_id=" + form_escape(cid) + "&client_secret=" + form_escape(csec),
                        status, error);
-    if (!error.empty()) return false;
+    if (!error.empty()) return "";
+
+    std::lock_guard<std::mutex> lock(mutex_);
     if (status == 200 && j.is_object() && j.contains("access_token")) {
-        access_token_ = j.value("access_token", "");
-        access_expires_at_ = static_cast<int64_t>(time(nullptr)) + j.value("expires_in", 3600) - 60;
-        return true;
+        std::string tok = j.value("access_token", "");
+        if (active_id_ == req_id) {
+            access_token_ = tok;
+            access_expires_at_ =
+                std::chrono::steady_clock::now() + std::chrono::seconds(std::max(60, j.value("expires_in", 3600) - 60));
+        }
+        return tok;
     }
     error = oauth_error(j, status);
-    if (status == 400 || status == 401) {
+    const std::string err_code = j.is_object() ? j.value("error", "") : "";
+    if ((status == 400 || status == 401) && err_code == "invalid_grant") {
         // invalid_grant: this account revoked access or the client rotated; drop it and fall back to the next.
         OLOG("auth: refresh rejected (%s), removing account", error.c_str());
         accounts_.erase(std::remove_if(accounts_.begin(), accounts_.end(),
-                                       [&](const Account& x) { return x.id == active_id_; }),
+                                       [&](const Account& x) { return x.id == req_id; }),
                         accounts_.end());
-        active_id_ = accounts_.empty() ? std::string() : accounts_.front().id;
-        access_token_.clear();
-        access_expires_at_ = 0;
+        if (active_id_ == req_id) {
+            active_id_ = accounts_.empty() ? std::string() : accounts_.front().id;
+            access_token_.clear();
+            access_expires_at_ = {};
+        }
         save_locked();
     }
-    return false;
-}
-
-std::string Auth::access_token(std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    Account* a = active_locked();
-    if (!a || a->refresh_token.empty()) return "";
-    if (access_token_.empty() || static_cast<int64_t>(time(nullptr)) >= access_expires_at_) {
-        if (!refresh_locked(error)) return "";
-    }
-    return access_token_;
+    return "";
 }
 
 bool Auth::signed_in() {
@@ -331,7 +367,7 @@ void Auth::sign_out() {
                     accounts_.end());
     active_id_ = accounts_.empty() ? std::string() : accounts_.front().id;
     access_token_.clear();
-    access_expires_at_ = 0;
+    access_expires_at_ = {};
     save_locked();
     OLOG("auth: signed out (%zu account(s) left)", accounts_.size());
 }
@@ -352,7 +388,7 @@ bool Auth::switch_to(const std::string& id) {
         if (a.id == id) {
             active_id_ = id;
             access_token_.clear();
-            access_expires_at_ = 0;
+            access_expires_at_ = {};
             save_locked();
             OLOG("auth: switched account");
             return true;

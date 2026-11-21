@@ -103,7 +103,11 @@ namespace OmegaTube.Ui
                 return;   // asked on every key press: only a change needs animating
             }
             focused = value;
-            widen?.Stop();
+            if (widen != null)
+            {
+                widen.Stop();
+                widen.Dispose();
+            }
             widen = new Animation(160);
             float w = value ? Theme.RailExpandedWidth : Theme.RailWidth;
             widen.AnimateTo(panel, "SizeWidth", w, Widgets.EaseOut);
@@ -118,6 +122,13 @@ namespace OmegaTube.Ui
             }
             panel.BackgroundColor = value ? Theme.Surface : Theme.Background;
             Refresh();
+        }
+
+        protected override void Dispose(DisposeTypes type)
+        {
+            if (widen != null) { widen.Stop(); widen.Dispose(); widen = null; }
+            if (scroll != null) { scroll.Stop(); scroll.Dispose(); scroll = null; }
+            base.Dispose(type);
         }
 
         public void Move(int delta)

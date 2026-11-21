@@ -135,6 +135,11 @@ bool WebmReader::read_element_header(uint32_t& id, uint64_t& size, bool& unknown
 }
 
 bool WebmReader::read_exact(std::vector<uint8_t>& buf, uint64_t n) {
+    constexpr uint64_t kMaxElemBytes = 128ULL << 20;
+    if (n > kMaxElemBytes) {
+        error_ = "element too large";
+        return false;
+    }
     buf.resize(static_cast<size_t>(n));
     size_t got = n ? read_(buf.data(), buf.size()) : 0;
     offset_ += got;
@@ -283,7 +288,7 @@ bool WebmReader::parse_tracks(std::span<const uint8_t> tracks) {
         if (type == 1 && default_duration_ns > 0) {
             set_track_fps(t, 1000000000ULL, default_duration_ns);
         }
-        if (t.codec == Codec::AV1 && t.codec_data.size() > 4) {
+        if (t.codec == Codec::AV1 && t.codec_data.size() >= 4) {
             uint8_t flags = t.codec_data[2];
             if (t.bits_per_channel <= 8) {
                 if (flags & 0x40) t.bits_per_channel = 10;

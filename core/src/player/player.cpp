@@ -129,8 +129,13 @@ bool Player::start() {
     auto open_source = [&](size_t idx) {
         Source& src = sources[idx];
         Track& t = *src.track;
-        if (cfg_.live) src.http = std::make_unique<net::LiveReader>(t.url, cfg_.stream_headers, live_seq);
-        else src.http = std::make_unique<net::RangeReader>(t.url, cfg_.stream_headers);
+        std::string init_url;
+        {
+            std::lock_guard<std::mutex> lock(t.mutex);
+            init_url = t.url;
+        }
+        if (cfg_.live) src.http = std::make_unique<net::LiveReader>(init_url, cfg_.stream_headers, live_seq);
+        else src.http = std::make_unique<net::RangeReader>(init_url, cfg_.stream_headers);
         if (!cfg_.live) {
             // Opening: fresh URLs on 403/410, but give up soon if the stream stays refused (the caller then
             // tries another player client); start_track() puts the playback hooks back.
@@ -157,7 +162,10 @@ bool Player::start() {
             results[idx].error = std::string(stream_name(t.type)) + " live: no first segment (" + src.reader->error() + ")";
             return;
         }
-        t.url = http->url();  // keep redirected edge URL for fallback retries and seeks
+        {
+            std::lock_guard<std::mutex> lock(t.mutex);
+            if (t.url == init_url) t.url = http->url();  // keep redirected edge URL unless concurrently refreshed
+        }
         OLOG("%s: %s %s timescale=%u %ux%u fps=%u/%u ch=%u rate=%u codec_data=%zu bytes, media_time=%lld, %zu segments",
              stream_name(t.type), t.info.container == media::Container::WebM ? "webm" : "mp4",
              media::codec_name(t.info.codec), t.info.timescale, t.info.width, t.info.height,
@@ -699,8 +707,11 @@ bool Player::seek(int64_t ms) {
     eos_ = false;
     seek_pending_ = true;
     position_ms_ = target;
-    stall_grace_until_ms_ = ms_since(started_at_) + 3000;
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+    const int64_t started_ms = started_at_ms_.load();
+    stall_grace_until_ms_ = (started_ms > 0 ? (now_ms - started_ms) : 0) + 3000;
     int rc = api_->seek(handle_, static_cast<uint64_t>(target));
+    if (rc != 0) seek_pending_ = false;
 
     for (int i = 0; i < 2; ++i) {
         if (!use[i]) continue;
@@ -750,6 +761,7 @@ void Player::push_samples(Track& t, std::deque<media::Sample>& samples) {
 void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource* source_raw) {
     std::unique_ptr<media::Demuxer> reader(reader_raw);
     std::unique_ptr<net::StreamSource> source(source_raw);
+    const std::string initial_url = source->url();
     std::deque<media::Sample> fragment;
     while (running_) {
         {
@@ -770,7 +782,9 @@ void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource*
         push_samples(t, fragment);
     }
     std::lock_guard<std::mutex> lock(t.mutex);
-    t.url = source->url();  // keep the redirected edge URL for later seeks
+    if (source->url() != initial_url && t.url == initial_url) {
+        t.url = source->url();  // keep redirected edge URL without overwriting a concurrent fresh_url()
+    }
     t.demux_done = true;
     t.cv.notify_all();
 }
@@ -903,7 +917,8 @@ void Player::control_loop() {
     if (!running_ || prepare_failed_) return;
     confirm_active_dsp();
     int rc = api_->start(handle_);
-    started_at_ = Clock::now();
+    const auto started_at = Clock::now();
+    started_at_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(started_at.time_since_epoch()).count();
     OLOG("esp start -> %d", rc);
 
     // Stall detector: the playback clock must advance with wall time while PLAYING.
@@ -922,7 +937,7 @@ void Player::control_loop() {
                 for (Track* t : {&video_, &audio_}) notify_track(*t);
             }
         }
-        if (paused_ || eos_ || ms_since(started_at_) < stall_grace_until_ms_) {
+        if (paused_ || eos_ || ms_since(started_at) < stall_grace_until_ms_) {
             last_advance = Clock::now();
             continue;
         }
@@ -936,11 +951,20 @@ void Player::control_loop() {
             }
             last_pos = pos;
             last_advance = Clock::now();
-        } else if (!in_stall && ms_since(last_advance) > 150 && ms_since(started_at_) > 1000) {
+        } else if (!in_stall && ms_since(last_advance) > 150 && ms_since(started_at) > 1000) {
             in_stall = true;
             ++stalls_;
+            int64_t vq = 0, aq = 0;
+            {
+                std::lock_guard<std::mutex> lv(video_.mutex);
+                vq = video_.queued_ms;
+            }
+            {
+                std::lock_guard<std::mutex> la(audio_.mutex);
+                aq = audio_.queued_ms;
+            }
             OLOG("stall started at %llu ms (vq=%lld aq=%lld)", static_cast<unsigned long long>(pos),
-                 static_cast<long long>(video_.queued_ms), static_cast<long long>(audio_.queued_ms));
+                 static_cast<long long>(vq), static_cast<long long>(aq));
         }
     }
 }

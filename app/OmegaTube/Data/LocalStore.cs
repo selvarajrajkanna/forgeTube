@@ -14,8 +14,9 @@ namespace OmegaTube.Data
 
         private static string dir;
         private static readonly object posLock = new object();
-        private static readonly object writeLock = new object();
         private static Dictionary<string, object> positions;
+        private static bool dirty;
+        private static bool writing;
 
         public static void Init(string dataDir)
         {
@@ -23,12 +24,35 @@ namespace OmegaTube.Data
             Task.Run(() =>
             {
                 var loaded = ReadJson("positions.json") as Dictionary<string, object> ?? new Dictionary<string, object>();
+                bool needSave = false;
                 lock (posLock)
                 {
                     if (positions == null)
                     {
                         positions = loaded;
                     }
+                    else
+                    {
+                        // Merge loaded history without overwriting newer entries saved before init completed.
+                        foreach (var kv in loaded)
+                        {
+                            if (!positions.ContainsKey(kv.Key))
+                            {
+                                positions[kv.Key] = kv.Value;
+                            }
+                        }
+                        TrimPositionsLocked();
+                        dirty = true;
+                        if (!writing)
+                        {
+                            writing = true;
+                            needSave = true;
+                        }
+                    }
+                }
+                if (needSave)
+                {
+                    DrainWrites();
                 }
             });
         }
@@ -63,7 +87,7 @@ namespace OmegaTube.Data
             {
                 return;
             }
-            Dictionary<string, object> snapshot;
+            bool startWriter = false;
             lock (posLock)
             {
                 positions ??= new Dictionary<string, object>();
@@ -75,27 +99,60 @@ namespace OmegaTube.Data
                     ["dur"] = (double)durMs,
                     ["at"] = (double)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 };
-                if (positions.Count > MaxPositions)
+                TrimPositionsLocked();
+                dirty = true;
+                if (!writing)
                 {
-                    string oldest = null;
-                    double oldestAt = double.MaxValue;
-                    foreach (var kv in positions)
+                    writing = true;
+                    startWriter = true;
+                }
+            }
+            if (startWriter)
+            {
+                Task.Run(DrainWrites);
+            }
+        }
+
+        private static void TrimPositionsLocked()
+        {
+            while (positions.Count > MaxPositions)
+            {
+                string oldest = null;
+                double oldestAt = double.MaxValue;
+                foreach (var kv in positions)
+                {
+                    double at = Json.Num(kv.Value, "at");
+                    if (at < oldestAt)
                     {
-                        double at = Json.Num(kv.Value, "at");
-                        if (at < oldestAt)
-                        {
-                            oldestAt = at;
-                            oldest = kv.Key;
-                        }
-                    }
-                    if (oldest != null)
-                    {
-                        positions.Remove(oldest);
+                        oldestAt = at;
+                        oldest = kv.Key;
                     }
                 }
-                snapshot = new Dictionary<string, object>(positions);
+                if (oldest == null)
+                {
+                    break;
+                }
+                positions.Remove(oldest);
             }
-            System.Threading.Tasks.Task.Run(() => WriteJson("positions.json", snapshot));
+        }
+
+        private static void DrainWrites()
+        {
+            for (;;)
+            {
+                Dictionary<string, object> snapshot;
+                lock (posLock)
+                {
+                    if (!dirty)
+                    {
+                        writing = false;
+                        return;
+                    }
+                    dirty = false;
+                    snapshot = new Dictionary<string, object>(positions);
+                }
+                WriteJson("positions.json", snapshot);
+            }
         }
 
         private static object ReadJson(string name)
@@ -116,10 +173,10 @@ namespace OmegaTube.Data
             try
             {
                 string json = Json.Write(value);
-                lock (writeLock)
-                {
-                    File.WriteAllText(Path.Combine(dir, name), json);
-                }
+                string path = Path.Combine(dir, name);
+                string tmp = path + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, path, overwrite: true);
             }
             catch (Exception e)
             {

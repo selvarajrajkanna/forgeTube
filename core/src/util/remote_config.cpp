@@ -1,5 +1,6 @@
 #include "util/remote_config.h"
 
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -75,7 +76,15 @@ bool refresh(std::string& error) {
     }
     std::lock_guard<std::mutex> lock(g_mutex);
     merge(g_config, remote);
-    if (!g_cache_path.empty()) std::ofstream(g_cache_path, std::ios::trunc) << res.body;
+    if (!g_cache_path.empty()) {
+        std::string tmp = g_cache_path + ".tmp";
+        bool ok = false;
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            ok = out && out.write(res.body.data(), static_cast<std::streamsize>(res.body.size()));
+        }
+        if (ok) std::rename(tmp.c_str(), g_cache_path.c_str());
+    }
     OLOG("remote config: updated from %s (version %d)", repo.c_str(), remote.value("version", 0));
     return true;
 }

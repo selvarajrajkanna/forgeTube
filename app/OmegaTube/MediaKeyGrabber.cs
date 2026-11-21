@@ -21,6 +21,7 @@ namespace OmegaTube
             public static extern IntPtr DisplayWindowFind(IntPtr display, uint id);
 
             [DllImport(Lib, EntryPoint = "ecore_wl2_window_keygrab_set")]
+            [return: MarshalAs(UnmanagedType.U1)]
             public static extern bool WindowKeygrabSet(
                 IntPtr window,
                 [MarshalAs(UnmanagedType.LPStr)] string key,
@@ -30,6 +31,7 @@ namespace OmegaTube
                 int mode);
 
             [DllImport(Lib, EntryPoint = "ecore_wl2_window_keygrab_unset")]
+            [return: MarshalAs(UnmanagedType.U1)]
             public static extern bool WindowKeygrabUnset(
                 IntPtr window,
                 [MarshalAs(UnmanagedType.LPStr)] string key,

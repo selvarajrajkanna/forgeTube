@@ -83,6 +83,8 @@ namespace OmegaTube.Ui
             line.Position = new Position(48, 446);
             card.Add(line);
             statusSpinner = Widgets.Spinner(40, Theme.TextDim, out statusSpin);
+            statusSpin.Stop();
+            statusSpinner.Hide();
             statusSpinner.Position = new Position(68, 500);
             card.Add(statusSpinner);
             statusLabel = Widgets.Label("", Theme.BodySize + 2, Theme.Text, 860, 44);
@@ -233,6 +235,7 @@ namespace OmegaTube.Ui
                 {
                     if (YouTube.SwitchAccount(id))
                     {
+                        CommentsPanel.ClearAccountCache();
                         App.Home.InvalidateRows();
                         profileLoaded = false;
                         ShowProfile();
@@ -277,6 +280,7 @@ namespace OmegaTube.Ui
             }
             confirmSignOut = false;
             YouTube.SignOut();
+            CommentsPanel.ClearAccountCache();
             App.Home.InvalidateRows();
             avatar.ResourceUrl = "";
             profileLoaded = false;
@@ -385,6 +389,7 @@ namespace OmegaTube.Ui
                         interval += 5;
                         continue;
                     case "done":
+                        CommentsPanel.ClearAccountCache();
                         App.Home.InvalidateRows();
                         ShowProfile();
                         return;

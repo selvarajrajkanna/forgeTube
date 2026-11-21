@@ -97,6 +97,12 @@ namespace OmegaTube.Ui
 
         private static string myPhoto, myHandle;
 
+        public static void ClearAccountCache()
+        {
+            myPhoto = null;
+            myHandle = null;
+        }
+
         private bool HasComments => started && !disabled;
         private int LastIndex => HasComments ? 1 + entries.Count : 0;
 
@@ -193,6 +199,14 @@ namespace OmegaTube.Ui
 
         public void Open()
         {
+            if (closed)
+            {
+                closed = false;
+                started = false;
+                loading = false;
+                disabled = false;
+                continuation = "";
+            }
             mode = Mode.Comments;
             countLabel.Text = commentsTitle;
             descView.Hide();
@@ -269,6 +283,13 @@ namespace OmegaTube.Ui
             closed = true;
             generation++;
             CloseEntry();
+            if (scrollAnim != null)
+            {
+                scrollAnim.Stop();
+                scrollAnim.Dispose();
+                scrollAnim = null;
+            }
+            ClearEntries();
         }
 
         private void Begin()
@@ -292,7 +313,7 @@ namespace OmegaTube.Ui
         private async Task LoadAccount()
         {
             AccountInfo a = await YouTube.Account();
-            if (a.Error != null)
+            if (closed || a.Error != null)
             {
                 return;
             }
@@ -401,8 +422,21 @@ namespace OmegaTube.Ui
         {
             foreach (Entry e in entries)
             {
-                list.Remove(e.View);
-                e.View.Dispose();
+                // Collapsed replies live in e.Children (unparented from list); dispose them too.
+                foreach (Entry child in e.Children)
+                {
+                    if (child.View != null && !child.View.Disposed)
+                    {
+                        list.Remove(child.View);
+                        child.View.Dispose();
+                    }
+                }
+                e.Children.Clear();
+                if (e.View != null && !e.View.Disposed)
+                {
+                    list.Remove(e.View);
+                    e.View.Dispose();
+                }
             }
             entries.Clear();
             painted = null;
@@ -744,13 +778,14 @@ namespace OmegaTube.Ui
                         scrollAnim = Widgets.Slide(content, 0, -scrollY, scrollAnim, 160);
                         break;
                     }
-                    if (focusIndex < LastIndex)
+                    int nextFocus = focusIndex + 1;
+                    if (nextFocus == 1 && !form.Visibility)
                     {
-                        focusIndex++;
-                        if (focusIndex == 1 && !form.Visibility && LastIndex >= 2)
-                        {
-                            focusIndex = 2;
-                        }
+                        nextFocus = 2;
+                    }
+                    if (nextFocus <= LastIndex)
+                    {
+                        focusIndex = nextFocus;
                         toolIndex = -1;
                         Reveal(+1);
                         MaybeLoadMore();
@@ -983,6 +1018,11 @@ namespace OmegaTube.Ui
             {
                 AddMoreRow(parent, at, page.Continuation);
             }
+            focusIndex = Math.Min(focusIndex, LastIndex);
+            if (focusIndex == 1 && !form.Visibility)
+            {
+                focusIndex = 0;
+            }
             BuildTools(parent);
             ArrangeParts();
             Refresh();
@@ -1118,8 +1158,13 @@ namespace OmegaTube.Ui
                 shown.Avatar = myPhoto;
             }
             status.Hide();
-            int at = target == null ? 0 : entries.IndexOf(target) + 1;
-            AddEntry(shown, at, thread);
+            int at = target == null ? 0 : Math.Max(0, entries.IndexOf(target) + 1);
+            AddEntry(shown, at, thread, thread != null ? ReplyIndent : 0);
+            if (thread != null)
+            {
+                thread.RepliesOpen = true;
+                BuildTools(thread);
+            }
             ArrangeParts();
             focusIndex = 2 + at;
             toolIndex = -1;

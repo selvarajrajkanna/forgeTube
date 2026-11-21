@@ -2,6 +2,7 @@
 
 #include <quickjs.h>
 
+#include <dirent.h>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -79,8 +80,8 @@ void set_global_string(JSContext* ctx, const char* name, const std::string& valu
 JSRuntime* new_runtime() {
     JSRuntime* rt = JS_NewRuntime();
     if (!rt) return nullptr;
-    JS_SetMemoryLimit(rt, 384u << 20);
-    JS_SetMaxStackSize(rt, 4u << 20);  // meriyah recurses deeply on the player; worker threads have 8 MB
+    JS_SetMemoryLimit(rt, 128u << 20);
+    JS_SetMaxStackSize(rt, 512u << 10);  // stays safely inside 1-2 MiB 32-bit ARM worker thread stacks
     return rt;
 }
 
@@ -271,6 +272,8 @@ bool JsSolver::solve(const char* type, const std::string& challenge, std::string
         JS_FreeValue(ctx_, arg);
         if (JS_IsException(r)) {
             error = std::string(type) + ": " + exception_text(ctx_);
+        } else if (!JS_IsString(r)) {
+            error = std::string(type) + ": non-string result";
         } else if (const char* s = JS_ToCString(ctx_, r)) {
             out = s;
             JS_FreeCString(ctx_, s);
@@ -314,8 +317,22 @@ bool Decipher::ensure(std::string& error) {
         sts = parse_sts(js.body);
         OLOG("decipher: player %s (%zu bytes, sts %d), preprocessing...", id.c_str(), js.body.size(), sts);
         if (!JsSolver::preprocess(js.body, preprocessed, error)) return false;
-        if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts))))
+        if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts)))) {
             OLOG("decipher: could not cache %s", base.c_str());
+        } else if (!cache_dir_.empty()) {
+            // Prune older player-<id>.js/.sts files so cache storage never grows unbounded across YouTube rotations.
+            const std::string keep_js = "player-" + id + ".js";
+            const std::string keep_sts = "player-" + id + ".sts";
+            if (DIR* dir = opendir(cache_dir_.c_str())) {
+                while (dirent* ent = readdir(dir)) {
+                    std::string name(ent->d_name);
+                    if (name.rfind("player-", 0) == 0 && name != keep_js && name != keep_sts) {
+                        std::remove((cache_dir_ + "/" + name).c_str());
+                    }
+                }
+                closedir(dir);
+            }
+        }
     }
     auto solver = std::make_unique<JsSolver>();
     if (!solver->load(preprocessed, error)) return false;

@@ -76,6 +76,18 @@ namespace OmegaTube.Ui
         private const int CaptionBottomFree = 1010, CaptionBottomChrome = 780;
         private const int UpNextSeconds = 10;
 
+        private sealed class PlayerHandle
+        {
+            public readonly object Gate = new object();
+            public IntPtr Ptr;
+            public bool Destroyed;
+
+            public PlayerHandle(IntPtr ptr)
+            {
+                Ptr = ptr;
+            }
+        }
+
         private readonly VideoItem item;
         private readonly View chrome;          // everything at the bottom; slides up for suggestions
         private readonly TextLabel titleLabel, metaLabel, timeLabel, durationLabel, clockLabel, stateLabel, statsLabel, toast;
@@ -84,8 +96,9 @@ namespace OmegaTube.Ui
         private ImageView poster;
         private readonly View barA, barB;      // black bars where the video does not cover the screen (4:3, 21:9)
         private readonly View spinner;
-        private readonly Animation spin;
+        private Animation spin;
         private readonly View track, progressFill, playhead;
+        private readonly List<View> markViews = new List<View>();
         private readonly List<Button> buttons = new List<Button>();
         private readonly List<Button> rightButtons = new List<Button>();  // laid out from the right edge
         private readonly List<int> visibleOrder = new List<int>();        // button indices sorted by X
@@ -112,8 +125,13 @@ namespace OmegaTube.Ui
         private DateTime upNextAt;
         private VideoItem upNextItem;
 
+        private PlayerHandle playerHandle;
         private IntPtr player = IntPtr.Zero;
         private bool closing;
+        private int closingFlag;
+        private int startGen;
+        private bool initialized;
+        private bool fatalError;
         private bool ended;
         private Timer tick, captionTick;
         private DateTime chromeUntil;
@@ -126,6 +144,8 @@ namespace OmegaTube.Ui
         private DateTime seekStartAt;
         private int seekDirection;
         private DateTime lastSysSampleAt;
+        private DateTime lastStatsUiAt;
+        private int sysSampleInFlight;
         private TimeSpan lastProcCpu;
         private long lastSysTotalCpu, lastSysIdleCpu;
         private string sysStatsLine = "";
@@ -449,20 +469,43 @@ namespace OmegaTube.Ui
 
         public override void OnShow()
         {
+            closing = false;
+            System.Threading.Volatile.Write(ref closingFlag, 0);
+            ended = false;
+            fatalError = false;
             Window.Default.BackgroundColor = Color.Transparent;
             ShowChrome(Focus.Hidden);
+            if (tick != null)
+            {
+                tick.Stop();
+                tick.Dispose();
+            }
             tick = new Timer(250);
-            tick.Tick += (s, e) => UiGuard.Tick("PlayerScreen.OnTick", () => { OnTick(); return true; });
+            tick.Tick += (s, e) => UiGuard.Tick("PlayerScreen.OnTick", () => { OnTick(); return !closing; });
             tick.Start();
+            if (captionTick != null)
+            {
+                captionTick.Stop();
+                captionTick.Dispose();
+            }
             captionTick = new Timer(100);
-            captionTick.Tick += (s, e) => UiGuard.Tick("PlayerScreen.UpdateCaption", () => { UpdateCaption(); return true; });
+            captionTick.Tick += (s, e) => UiGuard.Tick("PlayerScreen.UpdateCaption", () => { UpdateCaption(); return !closing; });
+            if (cues != null && cues.Count > 0)
+            {
+                captionTick.Start();
+            }
             UiGuard.Fire("PlayerScreen.Start", Start);
-            UiGuard.Fire("PlayerScreen.LoadSuggestions", LoadSuggestions);
-            UiGuard.Fire("PlayerScreen.LoadDetails", LoadDetails);
+            if (!initialized)
+            {
+                initialized = true;
+                UiGuard.Fire("PlayerScreen.LoadSuggestions", LoadSuggestions);
+                UiGuard.Fire("PlayerScreen.LoadDetails", LoadDetails);
+            }
         }
 
         private async Task Start()
         {
+            int gen = System.Threading.Interlocked.Increment(ref startGen);
             IntPtr window = App.EcoreWindow;
             int w = (int)Window.Default.WindowSize.Width, h = (int)Window.Default.WindowSize.Height;
             if (App.Config.SponsorBlockEnabled && segments.Count == 0)
@@ -480,26 +523,33 @@ namespace OmegaTube.Ui
             string codecs = App.Config.Player.Codecs;
             string audio = audioTrack;
             ShowLoading(T("Loading…"), opaque: true);
-            await lastTeardown;
             int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
-            (string initRoute, int initDelay, IntPtr created) = await Task.Run(() =>
+            (string initRoute, int initDelay, IntPtr created) = await DecoderAsync(() =>
             {
+                if (System.Threading.Volatile.Read(ref closingFlag) != 0 ||
+                    System.Threading.Volatile.Read(ref startGen) != gen)
+                {
+                    return ("", 0, IntPtr.Zero);
+                }
                 var target = ComputeAudioSyncTarget(hdmiDelay);
                 NativeCore.SetDefaultAudioDelay(target.delayMs);
                 return (target.route, target.delayMs,
                         NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio));
             });
-            if (closing)
+            if (closing || gen != startGen)
             {
                 Release(created);
                 return;
             }
-            player = created;
-            if (player == IntPtr.Zero)
+            if (created == IntPtr.Zero)
             {
+                playerHandle = null;
+                player = IntPtr.Zero;
                 ShowError(YouTube.LastPlayError());
                 return;
             }
+            playerHandle = new PlayerHandle(created);
+            player = created;
             activeAudioRoute = initRoute;
             appliedAudioDelayMs = initDelay;
             lastBtCheck = DateTime.Now;
@@ -532,20 +582,28 @@ namespace OmegaTube.Ui
             }
             if (sessionSpeed != 1.0 && !live)
             {
-                IntPtr p = player;
+                PlayerHandle h = playerHandle;
                 double s = sessionSpeed;
                 _ = Task.Run(async () =>
                 {
                     await Task.Delay(1500);  // the rate applies once prepared
-                    NativeCore.PlayerSetRate(p, s);
+                    lock (h.Gate)
+                    {
+                        if (!h.Destroyed && h.Ptr != IntPtr.Zero)
+                        {
+                            NativeCore.PlayerSetRate(h.Ptr, s);
+                        }
+                    }
                 });
             }
         }
 
         private void ShowError(PlayError e)
         {
+            fatalError = true;
+            HideChrome();
             ShowLoading("", opaque: true);
-            spin.Stop();
+            spin?.Stop();
             spinner.Hide();
             stateLabel.MultiLine = true;
             stateLabel.Size = new Size(1600, 560);
@@ -890,6 +948,11 @@ namespace OmegaTube.Ui
             if (!spinner.Visibility)
             {
                 spinner.Show();
+                if (spin == null)
+                {
+                    spin = new Animation(900) { Looping = true };
+                    spin.AnimateBy(spinner, "Orientation", new Rotation(new Radian(new Degree(360f)), PositionAxis.Z));
+                }
                 spin.Play();
             }
             if (opaque)
@@ -906,7 +969,7 @@ namespace OmegaTube.Ui
             }
             stateLabel.Hide();
             spinner.Hide();
-            spin.Stop();
+            spin?.Stop();
             backdrop.Hide();
             if (poster != null)
             {
@@ -959,8 +1022,9 @@ namespace OmegaTube.Ui
 
         public override void OnPause()
         {
-            // Leaving the app (Home button...): give the decoder back, return to the previous screen.
-            App.Pop();
+            // Leaving the app (Home button...): give the decoder back, return to the previous screen
+            // without waking the underlying screen's timers while backgrounded (OnResume will show it).
+            App.Pop(showBelow: false);
         }
 
         private void Close()
@@ -970,10 +1034,27 @@ namespace OmegaTube.Ui
                 return;
             }
             closing = true;
+            System.Threading.Volatile.Write(ref closingFlag, 1);
+            System.Threading.Interlocked.Increment(ref startGen);
             commentsPanel.Close();
-            tick?.Stop();
-            captionTick?.Stop();
-            spin.Stop();
+            if (tick != null)
+            {
+                tick.Stop();
+                tick.Dispose();
+                tick = null;
+            }
+            if (captionTick != null)
+            {
+                captionTick.Stop();
+                captionTick.Dispose();
+                captionTick = null;
+            }
+            if (spin != null)
+            {
+                spin.Stop();
+                spin.Dispose();
+                spin = null;
+            }
             if (slide != null)
             {
                 slide.Stop();
@@ -981,7 +1062,8 @@ namespace OmegaTube.Ui
                 slide = null;
             }
             SavePosition();
-            Release(player);
+            Release(playerHandle);
+            playerHandle = null;
             player = IntPtr.Zero;
         }
 
@@ -1001,8 +1083,28 @@ namespace OmegaTube.Ui
             }
         }
 
-        // The TV has one video decoder: player creation (home previews) and teardown run one after the other on
-        // this chain, and Start() waits for it, so a new player never starts while another still holds the decoder.
+        private static void Release(PlayerHandle handle)
+        {
+            if (handle == null)
+            {
+                return;
+            }
+            Decoder(() =>
+            {
+                lock (handle.Gate)
+                {
+                    if (!handle.Destroyed && handle.Ptr != IntPtr.Zero)
+                    {
+                        handle.Destroyed = true;
+                        NativeCore.PlayerDestroy(handle.Ptr);
+                        handle.Ptr = IntPtr.Zero;
+                    }
+                }
+            });
+        }
+
+        // The TV has one video decoder: player creation and teardown run one after the other on
+        // this chain, so a new player never starts while another still holds the decoder.
         // UI thread only (lastTeardown is not locked). A failing step does not break the chain.
         internal static void Decoder(System.Action work)
         {
@@ -1028,15 +1130,49 @@ namespace OmegaTube.Ui
             });
         }
 
+        private static Task<T> DecoderAsync<T>(Func<T> work)
+        {
+            Task previous = lastTeardown;
+            Task<T> next = Task.Run(async () =>
+            {
+                try
+                {
+                    await previous;
+                }
+                catch (Exception)
+                {
+                    // logged by the step that failed
+                }
+                return work();
+            });
+            lastTeardown = next;
+            return next;
+        }
+
+        internal static void WaitPendingTeardown(int timeoutMs = 1500)
+        {
+            try
+            {
+                lastTeardown.Wait(timeoutMs);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
         // Quality / audio track change: same video, new player at the current position.
         private void Restart()
         {
             SavePosition();
             long pos = stats.PositionMs;
-            Release(player);
+            Release(playerHandle);
+            playerHandle = null;
             player = IntPtr.Zero;
             resumeMs = pos;
-            marksDrawn = false;
+            ended = false;
+            pendingSeekMs = -1;
+            seekingTargetMs = -1;
+            ClearMarks();
             UiGuard.Fire("PlayerScreen.Start", Start);
         }
 
@@ -1044,6 +1180,10 @@ namespace OmegaTube.Ui
 
         private void OnTick()
         {
+            if (closing)
+            {
+                return;
+            }
             DateTime now = DateTime.Now;
             if (player != IntPtr.Zero)
             {
@@ -1099,9 +1239,12 @@ namespace OmegaTube.Ui
                 HideChrome();
             }
             UpdateChrome(now);
-            if (statsLabel.Visibility && player != IntPtr.Zero)
+            if (statsLabel.Visibility && player != IntPtr.Zero &&
+                (lastStatsUiAt == default || (now - lastStatsUiAt).TotalMilliseconds >= 1000))
             {
-                SampleSystemStats(now);
+                lastStatsUiAt = now;
+                RequestSystemStatsSample(now);
+                string sysLine = System.Threading.Volatile.Read(ref sysStatsLine);
                 string vRate = stats.VideoBitrateKbps > 0
                     ? (info.Current != null && info.Current.Bitrate > 0
                         ? $" · {stats.VideoBitrateKbps} kb/s (avg {info.Current.Bitrate / 1000})"
@@ -1121,7 +1264,7 @@ namespace OmegaTube.Ui
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") + delayTag + "\n" +
                     $"  {PipelineTag(info)} | v{BugReport.AppVersion}\n" +
                     $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | drop {stats.DroppedFrames} | stalls {stats.Stalls} | err {stats.Errors}" +
-                    (sysStatsLine.Length > 0 ? "\n" + sysStatsLine : "");
+                    (sysLine.Length > 0 ? "\n" + sysLine : "");
             }
             if (toast.Visibility && now > toastUntil)
             {
@@ -1181,10 +1324,29 @@ namespace OmegaTube.Ui
             }
         }
 
+        private void RequestSystemStatsSample(DateTime now)
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref sysSampleInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+            Task.Run(() =>
+            {
+                try
+                {
+                    SampleSystemStats(now);
+                }
+                finally
+                {
+                    System.Threading.Interlocked.Exchange(ref sysSampleInFlight, 0);
+                }
+            });
+        }
+
         private void SampleSystemStats(DateTime now)
         {
             double elapsedMs = (now - lastSysSampleAt).TotalMilliseconds;
-            if (lastSysSampleAt != default && elapsedMs < 1000)
+            if (lastSysSampleAt != default && elapsedMs < 900)
             {
                 return;
             }
@@ -1267,7 +1429,7 @@ namespace OmegaTube.Ui
                 string memText = sysTotalMb > 0
                     ? $"mem  {sysUsedMb:F0}/{sysTotalMb:F0} MB (app {appMb:F0} MB, gc {gcMb:F0} MB)"
                     : $"mem  app {appMb:F0} MB (gc {gcMb:F0} MB)";
-                sysStatsLine = $"  {cpuText}   {memText}";
+                System.Threading.Volatile.Write(ref sysStatsLine, $"  {cpuText}   {memText}");
                 lastSysSampleAt = now;
             }
             catch (Exception)
@@ -1281,6 +1443,10 @@ namespace OmegaTube.Ui
             if (commentsPanel.EntryOpen)
             {
                 return;   // writing a comment: stays on the finished video
+            }
+            if (focus == Focus.Comments)
+            {
+                CloseCommentsSplit();
             }
             if (Loop)
             {
@@ -1325,7 +1491,7 @@ namespace OmegaTube.Ui
             {
                 progressFill.SizeWidth = ProgressWidth;
                 playhead.PositionX = ProgressX + ProgressWidth - 7;
-                timeLabel.Text = "● EN DIRECT";
+                timeLabel.Text = "● " + T("LIVE");
                 durationLabel.Text = "";
                 return;
             }
@@ -1453,6 +1619,10 @@ namespace OmegaTube.Ui
         // The lines active at the playback position (speech-recognition tracks overlap: keep the last two).
         private void UpdateCaption()
         {
+            if (closing)
+            {
+                return;
+            }
             if (cues == null || player == IntPtr.Zero || ended)
             {
                 if (captionLabel.Visibility)
@@ -1627,6 +1797,17 @@ namespace OmegaTube.Ui
             Seek(target);
         }
 
+        private void ClearMarks()
+        {
+            foreach (View m in markViews)
+            {
+                track.Remove(m);
+                m.Dispose();
+            }
+            markViews.Clear();
+            marksDrawn = false;
+        }
+
         // Coloured marks for the SponsorBlock segments on the seek bar.
         private void DrawMarks()
         {
@@ -1640,7 +1821,9 @@ namespace OmegaTube.Ui
                 SponsorCategory cat = SponsorCategory.Find(s.Category);
                 float x = (float)(ProgressWidth * s.StartMs / (double)stats.DurationMs);
                 float w = Math.Max(4f, (float)(ProgressWidth * (s.EndMs - s.StartMs) / (double)stats.DurationMs));
-                track.Add(new View { BackgroundColor = cat?.Color ?? Theme.Text, Position = new Position(x, 0), Size = new Size(w, 4) });
+                var mark = new View { BackgroundColor = cat?.Color ?? Theme.Text, Position = new Position(x, 0), Size = new Size(w, 4) };
+                track.Add(mark);
+                markViews.Add(mark);
             }
             progressFill.RaiseToTop();
         }
@@ -1778,24 +1961,68 @@ namespace OmegaTube.Ui
         public override bool OnKey(string key)
         {
             bool back = key == "XF86Back" || key == "Escape";
+            if (fatalError)
+            {
+                return !back;
+            }
             if (key.StartsWith("XF86AudioRaise") || key.StartsWith("XF86AudioLower") || key.StartsWith("XF86AudioMute"))
             {
                 return true;   // volume: the TV handles it, the controls stay as they are
             }
-            // Remote play/pause (Samsung sends XF86PlayBack) works whatever has the focus.
-            if (key == "XF86PlayBack" || key == "XF86AudioPlay" || key == "XF86AudioPause")
+            if (key == "XF86AudioStop")
             {
-                TogglePause();
-                if (focus == Focus.Hidden)
+                return false;  // pop the player screen
+            }
+            // Remote media transport keys work whatever has the focus (unless typing a comment).
+            if (!commentsPanel.EntryOpen)
+            {
+                if (key == "XF86PlayBack" || key == "XF86AudioPlay" || key == "XF86AudioPause")
                 {
-                    buttonIndex = buttons.IndexOf(playButton);
-                    ShowChrome(Focus.Buttons);
+                    if (ended && (key == "XF86PlayBack" || key == "XF86AudioPlay"))
+                    {
+                        App.Replace(new PlayerScreen(App, item, 0, maxHeight));
+                        return true;
+                    }
+                    bool shouldToggle = key == "XF86PlayBack"
+                        || (key == "XF86AudioPlay" && stats.State == 4)
+                        || (key == "XF86AudioPause" && stats.State == 3);
+                    if (shouldToggle)
+                    {
+                        TogglePause();
+                    }
+                    if (focus == Focus.Hidden)
+                    {
+                        buttonIndex = buttons.IndexOf(playButton);
+                        ShowChrome(Focus.Buttons);
+                    }
+                    else if (focus != Focus.Panel && focus != Focus.UpNext && focus != Focus.Comments)
+                    {
+                        ShowChrome(Focus.Hidden);
+                    }
+                    return true;
                 }
-                else if (focus != Focus.Panel && focus != Focus.UpNext && focus != Focus.Comments)
+                if (key == "XF86AudioNext")
                 {
-                    ShowChrome(Focus.Hidden);
+                    Activate(Action.Next);
+                    return true;
                 }
-                return true;
+                if (key == "XF86AudioPrev")
+                {
+                    Activate(Action.Restart);
+                    return true;
+                }
+                if (key == "XF86AudioRewind" || key == "XF86AudioForward")
+                {
+                    if (focus != Focus.Panel && focus != Focus.UpNext && focus != Focus.Comments)
+                    {
+                        SeekBy(key == "XF86AudioRewind" ? -1 : 1);
+                        if (!live)
+                        {
+                            ShowChrome(Focus.Timeline);
+                        }
+                    }
+                    return true;
+                }
             }
             switch (focus)
             {
@@ -2083,6 +2310,7 @@ namespace OmegaTube.Ui
                     break;
                 case Action.Stats:
                     Widgets.SetVisible(statsLabel, !statsLabel.Visibility);
+                    lastStatsUiAt = default;
                     UpdateIndicators();
                     break;
             }
@@ -2242,7 +2470,19 @@ namespace OmegaTube.Ui
                     break;
                 case Action.Speed:
                     sessionSpeed = Speeds[i];
-                    if (player != IntPtr.Zero && NativeCore.PlayerSetRate(player, sessionSpeed) != 0 && sessionSpeed != 1.0)
+                    int rateRc = 0;
+                    PlayerHandle speedHandle = playerHandle;
+                    if (speedHandle != null)
+                    {
+                        lock (speedHandle.Gate)
+                        {
+                            if (!speedHandle.Destroyed && speedHandle.Ptr != IntPtr.Zero)
+                            {
+                                rateRc = NativeCore.PlayerSetRate(speedHandle.Ptr, sessionSpeed);
+                            }
+                        }
+                    }
+                    if (rateRc != 0 && sessionSpeed != 1.0)
                     {
                         Toast(T("Speed not supported right now"));
                     }
@@ -2375,7 +2615,7 @@ namespace OmegaTube.Ui
                 Toast(T("Live: no seeking"));
                 return;
             }
-            if (ended)
+            if (ended || stats.DurationMs <= 0)
             {
                 return;
             }
@@ -2428,8 +2668,8 @@ namespace OmegaTube.Ui
             seekingUntil = DateTime.Now.AddMilliseconds(1500);
             noSkipUntil = DateTime.Now.AddSeconds(1.5);
             UpdateChrome(DateTime.Now);
-            IntPtr p = player;
-            if (p != IntPtr.Zero)
+            PlayerHandle h = playerHandle;
+            if (h != null && !h.Destroyed && h.Ptr != IntPtr.Zero)
             {
                 System.Threading.Interlocked.Increment(ref seekingInFlight);
                 ShowLoading("", opaque: false);
@@ -2437,7 +2677,13 @@ namespace OmegaTube.Ui
                 {
                     try
                     {
-                        NativeCore.PlayerSeek(p, target);
+                        lock (h.Gate)
+                        {
+                            if (!h.Destroyed && h.Ptr != IntPtr.Zero)
+                            {
+                                NativeCore.PlayerSeek(h.Ptr, target);
+                            }
+                        }
                     }
                     finally
                     {

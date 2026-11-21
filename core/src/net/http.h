@@ -44,6 +44,7 @@ public:
     size_t read_some(void* dst, size_t n);
     std::string read_all(size_t limit = 64 * 1024 * 1024);
     void close();
+    void set_large_rcvbuf(bool v) { large_rcvbuf_ = v; }
 
     int status() const { return status_; }
     int64_t content_length() const { return content_length_; }
@@ -64,6 +65,7 @@ private:
     std::unique_ptr<Transport> transport_;
     std::string host_key_;
     bool reusable_ = false;
+    bool large_rcvbuf_ = false;
 
     std::vector<uint8_t> buf_;
     size_t buf_pos_ = 0, buf_len_ = 0;

@@ -140,9 +140,18 @@ namespace OmegaTube.Ui
 
         public override void OnHide()
         {
-            openTimer?.Stop();
-            prewarmTimer?.Stop();
-            prewarmTimer = null;
+            if (openTimer != null)
+            {
+                openTimer.Stop();
+                openTimer.Dispose();
+                openTimer = null;
+            }
+            if (prewarmTimer != null)
+            {
+                prewarmTimer.Stop();
+                prewarmTimer.Dispose();
+                prewarmTimer = null;
+            }
             shown?.OnHide();
         }
 
@@ -168,6 +177,7 @@ namespace OmegaTube.Ui
             {
                 // Same entries, but their content changed (subscription, account): every feed is outdated.
                 loadedAt.Clear();
+                RefreshAvatar();
                 if (sections[current].Embed == null)
                 {
                     ShowSection(current);
@@ -224,6 +234,9 @@ namespace OmegaTube.Ui
         {
             List<Section> next = BuildSections();
             var sig = new System.Text.StringBuilder();
+            sig.Append(YouTube.ActiveAccountId()).Append('|')
+               .Append(App.Config.Language).Append('|')
+               .Append(App.Config.Region).Append('\n');
             foreach (Section s in next)
             {
                 sig.Append(s.Key).Append('|').Append(s.Title).Append('|').Append(s.Icon).Append('|').Append(s.Loader != null).Append('\n');
@@ -471,7 +484,12 @@ namespace OmegaTube.Ui
         // The rail's entry opens once the focus rests on it.
         private void ScheduleOpen()
         {
-            openTimer?.Stop();
+            if (openTimer != null)
+            {
+                openTimer.Stop();
+                openTimer.Dispose();
+                openTimer = null;
+            }
             openTimer = new Timer(OpenDelayMs);
             openTimer.Tick += (s, e) => UiGuard.Tick("HomeScreen.open", () =>
             {
@@ -531,6 +549,7 @@ namespace OmegaTube.Ui
             ProfileAccount next = accts[(idx + 1) % accts.Count];
             if (YouTube.SwitchAccount(next.Id))
             {
+                CommentsPanel.ClearAccountCache();
                 rail.SetAvatar(next.Photo);
                 InvalidateRows();
                 ApplyPending(reloadFeed: true);

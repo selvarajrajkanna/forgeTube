@@ -386,16 +386,17 @@ namespace OmegaTube.Ui
         {
             int generation = ++suggestGeneration;
             await Task.Delay(250);
-            if (generation != suggestGeneration)
+            if (Root.Disposed || generation != suggestGeneration)
             {
                 return;
             }
             List<string> list = query.Trim().Length == 0 ? new List<string>() : await YouTubeSuggest(query);
-            if (generation != suggestGeneration)
+            if (Root.Disposed || generation != suggestGeneration)
             {
                 return;
             }
             suggestions = list;
+            suggestionIndex = SuggestionCount > 0 ? System.Math.Min(suggestionIndex, SuggestionCount - 1) : 0;
             if (zone == Zone.Suggestions && SuggestionCount == 0)
             {
                 zone = Zone.Keyboard;
@@ -419,6 +420,8 @@ namespace OmegaTube.Ui
             }
             results = new FeedRow(T("Results for “{0}”", q), q, 1920 - KbX);
             resultsHost.Add(results);
+            bool exists = App.Config.HomeRows.Exists(r => string.Equals(r.Query, q, System.StringComparison.OrdinalIgnoreCase));
+            addButton.Text = exists ? "  ✓ " + T("Added to menu") + "  " : "  + " + T("Add to menu") + "  ";
             addButton.Show();
             zone = Zone.Keyboard;
             UiGuard.Fire("SearchScreen.LoadResults", LoadResults);
@@ -428,7 +431,7 @@ namespace OmegaTube.Ui
         {
             FeedRow row = results;
             await row.Load();
-            if (row == results && row.Count > 0 && zone == Zone.Keyboard)
+            if (!Root.Disposed && row == results && row.Count > 0 && zone == Zone.Keyboard)
             {
                 zone = Zone.Results;
                 UpdateFocus();
@@ -442,9 +445,12 @@ namespace OmegaTube.Ui
             {
                 return;
             }
-            App.Config.HomeRows.Add(new HomeRow { Title = q, Query = q, Icon = HomeRow.GuessIcon(q) });
-            App.Config.Save();
-            App.Home.InvalidateRows();
+            if (!App.Config.HomeRows.Exists(r => string.Equals(r.Query, q, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                App.Config.HomeRows.Add(new HomeRow { Title = q, Query = q, Icon = HomeRow.GuessIcon(q) });
+                App.Config.Save();
+                App.Home.InvalidateRows();
+            }
             addButton.Text = "  ✓ " + T("Added to menu") + "  ";
         }
     }

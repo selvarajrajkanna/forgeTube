@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -48,8 +49,7 @@ public:
     void cache_profile(const std::string& id, const std::string& name, const std::string& handle, const std::string& photo);
 
 private:
-    bool ensure_identity(std::string& error);
-    bool refresh_locked(std::string& error);
+    bool ensure_identity(std::string& id_out, std::string& secret_out);
     void load_store_locked();
     void save_locked();
     Account* active_locked();
@@ -61,7 +61,7 @@ private:
     std::vector<Account> accounts_;
     std::string active_id_;
     std::string access_token_;        // cached for the active account
-    int64_t access_expires_at_ = 0;   // unix seconds
+    std::chrono::steady_clock::time_point access_expires_at_{};
 };
 
 Auth& shared_auth();

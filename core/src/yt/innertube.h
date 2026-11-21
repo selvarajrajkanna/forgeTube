@@ -178,12 +178,15 @@ public:
 
     // Raw JSON of the last player/browse response (dev tooling: ytcheck --dump).
     const std::string& last_response() const { return last_response_; }
+    void set_capture_response(bool v) { capture_response_ = v; }
 
 private:
     bool try_client(const nlohmann::json& client, const std::string& video_id, VideoInfo& out, std::string& error);
     bool player_with(const nlohmann::json& client, const std::string& video_id, VideoInfo& out, std::string& error,
                      const std::string& access_token = "");
     bool ensure_visitor(std::string& error);
+    void record_response(const std::string& body);
+    bool capture_response_ = true;
     std::string last_response_;
     Refusal refusal_;
     std::vector<std::string> skipped_clients_;

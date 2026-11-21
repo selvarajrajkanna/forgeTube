@@ -62,6 +62,10 @@ namespace OmegaTube.Ui
         private async Task<FeedPage> LoadPage(string continuation)
         {
             FeedPage page = await YouTube.Channel(channelId, continuation);
+            if (Root.Disposed)
+            {
+                return page;
+            }
             if (page.Error == null && string.IsNullOrEmpty(continuation))
             {
                 if (page.Title.Length > 0)
@@ -104,6 +108,10 @@ namespace OmegaTube.Ui
             bool subscribe = subscribed != 1;
             string error = await YouTube.Subscribe(channelId, subscribe);
             busy = false;
+            if (Root.Disposed)
+            {
+                return;
+            }
             if (error == null)
             {
                 subscribed = subscribe ? 1 : 0;

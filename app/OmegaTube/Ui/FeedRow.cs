@@ -80,6 +80,7 @@ namespace OmegaTube.Ui
         protected override void Dispose(DisposeTypes type)
         {
             UiWork.Cancel(pump);
+            if (slide != null) { slide.Stop(); slide.Dispose(); slide = null; }
             base.Dispose(type);
         }
 
@@ -141,8 +142,15 @@ namespace OmegaTube.Ui
                 return;
             }
             loading = true;
-            FeedPage page = await loader(fresh ? continuation : "");
-            loading = false;
+            FeedPage page;
+            try
+            {
+                page = await loader(fresh ? continuation : "");
+            }
+            finally
+            {
+                loading = false;
+            }
             if (Disposed)
             {
                 return;

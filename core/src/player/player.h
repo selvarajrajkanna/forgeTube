@@ -167,7 +167,7 @@ private:
     std::atomic<int64_t> audio_delay_ms_{0};
     std::mutex refresh_mutex_;
     Clock::time_point last_refresh_{};
-    Clock::time_point started_at_;
+    std::atomic<int64_t> started_at_ms_{0};
 };
 
 }  // namespace omega

@@ -48,7 +48,7 @@ namespace OmegaTube.Ui
         private async Task<FeedPage> LoadPage(string continuation)
         {
             FeedPage page = await YouTube.PlaylistPage(list.PlaylistId, continuation);
-            if (page.Error != null)
+            if (Root.Disposed || page.Error != null)
             {
                 return page;
             }

@@ -157,7 +157,7 @@ DnsCache& dns_cache() {
     return cache;
 }
 
-int open_and_connect(const CachedAddr& ca, const std::string& host, std::string& error) {
+int open_and_connect(const CachedAddr& ca, const std::string& host, bool large_rcvbuf, std::string& error) {
     int fd = socket(ca.family, ca.socktype, ca.protocol);
     if (fd < 0) {
         error = std::string("socket ") + host + ": " + strerror(errno);
@@ -166,8 +166,10 @@ int open_and_connect(const CachedAddr& ca, const std::string& host, std::string&
     timeval tv{15, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    int rcvbuf = 2 * 1024 * 1024;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    if (large_rcvbuf) {
+        int rcvbuf = 2 * 1024 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     if (connect(fd, reinterpret_cast<const sockaddr*>(&ca.addr), ca.len) == 0) return fd;
@@ -176,11 +178,11 @@ int open_and_connect(const CachedAddr& ca, const std::string& host, std::string&
     return -1;
 }
 
-int connect_tcp(const std::string& host, const std::string& port, std::string& error) {
+int connect_tcp(const std::string& host, const std::string& port, bool large_rcvbuf, std::string& error) {
     std::string key = host + ":" + port;
     auto cached = dns_cache().lookup(key);
     for (const auto& ca : cached) {
-        int fd = open_and_connect(ca, host, error);
+        int fd = open_and_connect(ca, host, large_rcvbuf, error);
         if (fd >= 0) return fd;
     }
     if (!cached.empty()) dns_cache().invalidate(key);
@@ -207,7 +209,7 @@ int connect_tcp(const std::string& host, const std::string& port, std::string& e
     }
     freeaddrinfo(res);
     for (const auto& ca : addrs) {
-        fd = open_and_connect(ca, host, error);
+        fd = open_and_connect(ca, host, large_rcvbuf, error);
         if (fd >= 0) break;
     }
     if (fd >= 0) dns_cache().put(key, std::move(addrs));
@@ -279,7 +281,19 @@ class PlainTransport : public Transport {
 public:
     explicit PlainTransport(int fd) : fd_(fd) {}
     ~PlainTransport() override { ::close(fd_); }
-    long send(const void* data, size_t n) override { return ::send(fd_, data, n, MSG_NOSIGNAL); }
+    long send(const void* data, size_t n) override {
+        size_t sent = 0;
+        while (sent < n) {
+            ssize_t r = ::send(fd_, static_cast<const uint8_t*>(data) + sent, n - sent, MSG_NOSIGNAL);
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                return r;
+            }
+            if (r == 0) return -1;
+            sent += static_cast<size_t>(r);
+        }
+        return static_cast<long>(sent);
+    }
     long recv(void* data, size_t n) override {
         for (;;) {
             ssize_t r = ::recv(fd_, data, n, 0);
@@ -421,7 +435,7 @@ void warmup() {
 
 bool Connection::connect_to(const Url& url) {
     close();
-    int fd = connect_tcp(url.host, url.port, error_);
+    int fd = connect_tcp(url.host, url.port, large_rcvbuf_, error_);
     if (fd < 0) return false;
     if (url.tls) {
         auto t = std::make_unique<TlsTransport>(fd);
@@ -532,23 +546,32 @@ bool Connection::read_headers() {
         return false;
     }
     headers_.clear();
-    while (read_line(line) && !line.empty()) {
+    for (;;) {
+        if (!read_line(line)) {
+            error_ = "truncated headers";
+            reusable_ = false;
+            return false;
+        }
+        if (line.empty()) break;
         std::string_view sv(line);
         size_t colon = sv.find(':');
         if (colon == std::string_view::npos) continue;
         size_t v = sv.find_first_not_of(" \t", colon + 1);
         headers_.emplace_back(sv.substr(0, colon), v == std::string_view::npos ? std::string_view{} : sv.substr(v));
     }
+    const bool no_body = (status_ == 204 || status_ == 304 || (status_ >= 100 && status_ < 200));
     std::string_view cl = header_view("Content-Length");
-    content_length_ = -1;
-    if (!cl.empty()) {
+    content_length_ = no_body ? 0 : -1;
+    if (!no_body && !cl.empty()) {
         int64_t val = -1;
-        if (std::from_chars(cl.data(), cl.data() + cl.size(), val).ec == std::errc{}) content_length_ = val;
+        if (std::from_chars(cl.data(), cl.data() + cl.size(), val).ec == std::errc{} && val >= 0) content_length_ = val;
     }
-    chunked_ = header_view("Transfer-Encoding").find("chunked") != std::string_view::npos;
-    reusable_ = !iequals(header_view("Connection"), "close") && (chunked_ || content_length_ >= 0);
-    body_done_ = false;
-    if (chunked_) {
+    chunked_ = !no_body && (header_view("Transfer-Encoding").find("chunked") != std::string_view::npos);
+    reusable_ = !iequals(header_view("Connection"), "close") && (no_body || chunked_ || content_length_ >= 0);
+    body_done_ = no_body;
+    if (no_body) {
+        remaining_ = 0;
+    } else if (chunked_) {
         remaining_ = 0;
     } else {
         remaining_ = content_length_;
@@ -559,15 +582,33 @@ bool Connection::read_headers() {
 
 bool Connection::next_chunk() {
     std::string line;
-    if (remaining_ == 0 && !read_line(line)) return false;  // CRLF after previous chunk (not before the first)
-    if (line.empty() && !read_line(line)) return false;
+    if (remaining_ == 0 && !read_line(line)) {
+        error_ = "truncated chunk";
+        reusable_ = false;
+        return false;
+    }  // CRLF after previous chunk (not before the first)
+    if (line.empty() && !read_line(line)) {
+        error_ = "truncated chunk";
+        reusable_ = false;
+        return false;
+    }
     int64_t chunk_len = 0;
     auto res = std::from_chars(line.data(), line.data() + line.size(), chunk_len, 16);
-    if (res.ec != std::errc{} || chunk_len < 0) return false;
+    if (res.ec != std::errc{} || chunk_len < 0) {
+        error_ = "bad chunk size";
+        reusable_ = false;
+        return false;
+    }
     remaining_ = chunk_len;
     if (remaining_ == 0) {
-        while (read_line(line) && !line.empty()) {
-        }  // trailers
+        for (;;) {
+            if (!read_line(line)) {
+                error_ = "truncated chunk trailers";
+                reusable_ = false;
+                return false;
+            }
+            if (line.empty()) break;
+        }
         body_done_ = true;
     }
     return true;
@@ -581,8 +622,13 @@ size_t Connection::read_some(void* dst, size_t n) {
     if (remaining_ >= 0 && static_cast<int64_t>(n) > remaining_) n = static_cast<size_t>(remaining_);
     size_t got = raw_read(dst, n);
     if (got == 0) {
-        body_done_ = true;
         reusable_ = false;
+        if (remaining_ < 0 && !chunked_ && error_.empty()) {
+            // Close-delimited HTTP/1.0 response: peer FIN marks clean end of body.
+            body_done_ = true;
+        } else if (error_.empty()) {
+            error_ = "premature eof";
+        }
         return 0;
     }
     if (remaining_ >= 0) {
@@ -728,8 +774,8 @@ Response fetch(const Request& req, size_t max_body) {
             current.body.clear();
         }
     }
-    if (!conn->body_done() && !conn->error().empty()) {
-        res.error = conn->error();
+    if (!conn->error().empty() || !conn->body_done()) {
+        res.error = conn->error().empty() ? "truncated response" : conn->error();
         return res;
     }
     std::string_view encoding = conn->header_view("Content-Encoding");
@@ -750,7 +796,9 @@ Response fetch(const Request& req, size_t max_body) {
 }
 
 RangeReader::RangeReader(std::string url, Headers headers, uint64_t chunk_size, uint64_t start)
-    : url_(std::move(url)), headers_(std::move(headers)), chunk_size_(chunk_size), pos_(start) {}
+    : url_(std::move(url)), headers_(std::move(headers)), chunk_size_(chunk_size), pos_(start) {
+    conn_.set_large_rcvbuf(true);
+}
 
 bool RangeReader::open_next() {
     if (total_ >= 0 && static_cast<int64_t>(pos_) >= total_) {
@@ -879,7 +927,9 @@ size_t RangeReader::read(void* dst, size_t n) {
 }
 
 LiveReader::LiveReader(std::string url, Headers headers, int64_t first_sequence)
-    : url_(std::move(url)), headers_(std::move(headers)), seq_(first_sequence) {}
+    : url_(std::move(url)), headers_(std::move(headers)), seq_(first_sequence) {
+    conn_.set_large_rcvbuf(true);
+}
 
 namespace {
 
@@ -916,7 +966,13 @@ int64_t LiveReader::head_sequence(const std::string& url, const Headers& headers
         error = "live head: http " + std::to_string(status) + (head.empty() ? ", no X-Head-Seqnum" : "");
         return -1;
     }
-    return std::stoll(head);
+    int64_t seq = -1;
+    auto parsed = std::from_chars(head.data(), head.data() + head.size(), seq);
+    if (parsed.ec != std::errc{} || seq < 0) {
+        error = "live head: invalid X-Head-Seqnum";
+        return -1;
+    }
+    return seq;
 }
 
 bool LiveReader::open_segment() {

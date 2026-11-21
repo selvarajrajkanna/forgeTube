@@ -23,6 +23,7 @@ namespace OmegaTube.Ui
             public Func<bool> Switch;        // on/off rows
             public Action<int> Change;       // ◀ ▶ (-1 / +1); switch rows flip
             public Action Activate;          // OK
+            public bool SaveOnActivate = true;
             public Color Dot;                // SponsorBlock category colour
             public HomeRow Home;             // "Menu" rows
             public string Section;           // a small heading above this row
@@ -360,6 +361,7 @@ namespace OmegaTube.Ui
                 Hint = T("A QR code opens a GitHub issue filled in with this TV's details and the log"),
                 Value = () => "",
                 Activate = () => App.Push(new ReportScreen(App, null, false)),
+                SaveOnActivate = false,
             });
             l.Add(new Row { Title = T("License"), Hint = T("Free software, no ads and no data collection"), Value = () => "GPL-3.0" });
             l.Add(new Row { Title = T("Credits"), Hint = T("Interface inspired by SmartTube · SponsorBlock segments · SmartTube and Material icons"),
@@ -526,7 +528,10 @@ namespace OmegaTube.Ui
                     if (row.Activate != null)
                     {
                         row.Activate();
-                        Save();
+                        if (row.SaveOnActivate)
+                        {
+                            Save();
+                        }
                     }
                     break;
                 default:

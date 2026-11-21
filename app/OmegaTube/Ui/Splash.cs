@@ -20,6 +20,7 @@ namespace OmegaTube.Ui
         private View spinner;
         private Animation pop, spin, pulse, fade;   // fields: a collected Animation never finishes
         private Timer poll;
+        private bool dismissed;
 
         public event Action Closed;
 
@@ -59,7 +60,7 @@ namespace OmegaTube.Ui
         // A slow heartbeat on the triangle while waiting.
         private void Pulse()
         {
-            if (poll == null)
+            if (dismissed || poll == null)
             {
                 return;
             }
@@ -71,6 +72,10 @@ namespace OmegaTube.Ui
 
         private bool Check()
         {
+            if (dismissed)
+            {
+                return false;
+            }
             long elapsed = Environment.TickCount64 - start;
             if (elapsed >= MaxMs || (elapsed >= MinMs && ready()))
             {
@@ -87,17 +92,49 @@ namespace OmegaTube.Ui
             return true;
         }
 
+        // Immediate teardown (startup error / crash report): stops every timer and animation.
+        public void Dismiss()
+        {
+            if (dismissed)
+            {
+                return;
+            }
+            dismissed = true;
+            if (poll != null)
+            {
+                poll.Stop();
+                poll.Dispose();
+                poll = null;
+            }
+            DisposeAnimations();
+            Unparent();
+            Dispose();
+        }
+
+        private void DisposeAnimations()
+        {
+            if (pop != null) { pop.Stop(); pop.Dispose(); pop = null; }
+            if (pulse != null) { pulse.Stop(); pulse.Dispose(); pulse = null; }
+            if (spin != null) { spin.Stop(); spin.Dispose(); spin = null; }
+            if (fade != null) { fade.Stop(); fade.Dispose(); fade = null; }
+        }
+
         // The remote is handed back as the fade starts, not when it ends.
         private void Close()
         {
+            if (dismissed)
+            {
+                return;
+            }
             Closed?.Invoke();
             fade = new Animation(350);
             fade.AnimateTo(this, "Opacity", 0f, new AlphaFunction(AlphaFunction.BuiltinFunctions.EaseOut));
             fade.Finished += (s, e) => UiGuard.Run("Splash.fade", () =>
             {
-                pulse?.Stop();
-                spin?.Stop();
+                dismissed = true;
+                DisposeAnimations();
                 Unparent();
+                Dispose();
             });
             fade.Play();
         }

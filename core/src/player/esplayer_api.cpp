@@ -207,14 +207,19 @@ int query_bt_audio_delay_ms() {
         size_t dpos = dict.find("'Delay': <");
         if (dpos != std::string_view::npos) {
             size_t vpos = dpos + 10;
-            while (vpos < dict.size() && dict[vpos] != '>' && !std::isdigit(static_cast<unsigned char>(dict[vpos]))) {
-                ++vpos;
-            }
-            if (vpos < dict.size() && std::isdigit(static_cast<unsigned char>(dict[vpos]))) {
-                unsigned long raw = std::strtoul(dict.data() + vpos, nullptr, 10);
-                if (raw > 0 && (is_active || !picked_active)) {
-                    best_raw = raw;
-                    if (is_active) picked_active = true;
+            size_t vend = dict.find('>', vpos);
+            if (vend != std::string_view::npos) {
+                std::string_view inner = dict.substr(vpos, vend - vpos);
+                while (!inner.empty() && inner.back() == ' ') inner.remove_suffix(1);
+                // g_variant_print(res, 1) formats as "<uint16 1800>" or "<@q 1800>": skip the type token.
+                size_t sp = inner.rfind(' ');
+                if (sp != std::string_view::npos) inner.remove_prefix(sp + 1);
+                if (!inner.empty() && std::isdigit(static_cast<unsigned char>(inner[0]))) {
+                    unsigned long raw = std::strtoul(inner.data(), nullptr, 10);
+                    if (raw > 0 && (is_active || !picked_active)) {
+                        best_raw = raw;
+                        if (is_active) picked_active = true;
+                    }
                 }
             }
         }

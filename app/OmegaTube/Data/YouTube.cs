@@ -460,6 +460,8 @@ namespace OmegaTube.Data
         // Makes the account with this id active. True on success.
         public static bool SwitchAccount(string id) => Json.Str(Call(NativeCore.AuthSwitch(id)), "error", null) == null;
 
+        public static string ActiveAccountId() => Accounts().Find(a => a.Active)?.Id ?? "";
+
         private static VideoQuality ToQuality(object o)
         {
             return new VideoQuality
