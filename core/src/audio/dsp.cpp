@@ -550,9 +550,24 @@ private:
             const bool idle_bypass =
                 (blend_ <= 1e-4f && !swb_hint && !brickwall_16_ && mode12_blend_ <= 1e-4f);
             if (!idle_bypass || hop_idx_ == 0) {
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                {
+                    float* __restrict dst = reinterpret_cast<float*>(fft_in_.data());
+                    const float* __restrict src = in_ring_.data();
+                    const float* __restrict win = hann_.data();
+                    for (int n = 0; n < kFft; n += 4) {
+                        const float32x4_t w = vld1q_f32(win + n);
+                        float32x4x2_t lr = vld2q_f32(src + 2 * n);
+                        lr.val[0] = vmulq_f32(lr.val[0], w);
+                        lr.val[1] = vmulq_f32(lr.val[1], w);
+                        vst2q_f32(dst + 2 * n, lr);
+                    }
+                }
+#else
                 for (int n = 0; n < kFft; ++n) {
                     fft_in_[n] = std::complex<float>(in_ring_[2 * n] * hann_[n], in_ring_[2 * n + 1] * hann_[n]);
                 }
+#endif
                 fft_inplace(fft_in_, false);
 
                 // Unpack stereo L/R complex bins [0 .. kFft/2] from single dual-real FFT.
@@ -690,11 +705,28 @@ private:
                     }
                     fft_inplace(fft_in_, true);
                     constexpr float inv_ola = 1.0f / 1.5f;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                    {
+                        const float* __restrict src = reinterpret_cast<const float*>(fft_in_.data());
+                        float* __restrict dst = ola_buf_.data();
+                        const float* __restrict win = hann_.data();
+                        const float32x4_t inv_v = vdupq_n_f32(inv_ola);
+                        for (int n = 0; n < kFft; n += 4) {
+                            const float32x4_t ws = vmulq_f32(vld1q_f32(win + n), inv_v);
+                            const float32x4x2_t f = vld2q_f32(src + 2 * n);
+                            float32x4x2_t o = vld2q_f32(dst + 2 * n);
+                            o.val[0] = neon_fma(o.val[0], f.val[0], ws);
+                            o.val[1] = neon_fma(o.val[1], f.val[1], ws);
+                            vst2q_f32(dst + 2 * n, o);
+                        }
+                    }
+#else
                     for (int n = 0; n < kFft; ++n) {
                         const float ws = hann_[n] * inv_ola;
                         ola_buf_[2 * n] += fft_in_[n].real() * ws;
                         ola_buf_[2 * n + 1] += fft_in_[n].imag() * ws;
                     }
+#endif
                 } else {
                     for (int m = 0; m < kNumSub; ++m) {
                         smooth_g16_[m] *= 0.85f;
@@ -715,10 +747,21 @@ private:
                 const size_t base_out = out.size();
                 const size_t count = static_cast<size_t>(kHop - start);
                 out.resize(base_out + count * kTargetChannels);
-                for (int n = start; n < kHop; ++n) {
-                    const size_t o = base_out + static_cast<size_t>(n - start) * kTargetChannels;
-                    out[o] = in_ring_[2 * n] + ola_buf_[2 * n];
-                    out[o + 1] = in_ring_[2 * n + 1] + ola_buf_[2 * n + 1];
+                float* __restrict dst = out.data() + base_out;
+                const float* __restrict dry = in_ring_.data() + 2 * start;
+                const float* __restrict wet = ola_buf_.data() + 2 * start;
+                const size_t total = count * kTargetChannels;
+                size_t idx = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                for (; idx + 8 <= total; idx += 8) {
+                    const float32x4_t s0 = vaddq_f32(vld1q_f32(dry + idx), vld1q_f32(wet + idx));
+                    const float32x4_t s1 = vaddq_f32(vld1q_f32(dry + idx + 4), vld1q_f32(wet + idx + 4));
+                    vst1q_f32(dst + idx, s0);
+                    vst1q_f32(dst + idx + 4, s1);
+                }
+#endif
+                for (; idx < total; ++idx) {
+                    dst[idx] = dry[idx] + wet[idx];
                 }
             }
         }
@@ -839,7 +882,41 @@ struct Pipeline::Impl {
         uint8_t* dst = bytes.data();
 
         if (pcm_bits == 32) {
-            for (size_t i = 0; i < frames * kTargetChannels; ++i) {
+            const size_t total = frames * kTargetChannels;
+            size_t i = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+            const float32x4_t gain_v = vdupq_n_f32(static_cast<float>(gain));
+            const float32x4_t limit_v = vdupq_n_f32(0.995f);
+            const float32x4_t scale32_v = vdupq_n_f32(2147483648.0f);
+            const float32x4_t zero_v = vdupq_n_f32(0.0f);
+            const float32x4_t pos_half_v = vdupq_n_f32(0.5f);
+            const float32x4_t neg_half_v = vdupq_n_f32(-0.5f);
+            for (; i + 4 <= total; i += 4) {
+                const float32x4_t v = vmulq_f32(vld1q_f32(stereo + i), gain_v);
+                const uint32x4_t over = vcgtq_f32(vabsq_f32(v), limit_v);
+                const uint32x2_t any2 = vorr_u32(vget_low_u32(over), vget_high_u32(over));
+                if (vget_lane_u32(vpmax_u32(any2, any2), 0) == 0u) {
+                    const float32x4_t scaled = vmulq_f32(v, scale32_v);
+                    const float32x4_t bias = vbslq_f32(vcltq_f32(scaled, zero_v), neg_half_v, pos_half_v);
+                    const int32x4_t q = vcvtq_s32_f32(vaddq_f32(scaled, bias));
+                    vst1q_u8(dst, vreinterpretq_u8_s32(q));
+                    dst += 16;
+                } else {
+                    for (size_t k = 0; k < 4; ++k) {
+                        const double sv = guard_peak(static_cast<double>(stereo[i + k]) * gain);
+                        const long long sq = std::llrint(sv * 2147483647.0);
+                        const uint32_t u = static_cast<uint32_t>(
+                            static_cast<int32_t>(std::clamp<long long>(sq, INT32_MIN, INT32_MAX)));
+                        dst[0] = static_cast<uint8_t>(u & 0xffu);
+                        dst[1] = static_cast<uint8_t>((u >> 8) & 0xffu);
+                        dst[2] = static_cast<uint8_t>((u >> 16) & 0xffu);
+                        dst[3] = static_cast<uint8_t>((u >> 24) & 0xffu);
+                        dst += 4;
+                    }
+                }
+            }
+#endif
+            for (; i < total; ++i) {
                 const double v = guard_peak(static_cast<double>(stereo[i]) * gain);
                 const long long q = std::llrint(v * 2147483647.0);
                 const uint32_t u = static_cast<uint32_t>(
@@ -1085,7 +1162,18 @@ bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool em
     const float* stereo_ptr = decoded_ptr;
     if (dec_ch == 1) {
         impl_->work_in.resize(decoded_frames * kTargetChannels);
-        for (size_t i = 0; i < decoded_frames; ++i) {
+        size_t i = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        float* __restrict dst_st = impl_->work_in.data();
+        for (; i + 4 <= decoded_frames; i += 4) {
+            const float32x4_t m = vld1q_f32(decoded_ptr + i);
+            float32x4x2_t st;
+            st.val[0] = m;
+            st.val[1] = m;
+            vst2q_f32(dst_st + 2 * i, st);
+        }
+#endif
+        for (; i < decoded_frames; ++i) {
             const float s = decoded_ptr[i];
             impl_->work_in[2 * i] = s;
             impl_->work_in[2 * i + 1] = s;

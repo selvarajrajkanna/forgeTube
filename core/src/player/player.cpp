@@ -711,6 +711,15 @@ bool Player::seek(int64_t ms) {
 
     Track* tracks[] = {&video_, &audio_};
     bool use[] = {cfg_.use_video, cfg_.use_audio};
+    // Signal both video and audio tracks to stop simultaneously so their demux/feed threads unwind in parallel across cores.
+    for (int i = 0; i < 2; ++i) {
+        if (!use[i]) continue;
+        {
+            std::lock_guard<std::mutex> lt(tracks[i]->mutex);
+            tracks[i]->active = false;
+        }
+        tracks[i]->cv.notify_all();
+    }
     for (int i = 0; i < 2; ++i)
         if (use[i]) stop_track(*tracks[i]);
     if (audio_dsp_) audio_dsp_->reset();
@@ -726,9 +735,10 @@ bool Player::seek(int64_t ms) {
     const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
     const int64_t started_ms = started_at_ms_.load();
     stall_grace_until_ms_ = (started_ms > 0 ? (now_ms - started_ms) : 0) + 3000;
-    int rc = api_->seek(handle_, static_cast<uint64_t>(target));
-    if (rc != 0) seek_pending_ = false;
 
+    // Start the new video and audio HTTPS RangeReaders + demux threads before blocking in api_->seek() so
+    // network range fetches and MP4/WebM keyframe demuxing overlap with ESPlayer's hardware flush
+    // (feed_loop waits on ready_to_feed until ESPlayer fires on_ready_to_seek).
     for (int i = 0; i < 2; ++i) {
         if (!use[i]) continue;
         Track& t = *tracks[i];
@@ -754,6 +764,9 @@ bool Player::seek(int64_t ms) {
             t.info, seg);
         start_track(t, reader.release(), http);
     }
+
+    int rc = api_->seek(handle_, static_cast<uint64_t>(target));
+    if (rc != 0) seek_pending_ = false;
     OLOG("seek %lld -> %lld ms (esp %d), threads restarted in %lld ms", static_cast<long long>(ms),
          static_cast<long long>(target), rc, static_cast<long long>(ms_since(t0)));
     return rc == 0;
