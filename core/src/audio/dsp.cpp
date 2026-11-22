@@ -772,16 +772,16 @@ private:
         hop_idx_ = (hop_idx_ + 1) & 3;
     }
 
-    std::array<float, kFft> hann_{};
+    alignas(64) std::array<float, kFft> hann_{};
     std::array<int, kFft> bitrev_{};
-    std::array<std::complex<float>, kFft / 2> tw_fwd_{};
+    alignas(64) std::array<std::complex<float>, kFft / 2> tw_fwd_{};
 
-    std::array<float, kFft * kTargetChannels> in_ring_{};
-    std::array<float, kFft * kTargetChannels> ola_buf_{};
-    std::array<std::complex<float>, kFft> fft_in_{};
-    std::array<std::complex<float>, kFft / 2 + 1> spec_l_{};
-    std::array<std::complex<float>, kFft / 2 + 1> spec_r_{};
-    std::array<float, kFft / 2 + 1> pwr_{};
+    alignas(64) std::array<float, kFft * kTargetChannels> in_ring_{};
+    alignas(64) std::array<float, kFft * kTargetChannels> ola_buf_{};
+    alignas(64) std::array<std::complex<float>, kFft> fft_in_{};
+    alignas(64) std::array<std::complex<float>, kFft / 2 + 1> spec_l_{};
+    alignas(64) std::array<std::complex<float>, kFft / 2 + 1> spec_r_{};
+    alignas(64) std::array<float, kFft / 2 + 1> pwr_{};
     std::array<float, kNumSub> smooth_g16_{};
     std::array<float, kNumSub> smooth_g12a_{};
     std::array<float, kNumSub> smooth_g12b_{};
