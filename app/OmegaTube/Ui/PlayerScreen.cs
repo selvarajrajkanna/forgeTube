@@ -1296,6 +1296,79 @@ namespace OmegaTube.Ui
 
         private static bool cpuFreqProbed;
         private static string cpuFreqPath;
+        private static string cpuCoreTag = "";
+
+        private static string ArmCoreName(string partHex)
+        {
+            switch (partHex.ToLowerInvariant())
+            {
+                case "0xd03": return "A53";
+                case "0xd04": return "A35";
+                case "0xd05": return "A55";
+                case "0xd07": return "A57";
+                case "0xd08": return "A72";
+                case "0xd09": return "A73";
+                case "0xd0a": return "A75";
+                case "0xd0b": return "A76";
+                case "0xd0d": return "A77";
+                case "0xd41": return "A78";
+                case "0xd46": return "A510";
+                case "0xd47": return "A710";
+                case "0xd4d": return "A715";
+                case "0xd80": return "A520";
+                case "0xd81": return "A720";
+                default: return partHex;
+            }
+        }
+
+        private static string ProbeCpuCoreTag()
+        {
+            try
+            {
+                var partCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var partOrder = new List<string>();
+                bool hasAes = false;
+                foreach (string line in File.ReadLines("/proc/cpuinfo"))
+                {
+                    int colon = line.IndexOf(':');
+                    if (colon <= 0) continue;
+                    string key = line.Substring(0, colon).Trim();
+                    string val = line.Substring(colon + 1).Trim();
+                    if (key.Equals("CPU part", StringComparison.OrdinalIgnoreCase) && val.Length > 0)
+                    {
+                        string name = ArmCoreName(val);
+                        if (!partCounts.ContainsKey(name))
+                        {
+                            partOrder.Add(name);
+                            partCounts[name] = 0;
+                        }
+                        partCounts[name]++;
+                    }
+                    else if (!hasAes && key.Equals("Features", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (string tok in val.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            if (tok.Equals("aes", StringComparison.OrdinalIgnoreCase))
+                            {
+                                hasAes = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (partOrder.Count == 0) return "";
+                var parts = new List<string>(partOrder.Count);
+                foreach (string name in partOrder)
+                {
+                    parts.Add($"{partCounts[name]}x{name}");
+                }
+                return " " + string.Join("+", parts) + (hasAes ? "+aes" : "");
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+        }
 
         private static bool TryReadLeadingLong(string path, out long value)
         {
@@ -1317,6 +1390,7 @@ namespace OmegaTube.Ui
         {
             if (cpuFreqProbed) return;
             cpuFreqProbed = true;
+            cpuCoreTag = ProbeCpuCoreTag();
             foreach (string p in new[] { "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq" })
             {
                 if (TryReadLeadingLong(p, out long khz) && khz > 0)
@@ -1428,7 +1502,7 @@ namespace OmegaTube.Ui
                 string cpuFreqText = (cpuFreqPath != null && TryReadLeadingLong(cpuFreqPath, out long cpuKhz) && cpuKhz > 0)
                     ? $" @{cpuKhz / 1_000_000.0:F2}GHz"
                     : "";
-                string cpuText = (sysCpu >= 0 ? $"cpu  app {appCpu:F1}%  sys {sysCpu:F1}%" : $"cpu  app {appCpu:F1}%") + cpuFreqText;
+                string cpuText = (sysCpu >= 0 ? $"cpu{cpuCoreTag}  app {appCpu:F1}%  sys {sysCpu:F1}%" : $"cpu{cpuCoreTag}  app {appCpu:F1}%") + cpuFreqText;
                 string memText = sysTotalMb > 0
                     ? $"mem  {sysUsedMb:F0}/{sysTotalMb:F0} MB (app {appMb:F0} MB, gc {gcMb:F0} MB)"
                     : $"mem  app {appMb:F0} MB (gc {gcMb:F0} MB)";
