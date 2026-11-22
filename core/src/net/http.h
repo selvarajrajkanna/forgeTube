@@ -194,4 +194,8 @@ private:
 // Pre-warms the shared TLS context (e.g., parsing root CA certificates) on a background thread.
 void warmup();
 
+// Returns a compact summary of the active TLS ciphersuite and hardware AES-CE status
+// (e.g. "TLS1.3 AES-128-GCM (HW)"), preferring media CDN connections once established.
+std::string tls_info();
+
 }  // namespace omega::net

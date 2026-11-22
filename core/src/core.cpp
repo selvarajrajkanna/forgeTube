@@ -45,6 +45,15 @@ struct omega_player {
 
 const char* omega_version(void) { return kVersion; }
 
+int omega_tls_info(char* buf, int buf_size) {
+    if (!buf || buf_size <= 0) return 0;
+    std::string info = omega::net::tls_info();
+    size_t n = std::min(info.size(), static_cast<size_t>(buf_size - 1));
+    if (n > 0) memcpy(buf, info.data(), n);
+    buf[n] = '\0';
+    return static_cast<int>(n);
+}
+
 void omega_log_init_udp(const char* host, int port) {
     omega::log::init_udp(host ? host : "", port);
     OLOG("omegacore %s: log sink %s:%d", kVersion, host ? host : "-", port);

@@ -5,6 +5,10 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if defined(__linux__) && (defined(__arm__) || defined(__aarch64__))
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -47,6 +51,80 @@ std::string tls_error(int rc) {
     char buf[128];
     mbedtls_strerror(rc, buf, sizeof(buf));
     return buf;
+}
+
+// Mirrors Mbed TLS 3.6's aesce.c compile-time + Linux runtime ARMv8 Crypto Extension check.
+bool hw_aes_ce_active() {
+    static const bool active = []() -> bool {
+#if defined(MBEDTLS_AESCE_C) && defined(__linux__)
+#if defined(__aarch64__) && defined(HWCAP_AES)
+        return (getauxval(AT_HWCAP) & HWCAP_AES) != 0;
+#elif defined(__arm__) && defined(__ARM_ARCH) && (__ARM_ARCH >= 8) && \
+    (defined(__ARM_NEON) || defined(__ARM_NEON__)) && defined(HWCAP_NEON) && defined(HWCAP2_AES)
+        return ((getauxval(AT_HWCAP) & HWCAP_NEON) != 0) && ((getauxval(AT_HWCAP2) & HWCAP2_AES) != 0);
+#else
+        return false;
+#endif
+#else
+        return false;
+#endif
+    }();
+    return active;
+}
+
+std::string format_tls_status(const char* raw) {
+    if (!raw || !*raw) return {};
+    std::string_view sv(raw);
+    const bool is_aes = sv.find("AES") != std::string_view::npos;
+    const char* accel = is_aes ? (hw_aes_ce_active() ? " (HW)" : " (SW)") : " (SW)";
+    if (sv == "TLS1-3-AES-128-GCM-SHA256") return std::string("TLS1.3 AES-128-GCM") + accel;
+    if (sv == "TLS1-3-AES-256-GCM-SHA384") return std::string("TLS1.3 AES-256-GCM") + accel;
+    if (sv == "TLS1-3-CHACHA20-POLY1305-SHA256") return "TLS1.3 CHACHA20 (SW)";
+    if (sv.find("TLS-ECDHE-") == 0) {
+        if (sv.find("AES-128-GCM") != std::string_view::npos) return std::string("TLS1.2 AES-128-GCM") + accel;
+        if (sv.find("AES-256-GCM") != std::string_view::npos) return std::string("TLS1.2 AES-256-GCM") + accel;
+        if (sv.find("CHACHA20-POLY1305") != std::string_view::npos) return "TLS1.2 CHACHA20 (SW)";
+    }
+    return std::string(sv) + accel;
+}
+
+class TlsStatusTracker {
+public:
+    void record(const std::string& host, const char* ciphersuite) {
+        std::string formatted = format_tls_status(ciphersuite);
+        if (formatted.empty()) return;
+        const bool is_media = host.find("googlevideo") != std::string::npos;
+        bool log_change = false;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (is_media) {
+                if (media_ != formatted) {
+                    media_ = formatted;
+                    log_change = true;
+                }
+            } else {
+                fallback_ = formatted;
+            }
+        }
+        if (log_change) {
+            OLOG("tls: media %s -> %s (%s)", host.c_str(), formatted.c_str(), ciphersuite ? ciphersuite : "-");
+        }
+    }
+
+    std::string get() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return !media_.empty() ? media_ : fallback_;
+    }
+
+private:
+    mutable std::mutex mu_;
+    std::string media_;
+    std::string fallback_;
+};
+
+TlsStatusTracker& tls_status_tracker() {
+    static TlsStatusTracker tracker;
+    return tracker;
 }
 
 // Process-wide TLS configuration: CA chain, RNG and client defaults are shared by all connections.
@@ -360,6 +438,7 @@ public:
             }
             return false;
         }
+        tls_status_tracker().record(host, mbedtls_ssl_get_ciphersuite(&ssl_));
         tls_sessions().save(session_key_, &ssl_);
         return true;
     }
@@ -1185,5 +1264,7 @@ size_t LiveReader::read(void* dst, size_t n) {
     }
     return total;
 }
+
+std::string tls_info() { return tls_status_tracker().get(); }
 
 }  // namespace omega::net

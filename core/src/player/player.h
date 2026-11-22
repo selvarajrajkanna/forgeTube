@@ -103,6 +103,7 @@ private:
         bool demux_done = false;
         std::atomic<bool> ready_to_feed{false};
         std::atomic<bool> packet_fed{false};
+        std::atomic<bool> waiting_clock{false};  // feed_loop is blocked on position_ms_ advancing
         std::atomic<bool> active{true};  // cleared to stop this track's threads (seek)
         std::atomic<bool> reconnecting{false};
         std::vector<media::Segment> segments;

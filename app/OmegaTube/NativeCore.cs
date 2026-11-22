@@ -93,6 +93,7 @@ namespace OmegaTube
         private static delegate* unmanaged[Cdecl]<int> _reportAvailable, _btAudioDelayMs;
         private static delegate* unmanaged[Cdecl]<void> _authSignOut;
         private static delegate* unmanaged[Cdecl]<byte*, int, int, int> _logTail;
+        private static delegate* unmanaged[Cdecl]<byte*, int, int> _tlsInfo;
         private static delegate* unmanaged[Cdecl]<byte*, int, void> _logInitUdp;
         private static delegate* unmanaged[Cdecl]<byte*, void> _logLine, _init, _ytPreload;
         private static delegate* unmanaged[Cdecl]<byte*, byte*, void> _setLocale;
@@ -118,6 +119,7 @@ namespace OmegaTube
             _logInitUdp = (delegate* unmanaged[Cdecl]<byte*, int, void>)Export("omega_log_init_udp");
             _logLine = (delegate* unmanaged[Cdecl]<byte*, void>)Export("omega_log_line");
             _logTail = (delegate* unmanaged[Cdecl]<byte*, int, int, int>)Export("omega_log_tail");
+            _tlsInfo = (delegate* unmanaged[Cdecl]<byte*, int, int>)Export("omega_tls_info");
             _playerCreateYouTube = (delegate* unmanaged[Cdecl]<IntPtr, int, int, byte*, int, byte*, long, byte*, IntPtr>)Export("omega_player_create_youtube");
             _ytPreload = (delegate* unmanaged[Cdecl]<byte*, void>)Export("omega_yt_preload");
             _playerLastError = (delegate* unmanaged[Cdecl]<IntPtr>)Export("omega_player_last_error");
@@ -407,6 +409,17 @@ namespace OmegaTube
         public static string Utf8(IntPtr p) => p == IntPtr.Zero ? "" : (Marshal.PtrToStringUTF8(p) ?? "");
 
         public static string Version => Marshal.PtrToStringUTF8((IntPtr)_version()) ?? "";
+
+        public static string TlsInfo()
+        {
+            if (_tlsInfo == null) return "";
+            Span<byte> buf = stackalloc byte[128];
+            fixed (byte* p = buf)
+            {
+                int n = _tlsInfo(p, buf.Length);
+                return n > 0 ? Encoding.UTF8.GetString(buf.Slice(0, n)) : "";
+            }
+        }
 
         public static string RecentLog(int maxLines)
         {

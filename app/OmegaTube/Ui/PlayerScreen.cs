@@ -1260,12 +1260,13 @@ namespace OmegaTube.Ui
                 string delayTag = appliedAudioDelayMs != 0
                     ? $" | {(activeAudioRoute.Length > 0 ? activeAudioRoute : "sync")} {(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms"
                     : "";
+                string tlsTag = NativeCore.TlsInfo();
                 statsLabel.Text =
                     "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
                     (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}{aDsp}" : "") +
                     (sessionSpeed != 1.0 ? $" · {sessionSpeed:0.##}x" : "") +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") + delayTag + "\n" +
-                    $"  {PipelineTag(info)} | v{BugReport.AppVersion}\n" +
+                    $"  {PipelineTag(info)} | v{BugReport.AppVersion}" + (tlsTag.Length > 0 ? $" | {tlsTag}" : "") + "\n" +
                     $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | drop {stats.DroppedFrames} | stalls {stats.Stalls} | err {stats.Errors}" +
                     (sysLine.Length > 0 ? "\n" + sysLine : "");
             }

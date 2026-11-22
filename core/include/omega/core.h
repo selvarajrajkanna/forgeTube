@@ -10,6 +10,8 @@ extern "C" {
 
 // App version (repo VERSION file), e.g. "0.4.0".
 OMEGA_API const char* omega_version(void);
+// Copies a compact summary of the active TLS ciphersuite + HW AES-CE status into buf. Returns length written.
+OMEGA_API int omega_tls_info(char* buf, int buf_size);
 
 // Call first. data_dir: app data folder (keeps the cached remote config, the account token and the log
 // files omega.log / omega.log.prev for bug reports).

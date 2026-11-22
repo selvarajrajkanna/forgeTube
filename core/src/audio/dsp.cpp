@@ -10,9 +10,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <climits>
 #include <cmath>
-#include <complex>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
@@ -42,6 +43,14 @@ inline float32x4_t neon_fma(float32x4_t acc, float32x4_t a, float32x4_t b) {
 #endif
 }
 
+inline float32x4_t neon_fnma(float32x4_t acc, float32x4_t a, float32x4_t b) {
+#if defined(__ARM_FEATURE_FMA)
+    return vfmsq_f32(acc, a, b);
+#else
+    return vmlsq_f32(acc, a, b);
+#endif
+}
+
 // 32-bit ARMv8 + AArch64 compatible horizontal sum (avoids AArch64-only vaddvq_f32).
 inline float neon_hsum(float32x4_t v) {
     float32x2_t pair = vadd_f32(vget_low_f32(v), vget_high_f32(v));
@@ -49,6 +58,16 @@ inline float neon_hsum(float32x4_t v) {
     return vget_lane_f32(pair, 0);
 }
 #endif
+
+// Branchless IEEE-754 log2f for spectral envelope / SFM / dB math (~0.008 log2 ≈ 0.025 dB max error, monotonic).
+// Eliminates softfp libm calls on 32-bit ARM; never used on PCM audio samples.
+inline float fast_log2f(float x) {
+    const uint32_t bits = std::bit_cast<uint32_t>(x);
+    const int32_t exp = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127;
+    const float m = std::bit_cast<float>((bits & 0x007FFFFFu) | 0x3F800000u);  // [1.0, 2.0)
+    const float poly = (-0.34484843f * m + 2.02466578f) * m - 1.67487759f;
+    return static_cast<float>(exp) + poly;
+}
 
 double bessel_i0(double x) {
     double sum = 1.0;
@@ -91,7 +110,8 @@ public:
         bypass_ = (src_rate_ == kTargetRate);
         if (bypass_) {
             coeffs_.clear();
-            in_buf_.clear();
+            in_l_.clear();
+            in_r_.clear();
             return;
         }
         const int g = std::gcd(src_rate_, kTargetRate);
@@ -110,10 +130,12 @@ public:
         phase_num_ = 0;
         phase_pos_ = 0.0;
         if (bypass_) {
-            in_buf_.clear();
+            in_l_.clear();
+            in_r_.clear();
             return;
         }
-        in_buf_.assign(static_cast<size_t>(kHalfTaps - 1) * kTargetChannels, 0.0f);
+        in_l_.assign(static_cast<size_t>(kHalfTaps - 1), 0.0f);
+        in_r_.assign(static_cast<size_t>(kHalfTaps - 1), 0.0f);
     }
 
     int source_rate() const { return src_rate_; }
@@ -126,13 +148,30 @@ public:
             if (emit) out.insert(out.end(), stereo_in, stereo_in + in_frames * kTargetChannels);
             return;
         }
-        in_buf_.insert(in_buf_.end(), stereo_in, stereo_in + in_frames * kTargetChannels);
+        const size_t base = in_l_.size();
+        in_l_.resize(base + in_frames);
+        in_r_.resize(base + in_frames);
+        float* __restrict dl = in_l_.data() + base;
+        float* __restrict dr = in_r_.data() + base;
+        size_t i = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        for (; i + 4 <= in_frames; i += 4) {
+            const float32x4x2_t lr = vld2q_f32(stereo_in + 2 * i);
+            vst1q_f32(dl + i, lr.val[0]);
+            vst1q_f32(dr + i, lr.val[1]);
+        }
+#endif
+        for (; i < in_frames; ++i) {
+            dl[i] = stereo_in[2 * i];
+            dr[i] = stereo_in[2 * i + 1];
+        }
         run_available(emit, out);
     }
 
     void flush(std::vector<float>& out) {
-        if (bypass_ || in_buf_.empty()) return;
-        in_buf_.insert(in_buf_.end(), static_cast<size_t>(kHalfTaps) * kTargetChannels, 0.0f);
+        if (bypass_ || in_l_.empty()) return;
+        in_l_.insert(in_l_.end(), static_cast<size_t>(kHalfTaps), 0.0f);
+        in_r_.insert(in_r_.end(), static_cast<size_t>(kHalfTaps), 0.0f);
         run_available(true, out);
     }
 
@@ -170,23 +209,26 @@ private:
     }
 
     void run_available(bool emit, std::vector<float>& out) {
-        const size_t total_frames = in_buf_.size() / kTargetChannels;
+        const size_t total_frames = in_l_.size();
         if (total_frames < static_cast<size_t>(kTaps)) return;
+        const size_t base_out = out.size();
+        size_t written = base_out;
         if (emit) {
             const size_t avail = total_frames - static_cast<size_t>(kTaps) + 1;
             const size_t est_out =
-                rational_ ? ((avail * up_) / std::max<size_t>(1, down_) + 2)
-                          : (static_cast<size_t>(static_cast<double>(avail) / std::max(step_double_, 1e-6)) + 2);
-            out.reserve(out.size() + est_out * kTargetChannels);
+                rational_ ? ((avail * up_ + std::max<size_t>(1, down_) - 1) / std::max<size_t>(1, down_) + 2)
+                          : (static_cast<size_t>(static_cast<double>(avail) / std::max(step_double_, 1e-6)) + 4);
+            out.resize(base_out + est_out * kTargetChannels);
         }
         size_t consumed = 0;
         while (consumed + static_cast<size_t>(kTaps) <= total_frames) {
             if (emit) {
-                const float* __restrict x = &in_buf_[consumed * kTargetChannels];
+                const float* __restrict xl = in_l_.data() + consumed;
+                const float* __restrict xr = in_r_.data() + consumed;
                 float out_l = 0.0f;
                 float out_r = 0.0f;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-                // 2x4-wide NEON FMA (8 stereo taps/iter) hides 4-cycle FMA latency on in-order ARMv8 cores.
+                // Planar 2x4-wide NEON FMA (8 stereo taps/iter) uses 1-uop vld1q_f32 loads on A72's Load pipe.
                 float32x4_t acc_l0 = vdupq_n_f32(0.0f);
                 float32x4_t acc_r0 = vdupq_n_f32(0.0f);
                 float32x4_t acc_l1 = vdupq_n_f32(0.0f);
@@ -196,12 +238,10 @@ private:
                     for (int k = 0; k < kTaps; k += 8) {
                         const float32x4_t t0 = vld1q_f32(h + k);
                         const float32x4_t t1 = vld1q_f32(h + k + 4);
-                        const float32x4x2_t s0 = vld2q_f32(x + 2 * k);
-                        const float32x4x2_t s1 = vld2q_f32(x + 2 * k + 8);
-                        acc_l0 = neon_fma(acc_l0, t0, s0.val[0]);
-                        acc_r0 = neon_fma(acc_r0, t0, s0.val[1]);
-                        acc_l1 = neon_fma(acc_l1, t1, s1.val[0]);
-                        acc_r1 = neon_fma(acc_r1, t1, s1.val[1]);
+                        acc_l0 = neon_fma(acc_l0, t0, vld1q_f32(xl + k));
+                        acc_r0 = neon_fma(acc_r0, t0, vld1q_f32(xr + k));
+                        acc_l1 = neon_fma(acc_l1, t1, vld1q_f32(xl + k + 4));
+                        acc_r1 = neon_fma(acc_r1, t1, vld1q_f32(xr + k + 4));
                     }
                 } else {
                     const double scaled = phase_pos_ * static_cast<double>(up_);
@@ -214,12 +254,10 @@ private:
                         const float32x4_t a1 = vld1q_f32(h0 + k + 4);
                         const float32x4_t t0 = neon_fma(a0, alpha_v, vsubq_f32(vld1q_f32(h1 + k), a0));
                         const float32x4_t t1 = neon_fma(a1, alpha_v, vsubq_f32(vld1q_f32(h1 + k + 4), a1));
-                        const float32x4x2_t s0 = vld2q_f32(x + 2 * k);
-                        const float32x4x2_t s1 = vld2q_f32(x + 2 * k + 8);
-                        acc_l0 = neon_fma(acc_l0, t0, s0.val[0]);
-                        acc_r0 = neon_fma(acc_r0, t0, s0.val[1]);
-                        acc_l1 = neon_fma(acc_l1, t1, s1.val[0]);
-                        acc_r1 = neon_fma(acc_r1, t1, s1.val[1]);
+                        acc_l0 = neon_fma(acc_l0, t0, vld1q_f32(xl + k));
+                        acc_r0 = neon_fma(acc_r0, t0, vld1q_f32(xr + k));
+                        acc_l1 = neon_fma(acc_l1, t1, vld1q_f32(xl + k + 4));
+                        acc_r1 = neon_fma(acc_r1, t1, vld1q_f32(xr + k + 4));
                     }
                 }
                 out_l = neon_hsum(vaddq_f32(acc_l0, acc_l1));
@@ -232,10 +270,10 @@ private:
                     for (int k = 0; k < kTaps; k += 2) {
                         const float t0 = h[k];
                         const float t1 = h[k + 1];
-                        acc_l0 += t0 * x[2 * k];
-                        acc_r0 += t0 * x[2 * k + 1];
-                        acc_l1 += t1 * x[2 * k + 2];
-                        acc_r1 += t1 * x[2 * k + 3];
+                        acc_l0 += t0 * xl[k];
+                        acc_r0 += t0 * xr[k];
+                        acc_l1 += t1 * xl[k + 1];
+                        acc_r1 += t1 * xr[k + 1];
                     }
                 } else {
                     const double scaled = phase_pos_ * static_cast<double>(up_);
@@ -246,17 +284,18 @@ private:
                     for (int k = 0; k < kTaps; k += 2) {
                         const float t0 = h0[k] + alpha * (h1[k] - h0[k]);
                         const float t1 = h0[k + 1] + alpha * (h1[k + 1] - h0[k + 1]);
-                        acc_l0 += t0 * x[2 * k];
-                        acc_r0 += t0 * x[2 * k + 1];
-                        acc_l1 += t1 * x[2 * k + 2];
-                        acc_r1 += t1 * x[2 * k + 3];
+                        acc_l0 += t0 * xl[k];
+                        acc_r0 += t0 * xr[k];
+                        acc_l1 += t1 * xl[k + 1];
+                        acc_r1 += t1 * xr[k + 1];
                     }
                 }
                 out_l = acc_l0 + acc_l1;
                 out_r = acc_r0 + acc_r1;
 #endif
-                out.push_back(out_l);
-                out.push_back(out_r);
+                if (written + 2 > out.size()) out.resize(out.size() + 64);
+                out[written++] = out_l;
+                out[written++] = out_r;
             }
 
             if (rational_) {
@@ -270,8 +309,10 @@ private:
                 consumed += adv;
             }
         }
+        if (emit) out.resize(written);
         if (consumed > 0) {
-            in_buf_.erase(in_buf_.begin(), in_buf_.begin() + static_cast<std::ptrdiff_t>(consumed * kTargetChannels));
+            in_l_.erase(in_l_.begin(), in_l_.begin() + static_cast<std::ptrdiff_t>(consumed));
+            in_r_.erase(in_r_.begin(), in_r_.begin() + static_cast<std::ptrdiff_t>(consumed));
         }
     }
 
@@ -284,7 +325,8 @@ private:
     double step_double_ = 1.0;
     double phase_pos_ = 0.0;
     std::vector<float> coeffs_;
-    std::vector<float> in_buf_;
+    std::vector<float> in_l_;
+    std::vector<float> in_r_;
 };
 
 // Signal-gated, dry-preserving Hybrid Spectral Band Extender at 48 kHz (187.5 Hz/bin, 256-pt 75% WOLA, 4.0 ms latency).
@@ -300,6 +342,7 @@ public:
     static constexpr int kHop = kFft / 4;       // 64 samples = 1.333 ms hop (75% COLA overlap)
     static constexpr int kDelay = kFft - kHop;  // 192 samples = 4.000 ms exact COLA alignment
     static constexpr int kNumSub = 4;
+    static constexpr int kStageTwSize = kFft - 4;  // 4 + 8 + 16 + 32 + 64 + 128 = 252 contiguous twiddles
 
     HfExtender() {
         for (int i = 0; i < kFft; ++i) {
@@ -313,9 +356,17 @@ public:
             }
             bitrev_[i] = rev;
         }
-        for (int i = 0; i < kFft / 2; ++i) {
-            const double ang = -2.0 * kPi * static_cast<double>(i) / static_cast<double>(kFft);
-            tw_fwd_[i] = std::complex<float>(static_cast<float>(std::cos(ang)), static_cast<float>(std::sin(ang)));
+        for (int half = 4; half <= kFft / 2; half <<= 1) {
+            const int offset = half - 4;
+            const double step = -kPi / static_cast<double>(half);
+            for (int k = 0; k < half; ++k) {
+                const double ang = step * static_cast<double>(k);
+                const float c = static_cast<float>(std::cos(ang));
+                const float s = static_cast<float>(std::sin(ang));
+                stage_tw_re_[offset + k] = c;
+                stage_tw_im_[offset + k] = s;
+                stage_tw_im_inv_[offset + k] = -s;
+            }
         }
         reset_all();
     }
@@ -329,18 +380,23 @@ public:
         brickwall_16_ = false;
         blend_ = 0.0f;
         mode12_blend_ = 0.0f;
+        idle_probe_count_ = 0;
         logged_state_ = -1;
         reset_buffers();
     }
 
     void reset_buffers() {
-        in_ring_.fill(0.0f);
-        ola_buf_.fill(0.0f);
+        in_l_.fill(0.0f);
+        in_r_.fill(0.0f);
+        ola_l_.fill(0.0f);
+        ola_r_.fill(0.0f);
         smooth_g16_.fill(0.0f);
         smooth_g12a_.fill(0.0f);
         smooth_g12b_.fill(0.0f);
+        ring_head_ = 0;
         hop_fill_ = 0;
         hop_idx_ = 0;
+        ola_tail_hops_ = 0;
         priming_skip_ = kDelay;
         sib_duck_ = 1.0f;
         tonal_guard_ = 1.0f;
@@ -354,10 +410,34 @@ public:
     void process(const float* stereo_in, size_t in_frames, bool enabled, bool swb_hint, bool emit,
                  std::vector<float>& out) {
         if (in_frames == 0) return;
-        for (size_t i = 0; i < in_frames; ++i) {
-            in_ring_[2 * (kDelay + hop_fill_)] = stereo_in[2 * i];
-            in_ring_[2 * (kDelay + hop_fill_) + 1] = stereo_in[2 * i + 1];
-            ++hop_fill_;
+        size_t i = 0;
+        while (i < in_frames) {
+            const int take = static_cast<int>(std::min<size_t>(in_frames - i, static_cast<size_t>(kHop - hop_fill_)));
+            // ring_head_ is always a multiple of kHop (64), so [dst_base .. dst_base + take) never wraps past kFft.
+            const int dst_base = (ring_head_ + kDelay + hop_fill_) & (kFft - 1);
+            float* __restrict dl0 = in_l_.data() + dst_base;
+            float* __restrict dl1 = dl0 + kFft;
+            float* __restrict dr0 = in_r_.data() + dst_base;
+            float* __restrict dr1 = dr0 + kFft;
+            const float* __restrict src = stereo_in + 2 * i;
+            int k = 0;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+            for (; k + 4 <= take; k += 4) {
+                const float32x4x2_t lr = vld2q_f32(src + 2 * k);
+                vst1q_f32(dl0 + k, lr.val[0]);
+                vst1q_f32(dl1 + k, lr.val[0]);
+                vst1q_f32(dr0 + k, lr.val[1]);
+                vst1q_f32(dr1 + k, lr.val[1]);
+            }
+#endif
+            for (; k < take; ++k) {
+                const float l = src[2 * k];
+                const float r = src[2 * k + 1];
+                dl0[k] = dl1[k] = l;
+                dr0[k] = dr1[k] = r;
+            }
+            i += static_cast<size_t>(take);
+            hop_fill_ += take;
             if (hop_fill_ == kHop) {
                 step_hop(enabled, swb_hint, emit, out);
                 hop_fill_ = 0;
@@ -381,35 +461,118 @@ private:
     static constexpr float kLog2ToDb = 3.010299956639812f;   // 10 * log10(2)
     static constexpr float kDbToLog2 = 0.3321928094887362f;  // 1 / (10 * log10(2))
 
-    void fft_inplace(std::array<std::complex<float>, kFft>& buf, bool inverse) const {
+    // Planar (SoA) radix-2 FFT operating directly on fft_re_ / fft_im_ with 1-uop NEON vld1q/vst1q.
+    void fft_inplace(bool inverse) {
         for (int i = 0; i < kFft; ++i) {
             const int j = bitrev_[i];
-            if (i < j) std::swap(buf[i], buf[j]);
+            if (i < j) {
+                std::swap(fft_re_[i], fft_re_[j]);
+                std::swap(fft_im_[i], fft_im_[j]);
+            }
         }
-        for (int len = 2; len <= kFft; len <<= 1) {
+        // Stage 1 (len = 2, half = 1): w = (1, 0) -> multiply-free.
+        for (int s = 0; s < kFft; s += 2) {
+            const float ur = fft_re_[s], ui = fft_im_[s];
+            const float vr = fft_re_[s + 1], vi = fft_im_[s + 1];
+            fft_re_[s] = ur + vr;
+            fft_im_[s] = ui + vi;
+            fft_re_[s + 1] = ur - vr;
+            fft_im_[s + 1] = ui - vi;
+        }
+        // Stage 2 (len = 4, half = 2): w0 = (1, 0), w1 = (0, +/-1) -> multiply-free.
+        if (!inverse) {
+            for (int s = 0; s < kFft; s += 4) {
+                const float ur0 = fft_re_[s], ui0 = fft_im_[s];
+                const float vr0 = fft_re_[s + 2], vi0 = fft_im_[s + 2];
+                fft_re_[s] = ur0 + vr0;
+                fft_im_[s] = ui0 + vi0;
+                fft_re_[s + 2] = ur0 - vr0;
+                fft_im_[s + 2] = ui0 - vi0;
+
+                const float ur1 = fft_re_[s + 1], ui1 = fft_im_[s + 1];
+                const float tr1 = fft_im_[s + 3];
+                const float ti1 = -fft_re_[s + 3];
+                fft_re_[s + 1] = ur1 + tr1;
+                fft_im_[s + 1] = ui1 + ti1;
+                fft_re_[s + 3] = ur1 - tr1;
+                fft_im_[s + 3] = ui1 - ti1;
+            }
+        } else {
+            for (int s = 0; s < kFft; s += 4) {
+                const float ur0 = fft_re_[s], ui0 = fft_im_[s];
+                const float vr0 = fft_re_[s + 2], vi0 = fft_im_[s + 2];
+                fft_re_[s] = ur0 + vr0;
+                fft_im_[s] = ui0 + vi0;
+                fft_re_[s + 2] = ur0 - vr0;
+                fft_im_[s + 2] = ui0 - vi0;
+
+                const float ur1 = fft_re_[s + 1], ui1 = fft_im_[s + 1];
+                const float tr1 = -fft_im_[s + 3];
+                const float ti1 = fft_re_[s + 3];
+                fft_re_[s + 1] = ur1 + tr1;
+                fft_im_[s + 1] = ui1 + ti1;
+                fft_re_[s + 3] = ur1 - tr1;
+                fft_im_[s + 3] = ui1 - ti1;
+            }
+        }
+        // Stages 3..8 (len = 8..256, half = 4..128): 4-wide NEON butterflies with contiguous twiddles.
+        const float* const tw_im_base = inverse ? stage_tw_im_inv_.data() : stage_tw_im_.data();
+        for (int len = 8; len <= kFft; len <<= 1) {
             const int half = len >> 1;
-            const int stride = kFft / len;
+            const float* __restrict wr_tab = stage_tw_re_.data() + (half - 4);
+            const float* __restrict wi_tab = tw_im_base + (half - 4);
             for (int start = 0; start < kFft; start += len) {
-                for (int k = 0; k < half; ++k) {
-                    const std::complex<float> w = tw_fwd_[k * stride];
-                    const float wr = w.real();
-                    const float wi = inverse ? -w.imag() : w.imag();
-                    const std::complex<float> rhs = buf[start + k + half];
-                    const float br = rhs.real();
-                    const float bi = rhs.imag();
-                    // Direct real/imag FMA avoids GCC Annex-G __mulsc3 libgcc call on every butterfly.
-                    const std::complex<float> t(wr * br - wi * bi, wr * bi + wi * br);
-                    const std::complex<float> u = buf[start + k];
-                    buf[start + k] = u + t;
-                    buf[start + k + half] = u - t;
+                float* __restrict ar = fft_re_.data() + start;
+                float* __restrict ai = fft_im_.data() + start;
+                float* __restrict br = ar + half;
+                float* __restrict bi = ai + half;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                for (int k = 0; k < half; k += 4) {
+                    const float32x4_t wr = vld1q_f32(wr_tab + k);
+                    const float32x4_t wi = vld1q_f32(wi_tab + k);
+                    const float32x4_t vr = vld1q_f32(br + k);
+                    const float32x4_t vi = vld1q_f32(bi + k);
+                    const float32x4_t tr = neon_fnma(vmulq_f32(wr, vr), wi, vi);
+                    const float32x4_t ti = neon_fma(vmulq_f32(wr, vi), wi, vr);
+                    const float32x4_t ur = vld1q_f32(ar + k);
+                    const float32x4_t ui = vld1q_f32(ai + k);
+                    vst1q_f32(ar + k, vaddq_f32(ur, tr));
+                    vst1q_f32(ai + k, vaddq_f32(ui, ti));
+                    vst1q_f32(br + k, vsubq_f32(ur, tr));
+                    vst1q_f32(bi + k, vsubq_f32(ui, ti));
                 }
+#else
+                for (int k = 0; k < half; ++k) {
+                    const float wr = wr_tab[k];
+                    const float wi = wi_tab[k];
+                    const float vr = br[k];
+                    const float vi = bi[k];
+                    const float tr = wr * vr - wi * vi;
+                    const float ti = wr * vi + wi * vr;
+                    const float ur = ar[k];
+                    const float ui = ai[k];
+                    ar[k] = ur + tr;
+                    ai[k] = ui + ti;
+                    br[k] = ur - tr;
+                    bi[k] = ui - ti;
+                }
+#endif
             }
         }
         if (inverse) {
             constexpr float inv_n = 1.0f / static_cast<float>(kFft);
-            for (auto& v : buf) {
-                v = std::complex<float>(v.real() * inv_n, v.imag() * inv_n);
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+            const float32x4_t inv_v = vdupq_n_f32(inv_n);
+            for (int i = 0; i < kFft; i += 4) {
+                vst1q_f32(fft_re_.data() + i, vmulq_f32(vld1q_f32(fft_re_.data() + i), inv_v));
+                vst1q_f32(fft_im_.data() + i, vmulq_f32(vld1q_f32(fft_im_.data() + i), inv_v));
             }
+#else
+            for (int i = 0; i < kFft; ++i) {
+                fft_re_[i] *= inv_n;
+                fft_im_[i] *= inv_n;
+            }
+#endif
         }
     }
 
@@ -425,8 +588,7 @@ private:
     // diffuse air (|w_b|^2 == 1.0 exact per bin, preserving 100% L/R energy and inter-channel stereo phase).
     void synthesize_band_stereo(int src_lo, int sub_w, int shift, int step_offset, int fade_in, int fade_out,
                                 float gain_mult, float body_db, float pres_db, float diffuse_beta,
-                                std::array<float, kNumSub>& smooth_gains,
-                                std::array<std::complex<float>, kFft>& dst_spec) {
+                                std::array<float, kNumSub>& smooth_gains) {
         // Precomputed 0.5 * (1 - cos(pi * k / (fade + 1))) ramps for fade=3 and fade=5 (zero runtime trig).
         static constexpr float kFade3[3] = {0.14644661f, 0.5f, 0.85355339f};
         static constexpr float kFade5[5] = {0.06698730f, 0.25f, 0.5f, 0.75f, 0.93301270f};
@@ -437,7 +599,7 @@ private:
             const int s_lo = src_lo + m * sub_w;
             const float p = band_avg(pwr_, s_lo, s_lo + sub_w - 1);
             src_pwr[m] = p;
-            src_db[m] = kLog2ToDb * std::log2f(std::max(p, 1e-24f));
+            src_db[m] = kLog2ToDb * fast_log2f(std::max(p, 1e-24f));
         }
         if (src_pwr[kNumSub - 1] < 1e-20f) {
             for (float& g : smooth_gains) g *= 0.75f;
@@ -530,56 +692,75 @@ private:
             const float wr = scale * c_coh;
             const float wi = scale * ((r & 0x80000000u) ? -c_diff : c_diff);
 
-            const std::complex<float> rl = spec_l_[s];
-            const std::complex<float> rr = spec_r_[s];
-            const float vlr = rl.real() * wr - rl.imag() * wi;
-            const float vli = rl.real() * wi + rl.imag() * wr;
-            const float vrr = rr.real() * wr - rr.imag() * wi;
-            const float vri = rr.real() * wi + rr.imag() * wr;
+            const float rlr = spec_l_re_[s];
+            const float rli = spec_l_im_[s];
+            const float rrr = spec_r_re_[s];
+            const float rri = spec_r_im_[s];
+            const float vlr = rlr * wr - rli * wi;
+            const float vli = rlr * wi + rli * wr;
+            const float vrr = rrr * wr - rri * wi;
+            const float vri = rrr * wi + rri * wr;
 
             // Pack L and R Hermitian-symmetrically into one complex spectrum: Y[b] = YL[b] + j*YR[b].
-            dst_spec[b] += std::complex<float>(vlr - vri, vli + vrr);
-            dst_spec[kFft - b] += std::complex<float>(vlr + vri, -vli + vrr);
+            fft_re_[b] += vlr - vri;
+            fft_im_[b] += vli + vrr;
+            fft_re_[kFft - b] += vlr + vri;
+            fft_im_[kFft - b] += -vli + vrr;
         }
     }
 
     void step_hop(bool enabled, bool swb_hint, bool emit, std::vector<float>& out) {
         if (enabled) {
-            // While completely bypassed on clean Fullband audio, run analysis every 4th hop (187.5 Hz vs 750 Hz)
-            // with 4x scaled EMA steps (same ~330 ms detection time constant at 1/4 the idle CPU).
+            // While bypassed on clean Fullband audio: probe every 4th hop (187.5 Hz) during initial settle,
+            // then every 16th hop (46.875 Hz) once confirmed clean, scaling EMA steps to preserve time constants.
             const bool idle_bypass =
                 (blend_ <= 1e-4f && !swb_hint && !brickwall_16_ && mode12_blend_ <= 1e-4f);
-            if (!idle_bypass || hop_idx_ == 0) {
+            const bool slow_idle = idle_bypass && (idle_probe_count_ >= 16);
+            const bool run_probe = !idle_bypass || (slow_idle ? (hop_idx_ == 0) : ((hop_idx_ & 3) == 0));
+            if (run_probe) {
+                if (idle_bypass) {
+                    if (idle_probe_count_ < 16) ++idle_probe_count_;
+                } else {
+                    idle_probe_count_ = 0;
+                }
+                const float* __restrict src_l = in_l_.data() + ring_head_;
+                const float* __restrict src_r = in_r_.data() + ring_head_;
+                const float* __restrict win = hann_.data();
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-                {
-                    float* __restrict dst = reinterpret_cast<float*>(fft_in_.data());
-                    const float* __restrict src = in_ring_.data();
-                    const float* __restrict win = hann_.data();
-                    for (int n = 0; n < kFft; n += 4) {
-                        const float32x4_t w = vld1q_f32(win + n);
-                        float32x4x2_t lr = vld2q_f32(src + 2 * n);
-                        lr.val[0] = vmulq_f32(lr.val[0], w);
-                        lr.val[1] = vmulq_f32(lr.val[1], w);
-                        vst2q_f32(dst + 2 * n, lr);
-                    }
+                for (int n = 0; n < kFft; n += 4) {
+                    const float32x4_t w = vld1q_f32(win + n);
+                    vst1q_f32(fft_re_.data() + n, vmulq_f32(vld1q_f32(src_l + n), w));
+                    vst1q_f32(fft_im_.data() + n, vmulq_f32(vld1q_f32(src_r + n), w));
                 }
 #else
                 for (int n = 0; n < kFft; ++n) {
-                    fft_in_[n] = std::complex<float>(in_ring_[2 * n] * hann_[n], in_ring_[2 * n + 1] * hann_[n]);
+                    const float w = win[n];
+                    fft_re_[n] = src_l[n] * w;
+                    fft_im_[n] = src_r[n] * w;
                 }
 #endif
-                fft_inplace(fft_in_, false);
+                fft_inplace(false);
 
                 // Unpack stereo L/R complex bins [0 .. kFft/2] from single dual-real FFT.
-                spec_l_[0] = std::complex<float>(fft_in_[0].real(), 0.0f);
-                spec_r_[0] = std::complex<float>(fft_in_[0].imag(), 0.0f);
-                pwr_[0] = std::norm(spec_l_[0]) + std::norm(spec_r_[0]);
+                spec_l_re_[0] = fft_re_[0];
+                spec_l_im_[0] = 0.0f;
+                spec_r_re_[0] = fft_im_[0];
+                spec_r_im_[0] = 0.0f;
+                pwr_[0] = spec_l_re_[0] * spec_l_re_[0] + spec_r_re_[0] * spec_r_re_[0];
                 for (int k = 1; k <= kFft / 2; ++k) {
-                    const std::complex<float> zk = fft_in_[k];
-                    const std::complex<float> zc = std::conj(fft_in_[kFft - k]);
-                    spec_l_[k] = 0.5f * (zk + zc);
-                    spec_r_[k] = std::complex<float>(0.5f * (zk.imag() - zc.imag()), -0.5f * (zk.real() - zc.real()));
-                    pwr_[k] = std::norm(spec_l_[k]) + std::norm(spec_r_[k]);
+                    const float zkr = fft_re_[k];
+                    const float zki = fft_im_[k];
+                    const float zcr = fft_re_[kFft - k];
+                    const float zci = -fft_im_[kFft - k];
+                    const float lr = 0.5f * (zkr + zcr);
+                    const float li = 0.5f * (zki + zci);
+                    const float rr = 0.5f * (zki - zci);
+                    const float ri = -0.5f * (zkr - zcr);
+                    spec_l_re_[k] = lr;
+                    spec_l_im_[k] = li;
+                    spec_r_re_[k] = rr;
+                    spec_r_im_[k] = ri;
+                    pwr_[k] = lr * lr + li * li + rr * rr + ri * ri;
                 }
 
                 // Shared stereo detection across calibrated 48 kHz bands (df = 187.5 Hz/bin).
@@ -591,7 +772,7 @@ private:
                 const float p_src = band_avg(pwr_, 59, 82);       // 11.06 - 15.38 kHz
                 const float p_post16 = band_avg(pwr_, 90, 104);   // 16.88 - 19.50 kHz
 
-                const float sib_alpha = idle_bypass ? 0.03f : 0.0075f;
+                const float sib_alpha = slow_idle ? 0.115f : (idle_bypass ? 0.03f : 0.0075f);
                 if (p_sib > 0.0f) {
                     sib_slow_ema_ =
                         (sib_slow_ema_ <= 0.0f) ? p_sib : ((1.0f - sib_alpha) * sib_slow_ema_ + sib_alpha * p_sib);
@@ -602,7 +783,9 @@ private:
                 const float target_duck = (sib_spike || sib_dominant) ? 0.0f : 1.0f;
                 // Fast 12 ms attack down on fricatives ("S"/"T"), smooth 120 ms release back up.
                 const float duck_coef =
-                    (target_duck < sib_duck_) ? (idle_bypass ? 0.40f : 0.117f) : (idle_bypass ? 0.043f : 0.011f);
+                    (target_duck < sib_duck_)
+                        ? (slow_idle ? 0.85f : (idle_bypass ? 0.40f : 0.117f))
+                        : (slow_idle ? 0.16f : (idle_bypass ? 0.043f : 0.011f));
                 sib_duck_ += duck_coef * (target_duck - sib_duck_);
 
                 // Only train the brickwall detector when HF content is musical/non-sibilant and above silence.
@@ -613,16 +796,16 @@ private:
                         p_pre16_ema_ = p_pre16;
                         p_post16_ema_ = p_post16;
                     } else {
-                        const float bw_alpha = idle_bypass ? 0.016f : 0.004f;
+                        const float bw_alpha = slow_idle ? 0.062f : (idle_bypass ? 0.016f : 0.004f);
                         const float bw_keep = 1.0f - bw_alpha;
                         p_low_hi_ema_ = bw_keep * p_low_hi_ema_ + bw_alpha * p_low_hi;
                         p_pre16_ema_ = bw_keep * p_pre16_ema_ + bw_alpha * p_pre16;
                         p_post16_ema_ = bw_keep * p_post16_ema_ + bw_alpha * p_post16;
                     }
                     const float nat_slope =
-                        kLog2ToDb * std::log2f(std::max(p_low_hi_ema_, 1e-18f) / std::max(p_pre16_ema_, 1e-18f));
+                        kLog2ToDb * fast_log2f(std::max(p_low_hi_ema_, 1e-18f) / std::max(p_pre16_ema_, 1e-18f));
                     const float cliff16 =
-                        kLog2ToDb * std::log2f(std::max(p_pre16_ema_, 1e-18f) / std::max(p_post16_ema_, 1e-18f));
+                        kLog2ToDb * fast_log2f(std::max(p_pre16_ema_, 1e-18f) / std::max(p_post16_ema_, 1e-18f));
                     brickwall_16_ = (cliff16 >= 20.0f) && (cliff16 >= std::max(0.0f, nat_slope) + 11.0f);
                 }
 
@@ -631,7 +814,7 @@ private:
                 mode12_blend_ = std::clamp(mode12_blend_, 0.0f, 1.0f);
 
                 const bool want_ext = swb_active || brickwall_16_;
-                blend_ += (want_ext ? (idle_bypass ? 0.012f : 0.003f) : -0.002f);
+                blend_ += (want_ext ? (slow_idle ? 0.048f : (idle_bypass ? 0.012f : 0.003f)) : -0.002f);
                 blend_ = std::clamp(blend_, 0.0f, 1.0f);
 
                 const int cur_mode = active_mode();
@@ -655,7 +838,7 @@ private:
                     float lin_sum = 0.0f;
                     for (int k = sfm_lo; k <= sfm_hi; ++k) {
                         const float p = pwr_[k] + 1e-24f;
-                        log_sum += std::log2f(p);
+                        log_sum += fast_log2f(p);
                         lin_sum += p;
                     }
                     const float geo_mean = std::exp2f(log_sum / static_cast<float>(sfm_n));
@@ -675,58 +858,56 @@ private:
 
                     const float shaped_gain = eff_gain * tonal_guard_ * trans_boost_;
                     const float p_pres = band_avg(pwr_, 17, 42);  // 3.19 - 7.88 kHz presence anchor
-                    const float body_db = kLog2ToDb * std::log2f(std::max(p_body, 1e-24f));
-                    const float pres_db = kLog2ToDb * std::log2f(std::max(p_pres, 1e-24f));
+                    const float body_db = kLog2ToDb * fast_log2f(std::max(p_body, 1e-24f));
+                    const float pres_db = kLog2ToDb * fast_log2f(std::max(p_pres, 1e-24f));
                     // Quadrature diffuse-air weight: high on broadband air/cymbals (high SFM), tucked back on
                     // sharp transient attacks and tonal harmonics so attacks stay phase-locked.
                     const float sfm_diffuse = std::clamp((sfm - 0.12f) / 0.50f, 0.0f, 0.70710678f);
                     const float trans_lock = std::clamp(1.85f - 0.75f * trans_boost_, 0.35f, 1.0f);
                     const float diffuse_beta = sfm_diffuse * trans_lock;
 
-                    fft_in_.fill(std::complex<float>(0.0f, 0.0f));
+                    fft_re_.fill(0.0f);
+                    fft_im_.fill(0.0f);
                     if (w16 > 1e-4f) {
                         // Translate [11.06 .. 15.38 kHz] (+24 bins = +4.50 kHz) -> [15.56 .. 19.88 kHz]
                         synthesize_band_stereo(59, 6, 24, 0, 3, 5, shaped_gain * w16, body_db, pres_db, diffuse_beta,
-                                               smooth_g16_, fft_in_);
+                                               smooth_g16_);
                     } else {
                         for (float& g : smooth_g16_) g *= 0.85f;
                     }
                     if (w12 > 1e-4f) {
                         // SWB 12 kHz Opus: [8.06 .. 11.63 kHz] -> [11.81 .. 15.38 kHz] (+20) and [15.56 .. 19.13 kHz] (+40)
                         synthesize_band_stereo(43, 5, 20, 0, 3, 3, shaped_gain * w12, body_db, pres_db,
-                                               0.85f * diffuse_beta, smooth_g12a_, fft_in_);
+                                               0.85f * diffuse_beta, smooth_g12a_);
                         synthesize_band_stereo(43, 5, 40, kNumSub, 3, 5, shaped_gain * w12, body_db, pres_db,
-                                               diffuse_beta, smooth_g12b_, fft_in_);
+                                               diffuse_beta, smooth_g12b_);
                     } else {
                         for (int m = 0; m < kNumSub; ++m) {
                             smooth_g12a_[m] *= 0.85f;
                             smooth_g12b_[m] *= 0.85f;
                         }
                     }
-                    fft_inplace(fft_in_, true);
+                    fft_inplace(true);
                     constexpr float inv_ola = 1.0f / 1.5f;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
                     {
-                        const float* __restrict src = reinterpret_cast<const float*>(fft_in_.data());
-                        float* __restrict dst = ola_buf_.data();
-                        const float* __restrict win = hann_.data();
                         const float32x4_t inv_v = vdupq_n_f32(inv_ola);
                         for (int n = 0; n < kFft; n += 4) {
                             const float32x4_t ws = vmulq_f32(vld1q_f32(win + n), inv_v);
-                            const float32x4x2_t f = vld2q_f32(src + 2 * n);
-                            float32x4x2_t o = vld2q_f32(dst + 2 * n);
-                            o.val[0] = neon_fma(o.val[0], f.val[0], ws);
-                            o.val[1] = neon_fma(o.val[1], f.val[1], ws);
-                            vst2q_f32(dst + 2 * n, o);
+                            vst1q_f32(ola_l_.data() + n,
+                                      neon_fma(vld1q_f32(ola_l_.data() + n), vld1q_f32(fft_re_.data() + n), ws));
+                            vst1q_f32(ola_r_.data() + n,
+                                      neon_fma(vld1q_f32(ola_r_.data() + n), vld1q_f32(fft_im_.data() + n), ws));
                         }
                     }
 #else
                     for (int n = 0; n < kFft; ++n) {
-                        const float ws = hann_[n] * inv_ola;
-                        ola_buf_[2 * n] += fft_in_[n].real() * ws;
-                        ola_buf_[2 * n + 1] += fft_in_[n].imag() * ws;
+                        const float ws = win[n] * inv_ola;
+                        ola_l_[n] += fft_re_[n] * ws;
+                        ola_r_[n] += fft_im_[n] * ws;
                     }
 #endif
+                    ola_tail_hops_ = kFft / kHop;
                 } else {
                     for (int m = 0; m < kNumSub; ++m) {
                         smooth_g16_[m] *= 0.85f;
@@ -748,46 +929,79 @@ private:
                 const size_t count = static_cast<size_t>(kHop - start);
                 out.resize(base_out + count * kTargetChannels);
                 float* __restrict dst = out.data() + base_out;
-                const float* __restrict dry = in_ring_.data() + 2 * start;
-                const float* __restrict wet = ola_buf_.data() + 2 * start;
-                const size_t total = count * kTargetChannels;
+                const float* __restrict dry_l = in_l_.data() + ring_head_ + start;
+                const float* __restrict dry_r = in_r_.data() + ring_head_ + start;
                 size_t idx = 0;
+                if (ola_tail_hops_ == 0) {
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-                for (; idx + 8 <= total; idx += 8) {
-                    const float32x4_t s0 = vaddq_f32(vld1q_f32(dry + idx), vld1q_f32(wet + idx));
-                    const float32x4_t s1 = vaddq_f32(vld1q_f32(dry + idx + 4), vld1q_f32(wet + idx + 4));
-                    vst1q_f32(dst + idx, s0);
-                    vst1q_f32(dst + idx + 4, s1);
-                }
+                    for (; idx + 4 <= count; idx += 4) {
+                        float32x4x2_t lr;
+                        lr.val[0] = vld1q_f32(dry_l + idx);
+                        lr.val[1] = vld1q_f32(dry_r + idx);
+                        vst2q_f32(dst + 2 * idx, lr);
+                    }
 #endif
-                for (; idx < total; ++idx) {
-                    dst[idx] = dry[idx] + wet[idx];
+                    for (; idx < count; ++idx) {
+                        dst[2 * idx] = dry_l[idx];
+                        dst[2 * idx + 1] = dry_r[idx];
+                    }
+                } else {
+                    const float* __restrict wet_l = ola_l_.data() + start;
+                    const float* __restrict wet_r = ola_r_.data() + start;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                    for (; idx + 4 <= count; idx += 4) {
+                        float32x4x2_t lr;
+                        lr.val[0] = vaddq_f32(vld1q_f32(dry_l + idx), vld1q_f32(wet_l + idx));
+                        lr.val[1] = vaddq_f32(vld1q_f32(dry_r + idx), vld1q_f32(wet_r + idx));
+                        vst2q_f32(dst + 2 * idx, lr);
+                    }
+#endif
+                    for (; idx < count; ++idx) {
+                        dst[2 * idx] = dry_l[idx] + wet_l[idx];
+                        dst[2 * idx + 1] = dry_r[idx] + wet_r[idx];
+                    }
                 }
             }
         }
 
-        std::memmove(in_ring_.data(), in_ring_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(float));
-        std::memmove(ola_buf_.data(), ola_buf_.data() + 2 * kHop, static_cast<size_t>(2 * kDelay) * sizeof(float));
-        std::fill(ola_buf_.begin() + 2 * kDelay, ola_buf_.end(), 0.0f);
-        hop_idx_ = (hop_idx_ + 1) & 3;
+        ring_head_ = (ring_head_ + kHop) & (kFft - 1);
+        if (ola_tail_hops_ > 0) {
+            std::memmove(ola_l_.data(), ola_l_.data() + kHop, static_cast<size_t>(kDelay) * sizeof(float));
+            std::memmove(ola_r_.data(), ola_r_.data() + kHop, static_cast<size_t>(kDelay) * sizeof(float));
+            std::fill(ola_l_.begin() + kDelay, ola_l_.end(), 0.0f);
+            std::fill(ola_r_.begin() + kDelay, ola_r_.end(), 0.0f);
+            --ola_tail_hops_;
+        }
+        hop_idx_ = (hop_idx_ + 1) & 15;
     }
 
     alignas(64) std::array<float, kFft> hann_{};
     std::array<int, kFft> bitrev_{};
-    alignas(64) std::array<std::complex<float>, kFft / 2> tw_fwd_{};
+    alignas(64) std::array<float, kStageTwSize> stage_tw_re_{};
+    alignas(64) std::array<float, kStageTwSize> stage_tw_im_{};
+    alignas(64) std::array<float, kStageTwSize> stage_tw_im_inv_{};
 
-    alignas(64) std::array<float, kFft * kTargetChannels> in_ring_{};
-    alignas(64) std::array<float, kFft * kTargetChannels> ola_buf_{};
-    alignas(64) std::array<std::complex<float>, kFft> fft_in_{};
-    alignas(64) std::array<std::complex<float>, kFft / 2 + 1> spec_l_{};
-    alignas(64) std::array<std::complex<float>, kFft / 2 + 1> spec_r_{};
+    // Mirrored planar input rings (2x kFft): &in_l_[ring_head_] is always a contiguous 64B-aligned 256-sample window.
+    alignas(64) std::array<float, kFft * 2> in_l_{};
+    alignas(64) std::array<float, kFft * 2> in_r_{};
+    alignas(64) std::array<float, kFft> ola_l_{};
+    alignas(64) std::array<float, kFft> ola_r_{};
+    alignas(64) std::array<float, kFft> fft_re_{};
+    alignas(64) std::array<float, kFft> fft_im_{};
+    alignas(64) std::array<float, kFft / 2 + 1> spec_l_re_{};
+    alignas(64) std::array<float, kFft / 2 + 1> spec_l_im_{};
+    alignas(64) std::array<float, kFft / 2 + 1> spec_r_re_{};
+    alignas(64) std::array<float, kFft / 2 + 1> spec_r_im_{};
     alignas(64) std::array<float, kFft / 2 + 1> pwr_{};
     std::array<float, kNumSub> smooth_g16_{};
     std::array<float, kNumSub> smooth_g12a_{};
     std::array<float, kNumSub> smooth_g12b_{};
 
+    int ring_head_ = 0;
     int hop_fill_ = 0;
     int hop_idx_ = 0;
+    int ola_tail_hops_ = 0;
+    int idle_probe_count_ = 0;
     int priming_skip_ = kDelay;
 
     float p_low_hi_ema_ = 0.0f;

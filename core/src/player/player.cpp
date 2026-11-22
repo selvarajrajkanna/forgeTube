@@ -932,10 +932,12 @@ void Player::feed_loop(Track& t) {
         // (keeps memory bounded and makes seeks / quality switches cheap). Paused => clock frozen => we wait.
         if (s.pts_ms > position_ms_.load(std::memory_order_relaxed) + cfg_.feed_ahead_ms) {
             std::unique_lock<std::mutex> lock(t.mutex);
+            t.waiting_clock.store(true, std::memory_order_seq_cst);
             t.cv.wait(lock, [&] {
                 return !running_ || !t.active ||
-                       s.pts_ms <= position_ms_.load(std::memory_order_relaxed) + cfg_.feed_ahead_ms;
+                       s.pts_ms <= position_ms_.load(std::memory_order_seq_cst) + cfg_.feed_ahead_ms;
             });
+            t.waiting_clock.store(false, std::memory_order_relaxed);
         }
         if (!running_ || !t.active) break;
         if (s.pts_ms < 0) continue;
@@ -998,8 +1000,10 @@ void Player::control_loop() {
         // (paced on position_ms_) is not throttled against a stale clock.
         if (!seek_pending_) {
             int64_t new_pos = static_cast<int64_t>(pos);
-            if (new_pos != position_ms_.exchange(new_pos)) {
-                for (Track* t : {&video_, &audio_}) notify_track(*t);
+            if (new_pos != position_ms_.exchange(new_pos, std::memory_order_seq_cst)) {
+                for (Track* t : {&video_, &audio_}) {
+                    if (t->waiting_clock.load(std::memory_order_seq_cst)) notify_track(*t);
+                }
             }
         }
         if (paused_ || eos_ || ms_since(started_at) < stall_grace_until_ms_) {
