@@ -92,7 +92,7 @@ namespace OmegaTube.Ui
         private readonly View chrome;          // everything at the bottom; slides up for suggestions
         private readonly TextLabel titleLabel, metaLabel, timeLabel, durationLabel, clockLabel, stateLabel, statsLabel, toast;
         private readonly TextLabel tooltip;
-        private string lastTooltipText;
+        private string lastTooltipText, lastTimeText, lastDurationText;
         private readonly View backdrop;        // opaque while loading: the TV picture must not show through
         private ImageView poster;
         private readonly View barA, barB;      // black bars where the video does not cover the screen (4:3, 21:9)
@@ -1225,7 +1225,7 @@ namespace OmegaTube.Ui
                 {
                     PreloadNext(playlistRow.FirstItem);
                 }
-                if ((now - lastBtCheck).TotalSeconds >= 2)
+                if ((now - lastBtCheck).TotalSeconds >= 10)
                 {
                     SyncBluetoothAudioDelay(now, force: false);
                 }
@@ -1494,8 +1494,17 @@ namespace OmegaTube.Ui
             {
                 progressFill.SizeWidth = ProgressWidth;
                 playhead.PositionX = ProgressX + ProgressWidth - 7;
-                timeLabel.Text = "● " + T("LIVE");
-                durationLabel.Text = "";
+                string liveText = "● " + T("LIVE");
+                if (lastTimeText != liveText)
+                {
+                    lastTimeText = liveText;
+                    timeLabel.Text = liveText;
+                }
+                if (lastDurationText != "")
+                {
+                    lastDurationText = "";
+                    durationLabel.Text = "";
+                }
                 return;
             }
             long pos = pendingSeekMs >= 0 ? pendingSeekMs : seekingTargetMs >= 0 ? seekingTargetMs : stats.PositionMs;
@@ -1503,8 +1512,18 @@ namespace OmegaTube.Ui
             float fill = (float)(ProgressWidth * Math.Min(1.0, pos / (double)dur));
             progressFill.SizeWidth = fill;
             playhead.PositionX = ProgressX + fill - 7;
-            timeLabel.Text = pendingSeekMs >= 0 ? $"{Format(pos)}   ({SignedSeconds(pendingSeekMs - stats.PositionMs)})" : Format(pos);
-            durationLabel.Text = Format(stats.DurationMs);
+            string timeText = pendingSeekMs >= 0 ? $"{Format(pos)}   ({SignedSeconds(pendingSeekMs - stats.PositionMs)})" : Format(pos);
+            if (lastTimeText != timeText)
+            {
+                lastTimeText = timeText;
+                timeLabel.Text = timeText;
+            }
+            string durText = Format(stats.DurationMs);
+            if (lastDurationText != durText)
+            {
+                lastDurationText = durText;
+                durationLabel.Text = durText;
+            }
             if (focus == Focus.Buttons)
             {
                 UpdateTooltip();

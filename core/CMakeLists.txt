@@ -144,7 +144,12 @@ find_package(Threads REQUIRED)
 target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib opus faad Threads::Threads m ${CMAKE_DL_LIBS})
 
 # The TV ships its own libstdc++; link ours statically so we never depend on its version.
-target_link_libraries(omegacore PRIVATE -static-libstdc++ -static-libgcc -Wl,--no-undefined)
+target_link_libraries(omegacore PRIVATE -static-libstdc++ -static-libgcc -Wl,--no-undefined -Wl,--gc-sections)
+foreach(_gc omegacore mbedcrypto mbedx509 mbedtls omega_quickjs omega_zlib opus faad)
+    if(TARGET ${_gc})
+        target_compile_options(${_gc} PRIVATE -ffunction-sections -fdata-sections)
+    endif()
+endforeach()
 
 # Host-side tool to check the demuxer against local files (not shipped).
 if(OMEGA_HOST_TOOLS)
