@@ -48,6 +48,22 @@ void pin_thread_core(int core) {
 #endif
 }
 
+// Enables ARM hardware Flush-to-Zero (FPSCR.FZ / FPCR.FZ, bit 24) on the audio DSP thread so
+// decaying EMAs and quiet audio tails (< 1.17e-38, -758 dB) never trigger slow scalar VFP subnormal traps.
+void enable_fp_flush_to_zero() {
+#if defined(__aarch64__)
+    uint64_t fpcr = 0;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    fpcr |= (1ULL << 24);
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+#elif defined(__arm__) && defined(__ARM_FP)
+    uint32_t fpscr = 0;
+    __asm__ volatile("vmrs %0, fpscr" : "=r"(fpscr));
+    fpscr |= (1u << 24);
+    __asm__ volatile("vmsr fpscr, %0" : : "r"(fpscr));
+#endif
+}
+
 bool video_mime(media::Codec c, esp::VideoMime& out) {
     switch (c) {
         case media::Codec::H264: out = esp::VIDEO_H264; return true;
@@ -909,7 +925,10 @@ bool Player::submit_es_packet(Track& t, esp::StreamType type, const uint8_t* dat
 }
 
 void Player::feed_loop(Track& t) {
-    if (t.type == esp::STREAM_AUDIO) pin_thread_core(2);
+    if (t.type == esp::STREAM_AUDIO) {
+        pin_thread_core(2);
+        enable_fp_flush_to_zero();
+    }
     {
         std::unique_lock<std::mutex> lock(t.mutex);
         t.cv.wait(lock, [&] { return !running_ || !t.active || t.ready_to_feed.load(); });
