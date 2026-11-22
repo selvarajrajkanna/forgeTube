@@ -27,7 +27,7 @@ if(TARGET mbedtls)
     target_compile_options(mbedtls PRIVATE -O3)
 endif()
 if(TARGET mbedcrypto)
-    target_compile_options(mbedcrypto PRIVATE -O3)
+    target_compile_options(mbedcrypto PRIVATE -O3 -falign-loops=16 -falign-functions=16)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
         # Runtime-detected ARMv8-A hardware SHA-256 acceleration (falls back to C if absent).
         target_compile_definitions(mbedcrypto PRIVATE MBEDTLS_SHA256_USE_ARMV8_A_CRYPTO_IF_PRESENT)
@@ -148,8 +148,8 @@ target_include_directories(omegacore PUBLIC include PRIVATE src ${OMEGA_DEPS})
 # qrcodegen is included as <qrcodegen/qrcodegen.hpp>
 target_compile_options(omegacore PRIVATE -Wall -Wextra -O3 $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>)
 set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
-# Safe hardware math flags for 64-bit float audio DSP (ARMv8 vfma.f64 & direct vsqrt.f64 without -ffast-math hazards).
-set_source_files_properties(src/audio/dsp.cpp PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-ffp-contract=fast")
+# Safe hardware math flags & 16B A72 fetch-block alignment for audio DSP (ARMv8 vfma & vsqrt without -ffast-math hazards).
+set_source_files_properties(src/audio/dsp.cpp PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-ffp-contract=fast;-falign-loops=16;-falign-functions=16")
 
 find_package(Threads REQUIRED)
 target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib omega_yyjson opus faad Threads::Threads m ${CMAKE_DL_LIBS})

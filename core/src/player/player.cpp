@@ -11,6 +11,11 @@
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+#endif
 
 #include "net/http.h"
 #include "util/log.h"
@@ -27,6 +32,21 @@ int64_t ms_since(Clock::time_point t) {
 }
 
 void sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
+// Pins a playback worker to a dedicated Cortex-A72 core (off Core 0's IRQs) to keep its 48K L1I,
+// 32K L1D, and branch history warm across wakeups. Silently no-ops if <4 cores or cgroup-restricted.
+void pin_thread_core(int core) {
+#if defined(__linux__)
+    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpu < 4 || core < 0 || core >= ncpu) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(core, &set);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+    (void)core;
+#endif
+}
 
 bool video_mime(media::Codec c, esp::VideoMime& out) {
     switch (c) {
@@ -791,6 +811,7 @@ void Player::push_samples(Track& t, std::deque<media::Sample>& samples) {
 }
 
 void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource* source_raw) {
+    if (t.type == esp::STREAM_VIDEO) pin_thread_core(3);
     std::unique_ptr<media::Demuxer> reader(reader_raw);
     std::unique_ptr<net::StreamSource> source(source_raw);
     if (!t.pool) {
@@ -888,6 +909,7 @@ bool Player::submit_es_packet(Track& t, esp::StreamType type, const uint8_t* dat
 }
 
 void Player::feed_loop(Track& t) {
+    if (t.type == esp::STREAM_AUDIO) pin_thread_core(2);
     {
         std::unique_lock<std::mutex> lock(t.mutex);
         t.cv.wait(lock, [&] { return !running_ || !t.active || t.ready_to_feed.load(); });
