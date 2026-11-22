@@ -115,10 +115,12 @@ public:
     // Single-producer bump allocation (called from demux_thread); slabs recycle from any thread (feed_thread).
     std::pair<std::shared_ptr<Slab>, size_t> alloc(size_t n) {
         if (n == 0) return {{}, 0};
-        const size_t aligned = (n + 15u) & ~size_t{15};
+        // 64-byte alignment matches Cortex-A72 L1D cache lines, preventing cross-core false sharing
+        // between demux_thread (writing frame N+1) and feed_thread (reading/freeing frame N).
+        const size_t aligned = (n + 63u) & ~size_t{63};
         if (aligned > slab_bytes_) {
             auto slab = std::make_shared<Slab>();
-            slab->mem = std::make_unique<uint8_t[]>(n);
+            slab->mem = std::make_unique_for_overwrite<uint8_t[]>(n);
             slab->cap = n;
             slab->used = n;
             return {std::move(slab), 0};
@@ -145,7 +147,7 @@ private:
         }
         if (!raw) {
             raw = new Slab();
-            raw->mem = std::make_unique<uint8_t[]>(slab_bytes_);
+            raw->mem = std::make_unique_for_overwrite<uint8_t[]>(slab_bytes_);
             raw->cap = slab_bytes_;
         }
         raw->used = 0;
@@ -199,7 +201,7 @@ struct SampleBuffer {
             offset = off;
         } else {
             slab = std::make_shared<SamplePool::Slab>();
-            slab->mem = std::make_unique<uint8_t[]>(n);
+            slab->mem = std::make_unique_for_overwrite<uint8_t[]>(n);
             slab->cap = n;
             slab->used = n;
             offset = 0;

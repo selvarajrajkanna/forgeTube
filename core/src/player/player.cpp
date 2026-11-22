@@ -1023,15 +1023,8 @@ void Player::control_loop() {
         } else if (!in_stall && ms_since(last_advance) > 150 && ms_since(started_at) > 1000) {
             in_stall = true;
             ++stalls_;
-            int64_t vq = 0, aq = 0;
-            {
-                std::lock_guard<std::mutex> lv(video_.mutex);
-                vq = video_.queued_ms;
-            }
-            {
-                std::lock_guard<std::mutex> la(audio_.mutex);
-                aq = audio_.queued_ms;
-            }
+            const int64_t vq = video_.queued_ms.load(std::memory_order_relaxed);
+            const int64_t aq = audio_.queued_ms.load(std::memory_order_relaxed);
             OLOG("stall started at %llu ms (vq=%lld aq=%lld)", static_cast<unsigned long long>(pos),
                  static_cast<long long>(vq), static_cast<long long>(aq));
         }
@@ -1055,17 +1048,11 @@ bool Player::set_rate(double rate) {
 PlayerStats Player::stats() {
     PlayerStats s{};
     s.state = handle_ ? api_->get_state(handle_) : esp::STATE_NONE;
-    s.position_ms = position_ms_;
-    {
-        std::lock_guard<std::mutex> lock(video_.mutex);
-        s.video_queued_ms = video_.queued_ms;
-    }
-    {
-        std::lock_guard<std::mutex> lock(audio_.mutex);
-        s.audio_queued_ms = audio_.queued_ms;
-    }
-    s.video_submitted_ms = video_.submitted_ms;
-    s.audio_submitted_ms = audio_.submitted_ms;
+    s.position_ms = position_ms_.load(std::memory_order_relaxed);
+    s.video_queued_ms = video_.queued_ms.load(std::memory_order_relaxed);
+    s.audio_queued_ms = audio_.queued_ms.load(std::memory_order_relaxed);
+    s.video_submitted_ms = video_.submitted_ms.load(std::memory_order_relaxed);
+    s.audio_submitted_ms = audio_.submitted_ms.load(std::memory_order_relaxed);
     s.video_underruns = video_.underruns;
     s.audio_underruns = audio_.underruns;
     s.stalls = stalls_;

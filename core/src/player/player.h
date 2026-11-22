@@ -97,7 +97,7 @@ private:
         std::mutex mutex;
         std::condition_variable cv;
         std::deque<media::Sample> queue;
-        int64_t queued_ms = 0;
+        std::atomic<int64_t> queued_ms{0};
         size_t queued_bytes = 0;
         std::atomic<uint64_t> buffer_wake_seq{0};
         bool demux_done = false;

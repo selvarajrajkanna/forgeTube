@@ -57,6 +57,11 @@ inline float neon_hsum(float32x4_t v) {
     pair = vpadd_f32(pair, pair);
     return vget_lane_f32(pair, 0);
 }
+
+inline float32x4_t neon_rev4(float32x4_t v) {
+    const float32x4_t r = vrev64q_f32(v);
+    return vcombine_f32(vget_high_f32(r), vget_low_f32(r));
+}
 #endif
 
 // Branchless IEEE-754 log2f for spectral envelope / SFM / dB math (~0.008 log2 ≈ 0.025 dB max error, monotonic).
@@ -747,6 +752,28 @@ private:
                 spec_r_re_[0] = fft_im_[0];
                 spec_r_im_[0] = 0.0f;
                 pwr_[0] = spec_l_re_[0] * spec_l_re_[0] + spec_r_re_[0] * spec_r_re_[0];
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                {
+                    const float32x4_t half_v = vdupq_n_f32(0.5f);
+                    const float32x4_t nhalf_v = vdupq_n_f32(-0.5f);
+                    for (int k = 1; k <= kFft / 2; k += 4) {
+                        const float32x4_t zkr = vld1q_f32(fft_re_.data() + k);
+                        const float32x4_t zki = vld1q_f32(fft_im_.data() + k);
+                        const float32x4_t zcr = neon_rev4(vld1q_f32(fft_re_.data() + (kFft - k - 3)));
+                        const float32x4_t zci_pos = neon_rev4(vld1q_f32(fft_im_.data() + (kFft - k - 3)));
+                        const float32x4_t lr = vmulq_f32(half_v, vaddq_f32(zkr, zcr));
+                        const float32x4_t li = vmulq_f32(half_v, vsubq_f32(zki, zci_pos));
+                        const float32x4_t rr = vmulq_f32(half_v, vaddq_f32(zki, zci_pos));
+                        const float32x4_t ri = vmulq_f32(nhalf_v, vsubq_f32(zkr, zcr));
+                        vst1q_f32(spec_l_re_.data() + k, lr);
+                        vst1q_f32(spec_l_im_.data() + k, li);
+                        vst1q_f32(spec_r_re_.data() + k, rr);
+                        vst1q_f32(spec_r_im_.data() + k, ri);
+                        const float32x4_t p = neon_fma(neon_fma(neon_fma(vmulq_f32(lr, lr), li, li), rr, rr), ri, ri);
+                        vst1q_f32(pwr_.data() + k, p);
+                    }
+                }
+#else
                 for (int k = 1; k <= kFft / 2; ++k) {
                     const float zkr = fft_re_[k];
                     const float zki = fft_im_[k];
@@ -762,6 +789,7 @@ private:
                     spec_r_im_[k] = ri;
                     pwr_[k] = lr * lr + li * li + rr * rr + ri * ri;
                 }
+#endif
 
                 // Shared stereo detection across calibrated 48 kHz bands (df = 187.5 Hz/bin).
                 const float p_body = band_avg(pwr_, 2, 16);       // 375 - 3000 Hz
