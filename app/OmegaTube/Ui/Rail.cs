@@ -52,7 +52,7 @@ namespace OmegaTube.Ui
             Widgets.RoundedImage(avatar, currentAvatarUrl, 32, 64, 64);
 
             var clip = new View { Position = new Position(0, Top), Size = new Size(Theme.RailExpandedWidth, 1080 - Top),
-                                  ClippingMode = ClippingModeType.ClipChildren };
+                                  ClippingMode = ClippingModeType.ClipToBoundingBox };
             Add(clip);
             list = new View { Size = new Size(Theme.RailExpandedWidth, 2000) };
             clip.Add(list);

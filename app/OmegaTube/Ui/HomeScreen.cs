@@ -67,7 +67,7 @@ namespace OmegaTube.Ui
             feedHost = new View { Size = new Size(1920, 1080) };   // under the rail, which is added last
             Root.Add(feedHost);
             embedHost = new View { Position = new Position(EmbedX, 0), Size = new Size(1920 - EmbedX, 1080),
-                                   ClippingMode = ClippingModeType.ClipChildren };
+                                   ClippingMode = ClippingModeType.ClipToBoundingBox };
             embedHost.Hide();
             Root.Add(embedHost);
         }

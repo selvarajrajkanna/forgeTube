@@ -40,7 +40,7 @@ namespace OmegaTube.Ui
             title.VerticalAlignment = VerticalAlignment.Center;
             title.Position = new Position(24, 12);
             Add(title);
-            clip = new View { Position = new Position(0, Top), ClippingMode = ClippingModeType.ClipChildren };
+            clip = new View { Position = new Position(0, Top), ClippingMode = ClippingModeType.ClipToBoundingBox };
             Add(clip);
             lines = new View();
             clip.Add(lines);

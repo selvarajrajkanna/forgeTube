@@ -44,7 +44,7 @@ namespace OmegaTube.Ui
             this.leftInset = leftInset;
             pump = BuildNext;
             Size = new Size(width, height);
-            ClippingMode = ClippingModeType.ClipChildren;
+            ClippingMode = ClippingModeType.ClipToBoundingBox;
             content = new View { Size = new Size(width, 100000) };
             Add(content);
             status = Widgets.Label("", Theme.BodySize, Theme.TextDim, width - leftInset - Theme.FocusMargin, 120);

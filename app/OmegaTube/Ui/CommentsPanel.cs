@@ -155,7 +155,7 @@ namespace OmegaTube.Ui
             {
                 Position = new Position(0, ViewportTop),
                 Size = new Size(PanelWidth, ViewportHeight),
-                ClippingMode = ClippingModeType.ClipChildren,
+                ClippingMode = ClippingModeType.ClipToBoundingBox,
             };
             Add(clip);
 

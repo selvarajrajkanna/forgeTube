@@ -86,7 +86,7 @@ namespace OmegaTube.Ui
             Root.Add(paneDescription);
 
             listClip = new View { Position = new Position(ListX - 20, ListY - 20), Size = new Size(ListW + 40, ListH + 20),
-                                  ClippingMode = ClippingModeType.ClipChildren };
+                                  ClippingMode = ClippingModeType.ClipToBoundingBox };
             Root.Add(listClip);
             list = new View { Position = new Position(20, 20), Size = new Size(ListW, 4000) };
             listClip.Add(list);

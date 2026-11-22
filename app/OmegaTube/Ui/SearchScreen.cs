@@ -88,7 +88,7 @@ namespace OmegaTube.Ui
             }
 
             resultsHost = new View { Position = new Position(KbX - Theme.FocusMargin, 610), Size = new Size(1920 - KbX + Theme.FocusMargin, 470),
-                                     ClippingMode = ClippingModeType.ClipChildren };
+                                     ClippingMode = ClippingModeType.ClipToBoundingBox };
             Root.Add(resultsHost);
             UpdateFocus();
         }

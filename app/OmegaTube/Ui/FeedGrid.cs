@@ -61,7 +61,7 @@ namespace OmegaTube.Ui
             this.width = width;
             this.height = height;
             Size = new Size(width, height);
-            ClippingMode = ClippingModeType.ClipChildren;
+            ClippingMode = ClippingModeType.ClipToBoundingBox;
             cardW = (width - 2 * Pad - (Columns - 1) * GapX) / Columns;
             rowStep = Theme.CardHeight(cardW) + GapY;
             content = new View { Position = new Position(0, Pad), Size = new Size(width, 100000) };
