@@ -192,11 +192,7 @@ bool Player::start() {
             src.http->set_hooks(std::move(hooks));
         }
         net::StreamSource* http = src.http.get();
-        src.reader = media::open_demuxer([http, &t](void* dst, size_t n) {
-            size_t got = http->read(dst, n);
-            t.bytes += got;
-            return got;
-        });
+        src.reader = media::open_demuxer([http](void* dst, size_t n) { return http->read(dst, n); });
         if (!src.reader->read_header()) {
             results[idx].refused = http->refused();
             results[idx].error = std::string(stream_name(t.type)) + " demux: " + src.reader->error() +
@@ -273,11 +269,7 @@ bool Player::start() {
                                                                      seg.offset, t.type == esp::STREAM_VIDEO);
                 net::StreamSource* http = sources[i].http.get();
                 sources[i].reader = media::resume_demuxer(
-                    [http, &t](void* dst, size_t n) {
-                        size_t got = http->read(dst, n);
-                        t.bytes += got;
-                        return got;
-                    },
+                    [http](void* dst, size_t n) { return http->read(dst, n); },
                     t.info, seg);
                 continue;
             } else {
@@ -285,11 +277,7 @@ bool Player::start() {
                                                                      t.type == esp::STREAM_VIDEO);
             }
             net::StreamSource* http = sources[i].http.get();
-            sources[i].reader = media::open_demuxer([http, &t](void* dst, size_t n) {
-                size_t got = http->read(dst, n);
-                t.bytes += got;
-                return got;
-            });
+            sources[i].reader = media::open_demuxer([http](void* dst, size_t n) { return http->read(dst, n); });
             if (!sources[i].reader->read_header()) return false;
             if (cfg_.live) {
                 auto& dst = first_samples[&t == &video_ ? 0 : 1];
@@ -577,11 +565,7 @@ bool Player::start() {
                 }
                 net::StreamSource* http = src.http.get();
                 src.reader = media::resume_demuxer(
-                    [http, &t](void* dst, size_t n) {
-                        size_t got = http->read(dst, n);
-                        t.bytes += got;
-                        return got;
-                    },
+                    [http](void* dst, size_t n) { return http->read(dst, n); },
                     t.info, seg);
             }
         }
@@ -797,11 +781,7 @@ bool Player::seek(int64_t ms) {
         auto* http = new net::RangeReader(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset,
                                           t.type == esp::STREAM_VIDEO);
         auto reader = media::resume_demuxer(
-            [http, &t](void* dst, size_t n) {
-                size_t got = http->read(dst, n);
-                t.bytes += got;
-                return got;
-            },
+            [http](void* dst, size_t n) { return http->read(dst, n); },
             t.info, seg);
         start_track(t, reader.release(), http);
     }
@@ -951,7 +931,7 @@ void Player::feed_loop(Track& t) {
                     for (const auto& f : pcm_out) {
                         if (!running_ || !t.active) return;
                         if (!submit_es_packet(t, t.type, f.data.data(), f.data.size(), f.pts_ms, f.duration_ms)) return;
-                        t.submitted_ms = f.pts_ms + f.duration_ms;
+                        t.submitted_ms.store(f.pts_ms + f.duration_ms, std::memory_order_relaxed);
                     }
                 }
                 api_->submit_eos_packet(handle_, t.type);
@@ -994,7 +974,7 @@ void Player::feed_loop(Track& t) {
             for (const auto& f : pcm_out) {
                 if (!running_ || !t.active) return;
                 if (!submit_es_packet(t, t.type, f.data.data(), f.data.size(), f.pts_ms, f.duration_ms)) return;
-                t.submitted_ms = f.pts_ms + f.duration_ms;
+                t.submitted_ms.store(f.pts_ms + f.duration_ms, std::memory_order_relaxed);
             }
             continue;
         }
@@ -1002,7 +982,7 @@ void Player::feed_loop(Track& t) {
         // After a seek (or a live start) the audio segment starts a bit before the video keyframe.
         if (t.type == esp::STREAM_AUDIO && s.pts_ms < feed_from_ms_) continue;
         if (!submit_es_packet(t, t.type, s.data.data(), s.data.size(), s.pts_ms, s.duration_ms)) return;
-        t.submitted_ms = s.pts_ms + s.duration_ms;
+        t.submitted_ms.store(s.pts_ms + s.duration_ms, std::memory_order_relaxed);
         if (t.type == esp::STREAM_VIDEO) {
             br_bytes += s.data.size();
             br_dur_ms += std::max<int64_t>(1, s.duration_ms);

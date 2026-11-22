@@ -90,7 +90,7 @@ public:
     bool stream_refused() const { return stream_refused_; }
 
 private:
-    struct Track {
+    struct alignas(64) Track {
         esp::StreamType type;
         std::string url;
         media::TrackInfo info;
@@ -110,7 +110,6 @@ private:
         std::shared_ptr<media::SamplePool> pool;
         std::atomic<int64_t> submitted_ms{0};
         std::atomic<uint32_t> underruns{0};
-        std::atomic<uint64_t> bytes{0};
         std::thread demux_thread, feed_thread;
     };
 
@@ -159,7 +158,8 @@ private:
     std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0}, video_bitrate_kbps_{0};
     std::atomic<int32_t> scaler_id_{-2};    // -2: unqueried, -1: unavailable, >=0: RM virtual id
     std::atomic<int32_t> scaler_rc_{-999};  // esplusplayer_get_virtual_rsc_id return code
-    std::atomic<int64_t> longest_stall_ms_{0}, position_ms_{0};
+    std::atomic<int64_t> longest_stall_ms_{0};
+    alignas(64) std::atomic<int64_t> position_ms_{0};
     std::thread control_thread_;
     std::mutex seek_mutex_;
     std::atomic<int64_t> feed_from_ms_{0};  // audio samples before this are dropped after a seek
