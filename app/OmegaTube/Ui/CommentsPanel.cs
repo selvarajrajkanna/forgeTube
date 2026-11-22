@@ -526,7 +526,7 @@ namespace OmegaTube.Ui
             int x = e.Indent;
             int w = ContentWidth - x;
             var view = new View { Size = new Size(w, e.Height), PositionX = x, PositionY = e.Y };
-            var highlight = Widgets.Rounded(SortIdleBg, w + 12, e.Height, 12);
+            var highlight = Widgets.Rounded(SortIdleBg, w + 12, Math.Max(80, (int)Math.Ceiling(e.Height)), 12);
             highlight.Position = new Position(-6, -4);
             highlight.Hide();
             view.Add(highlight);
@@ -780,6 +780,10 @@ namespace OmegaTube.Ui
                     {
                         e.View.PositionY = e.Y;
                         Widgets.SetVisible(e.View, true);
+                        if (e == focused && e.Highlight != null)
+                        {
+                            e.Highlight.Show();
+                        }
                     }
                 }
                 else if (e.Comment != null && (bot < keepTop || top > keepBot))
