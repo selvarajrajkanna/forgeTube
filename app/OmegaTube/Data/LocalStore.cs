@@ -11,12 +11,14 @@ namespace OmegaTube.Data
     public static class LocalStore
     {
         private const int MaxPositions = 300;
+        private const long PeriodicFlushIntervalMs = 60_000;
 
         private static string dir;
         private static readonly object posLock = new object();
         private static Dictionary<string, object> positions;
         private static bool dirty;
         private static bool writing;
+        private static long lastWriteTick;
 
         public static void Init(string dataDir)
         {
@@ -81,13 +83,14 @@ namespace OmegaTube.Data
             return (long)Json.Num(e, "pos");
         }
 
-        public static void SavePosition(string videoId, long posMs, long durMs)
+        public static void SavePosition(string videoId, long posMs, long durMs, bool flush = true)
         {
             if (string.IsNullOrEmpty(videoId) || durMs <= 0)
             {
                 return;
             }
             bool startWriter = false;
+            long now = Environment.TickCount64;
             lock (posLock)
             {
                 positions ??= new Dictionary<string, object>();
@@ -101,13 +104,42 @@ namespace OmegaTube.Data
                 };
                 TrimPositionsLocked();
                 dirty = true;
-                if (!writing)
+                bool due = flush || lastWriteTick == 0 || (now - lastWriteTick) >= PeriodicFlushIntervalMs;
+                if (due && !writing)
                 {
                     writing = true;
+                    lastWriteTick = now;
                     startWriter = true;
                 }
             }
             if (startWriter)
+            {
+                Task.Run(DrainWrites);
+            }
+        }
+
+        // Flushes any pending in-memory playback positions to flash (app pause / exit).
+        public static void Flush(bool sync = false)
+        {
+            bool startWriter = false;
+            lock (posLock)
+            {
+                if (dirty && !writing)
+                {
+                    writing = true;
+                    lastWriteTick = Environment.TickCount64;
+                    startWriter = true;
+                }
+            }
+            if (!startWriter)
+            {
+                return;
+            }
+            if (sync)
+            {
+                DrainWrites();
+            }
+            else
             {
                 Task.Run(DrainWrites);
             }
@@ -172,7 +204,7 @@ namespace OmegaTube.Data
         {
             try
             {
-                string json = Json.Write(value);
+                string json = Json.WriteCompact(value);
                 string path = Path.Combine(dir, name);
                 string tmp = path + ".tmp";
                 File.WriteAllText(tmp, json);

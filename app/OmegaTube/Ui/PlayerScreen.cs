@@ -1218,7 +1218,7 @@ namespace OmegaTube.Ui
                 if (stats.State == 3 && (now - lastSave).TotalSeconds > 10)
                 {
                     lastSave = now;
-                    LocalStore.SavePosition(item.Id, stats.PositionMs, stats.DurationMs);
+                    LocalStore.SavePosition(item.Id, stats.PositionMs, stats.DurationMs, flush: false);
                 }
                 if (stats.State == 3 && !live && !Loop && InList && playlistRow?.FirstItem != null &&
                     stats.DurationMs > 0 && stats.DurationMs - stats.PositionMs <= 1500)

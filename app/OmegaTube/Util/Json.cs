@@ -15,6 +15,12 @@ namespace OmegaTube.Util
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
 
+        private static readonly JsonSerializerOptions CompactWriteOptions = new JsonSerializerOptions
+        {
+            WriteIndented = false,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        };
+
         public static object Parse(string text)
         {
             using JsonDocument doc = JsonDocument.Parse(text);
@@ -29,6 +35,7 @@ namespace OmegaTube.Util
         }
 
         public static string Write(object value) => JsonSerializer.Serialize(value, WriteOptions);
+        public static string WriteCompact(object value) => JsonSerializer.Serialize(value, CompactWriteOptions);
 
         // Typed accessors that tolerate missing keys / wrong types.
         public static Dictionary<string, object> Obj(object o, string key) =>

@@ -376,6 +376,7 @@ namespace OmegaTube
                 {
                     stack[stack.Count - 1].OnPause();
                 }
+                Data.LocalStore.Flush();
             });
             base.OnPause();
         }
@@ -397,6 +398,7 @@ namespace OmegaTube
                 {
                 }
             }
+            Data.LocalStore.Flush(sync: true);
             PlayerScreen.WaitPendingTeardown(1500);
             base.OnTerminate();
         }
