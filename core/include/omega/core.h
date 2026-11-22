@@ -119,11 +119,9 @@ OMEGA_API uint8_t* omega_yt_playlist(const char* video_id, const char* playlist_
 OMEGA_API uint8_t* omega_yt_playlist_page(const char* playlist_id, const char* continuation, uint32_t* out_len);
 // Related videos of video_id (player suggestions): binary Feed payload.
 OMEGA_API uint8_t* omega_yt_related(const char* video_id, const char* continuation, uint32_t* out_len);
-// Watch-page details: {"channelId","channel","channelAvatar","subscribers","date",
-// "likeStatus":"LIKE|DISLIKE|INDIFFERENT|" (empty: signed out),"subscribed":1|0|-1} or {"error"}.
+// Watch-page details: {"channelId","channel","channelAvatar","subscribers","date","likeCount","subscribed":1|0|-1} or {"error"}.
 OMEGA_API char* omega_yt_details(const char* video_id);
-// As the signed-in account: rating "like" | "dislike" | "none"; (un)subscribe. {"ok":true} or {"error"}.
-OMEGA_API char* omega_yt_rate(const char* video_id, const char* rating);
+// As the signed-in account: (un)subscribe. {"ok":true} or {"error"}.
 OMEGA_API char* omega_yt_subscribe(const char* channel_id, int subscribe);
 // A channel's videos (newest first): binary Feed payload (with title, avatar, subscribers on the first page).
 OMEGA_API uint8_t* omega_yt_channel(const char* channel_id, const char* continuation, uint32_t* out_len);

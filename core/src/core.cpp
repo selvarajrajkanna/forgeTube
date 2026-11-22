@@ -698,7 +698,6 @@ char* omega_yt_details(const char* video_id) {
                           {"channelAvatar", d.channel_avatar},
                           {"subscribers", d.subscribers},
                           {"date", d.date},
-                          {"likeStatus", d.like_status},
                           {"likeCount", d.like_count},
                           {"subscribed", d.subscribed}});
     });
@@ -719,13 +718,6 @@ char* account_action(const char* name, Fn action) {
 }
 
 }  // namespace
-
-char* omega_yt_rate(const char* video_id, const char* rating) {
-    std::string id = video_id ? video_id : "", r = rating ? rating : "none";
-    return account_action("omega_yt_rate", [&](const std::string& token, std::string& error) {
-        return omega::yt::rate_video(id, r, token, error);
-    });
-}
 
 char* omega_yt_subscribe(const char* channel_id, int subscribe) {
     std::string id = channel_id ? channel_id : "";

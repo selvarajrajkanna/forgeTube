@@ -287,9 +287,9 @@ int main(int argc, char** argv) {
             printf("details failed: %s\n", error.c_str());
             return 1;
         }
-        printf("channel '%s' (%s) %s\navatar %s\ndate '%s'\nlikeStatus '%s' subscribed %d%s\n",
+        printf("channel '%s' (%s) %s\navatar %s\ndate '%s'\nlikes '%s' subscribed %d%s\n",
                d.channel.c_str(), d.channel_id.c_str(), d.subscribers.c_str(), d.channel_avatar.c_str(), d.date.c_str(),
-               d.like_status.c_str(), d.subscribed,
+               d.like_count.c_str(), d.subscribed,
                token.empty() ? "  (signed out: run --signin for the account state)" : "");
         return 0;
     }

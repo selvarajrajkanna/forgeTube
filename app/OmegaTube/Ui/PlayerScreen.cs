@@ -43,7 +43,8 @@ namespace OmegaTube.Ui
             public View View;
             public ImageView Image;
             public TextLabel Label;
-            public bool Active;      // subscribed / liked / disliked
+            public bool Active;      // subscribed
+            public bool Selectable = true;
         }
         private enum Action { Restart, PlayPause, Next, Comments, Description, Skip, Autoplay, Captions, Audio, Speed, Quality, Loop, Stats }
 
@@ -268,7 +269,7 @@ namespace OmegaTube.Ui
             signedIn = YouTube.SignedIn();
             AddChip(Social.Channel, null, string.IsNullOrEmpty(item.Channel) ? T("Channel") : item.Channel);
             AddChip(Social.Subscribe, null, T("Subscribe")).View.Hide();
-            AddChip(Social.Like, "thumb_up", T("Like")).View.Hide();
+            AddChip(Social.Like, "thumb_up", "", selectable: false).View.Hide();
             LayoutChips();
             clockLabel = Widgets.Label("", Theme.SmallSize + 2, Theme.Text, 104, 38);
             clockLabel.BackgroundColor = M3Surface;
@@ -747,7 +748,7 @@ namespace OmegaTube.Ui
             metaLabel.Show();
         }
 
-        private Chip AddChip(Social kind, string icon, string text)
+        private Chip AddChip(Social kind, string icon, string text, bool selectable = true)
         {
             var view = new View { Size = new Size(140, ChipH), Position = new Position(0, ActionsY),
                                   PivotPoint = Tizen.NUI.PivotPoint.Center, PositionUsesPivotPoint = false };
@@ -770,7 +771,7 @@ namespace OmegaTube.Ui
             label.Position = new Position(image != null ? (kind == Social.Channel ? 36 : 38) : 16, 0);
             view.Add(label);
             chrome.Add(view);
-            var chip = new Chip { Kind = kind, View = view, Image = image, Label = label };
+            var chip = new Chip { Kind = kind, View = view, Image = image, Label = label, Selectable = selectable };
             chips.Add(chip);
             return chip;
         }
@@ -803,14 +804,14 @@ namespace OmegaTube.Ui
             for (int i = 0; i < chips.Count; i++)
             {
                 Chip c = chips[i];
-                bool f = focus == Focus.Actions && i == chipIndex;
-                // Unfocused: Material 3 tonal pills, red "Subscribe" as on YouTube; liked thumbs turn red.
+                bool f = focus == Focus.Actions && i == chipIndex && c.Selectable;
+                // Unfocused: Material 3 tonal pills, red "Subscribe" as on YouTube.
                 c.View.BackgroundColor = f ? Theme.CardInfoFocused
                                        : c.Kind == Social.Subscribe && !c.Active ? Theme.Accent : M3Surface;
                 c.Label.TextColor = f ? Theme.CardTextFocused : Theme.Text;
                 if (c.Image != null && c.Kind != Social.Channel)
                 {
-                    c.Image.Color = c.Active ? Theme.Accent : f ? new Color(0.16f, 0.16f, 0.16f, 1f) : Color.White;
+                    c.Image.Color = f ? new Color(0.16f, 0.16f, 0.16f, 1f) : Color.White;
                 }
                 c.View.Scale = f ? new Vector3(1.06f, 1.06f, 1f) : Vector3.One;
             }
@@ -825,7 +826,7 @@ namespace OmegaTube.Ui
             {
                 i += delta;
             }
-            while (i >= 0 && i < chips.Count && !chips[i].View.Visibility);
+            while (i >= 0 && i < chips.Count && (!chips[i].View.Visibility || !chips[i].Selectable));
             if (i >= 0 && i < chips.Count)
             {
                 chipIndex = i;
@@ -858,22 +859,25 @@ namespace OmegaTube.Ui
             Chip sub = ChipOf(Social.Subscribe);
             sub.Active = d.Subscribed == 1;
             Widgets.SetVisible(sub.View, d.ChannelId.Length > 0);
-            ChipOf(Social.Like).View.Show();
             UpdateSocial();
         }
 
-        // Texts and states of the subscribe / like chips from `details`.
+        // Texts and states of the subscribe chip and read-only like-count badge from `details`.
         private void UpdateSocial()
         {
             Chip sub = ChipOf(Social.Subscribe), like = ChipOf(Social.Like);
             sub.Label.Text = sub.Active ? T("Subscribed") : T("Subscribe");
-            like.Active = details.LikeStatus == "LIKE";
-            like.Label.Text = details.LikeCount.Length > 0 ? details.LikeCount : T("Like");
+            like.Label.Text = details.LikeCount;
+            Widgets.SetVisible(like.View, details.LikeCount.Length > 0);
             LayoutChips();
         }
 
         private void ActivateChip(Chip c)
         {
+            if (!c.Selectable)
+            {
+                return;
+            }
             if (c.Kind == Social.Channel)
             {
                 string id = details != null && details.ChannelId.Length > 0 ? details.ChannelId : info.ChannelId;
@@ -888,14 +892,14 @@ namespace OmegaTube.Ui
             }
             if (!signedIn)
             {
-                Toast(c.Kind == Social.Subscribe ? T("Sign in (Account menu) to subscribe") : T("Sign in (Account menu) to rate videos"));
+                Toast(T("Sign in (Account menu) to subscribe"));
                 return;
             }
             if (details == null || socialBusy)
             {
                 return;
             }
-            UiGuard.Fire("PlayerScreen.social", () => c.Kind == Social.Subscribe ? ToggleSubscribe(c) : Rate("LIKE"));
+            UiGuard.Fire("PlayerScreen.social", () => ToggleSubscribe(c));
         }
 
         private async Task ToggleSubscribe(Chip c)
@@ -920,28 +924,6 @@ namespace OmegaTube.Ui
             details.Subscribed = subscribe ? 1 : 0;
             App.Home.InvalidateRows();
             Toast(subscribe ? T("Subscription added") : T("Subscription removed"));
-        }
-
-        // Pressing the current rating again removes it.
-        private async Task Rate(string wanted)
-        {
-            socialBusy = true;
-            string before = details.LikeStatus;
-            string next = before == wanted ? "INDIFFERENT" : wanted;
-            details.LikeStatus = next;
-            UpdateSocial();
-            string error = await YouTube.Rate(item.Id, next == "LIKE" ? "like" : next == "DISLIKE" ? "dislike" : "none");
-            socialBusy = false;
-            if (closing)
-            {
-                return;
-            }
-            if (error != null)
-            {
-                details.LikeStatus = before;
-                UpdateSocial();
-                Toast(T("Failed: {0}", error));
-            }
         }
 
         private void ShowLoading(string text, bool opaque)

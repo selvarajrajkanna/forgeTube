@@ -98,7 +98,6 @@ struct VideoInfo {
 struct VideoDetails {
     std::string channel_id, channel, channel_avatar, subscribers;  // subscribers: display text ("1,2 M d'abonnés")
     std::string date;           // display text ("12 mars 2023")
-    std::string like_status;    // "LIKE" | "DISLIKE" | "INDIFFERENT" | "" (signed out / unknown)
     std::string like_count;     // display count ("12K", "1,2 M"), empty when hidden/unavailable
     int subscribed = -1;        // 1 / 0, -1 unknown
 };
@@ -213,9 +212,7 @@ const Format* pick_audio(const VideoInfo& info, const std::string& track = "");
 bool fetch_captions(const std::string& url, const std::string& translate_to, std::vector<CaptionCue>& out,
                     std::string& error);
 
-// Like / dislike / neutral ("like", "dislike", "none") and (un)subscribe, as the signed-in account (TV client).
-bool rate_video(const std::string& video_id, const std::string& rating, const std::string& access_token,
-                std::string& error);
+// (Un)subscribe as the signed-in account (TV client).
 bool set_subscribed(const std::string& channel_id, bool subscribe, const std::string& access_token, std::string& error);
 
 // Posts a top-level comment as the signed-in account; create_params from CommentPage. Fills `out` with the

@@ -105,7 +105,7 @@ namespace OmegaTube
         private static delegate* unmanaged[Cdecl]<IntPtr, int, void> _playerSetAudioDelay;
         private static delegate* unmanaged[Cdecl]<IntPtr, PlayerStats*, void> _playerGetStats;
         private static delegate* unmanaged[Cdecl]<byte*, IntPtr> _ytSuggest, _reportUpload, _authPoll, _ytDetails, _sbSegments, _authSwitch;
-        private static delegate* unmanaged[Cdecl]<byte*, byte*, IntPtr> _ytRate, _ytPostComment;
+        private static delegate* unmanaged[Cdecl]<byte*, byte*, IntPtr> _ytPostComment;
         private static delegate* unmanaged[Cdecl]<byte*, byte*, byte*, IntPtr> _ytPostReply, _ytCommentAction;
         private static delegate* unmanaged[Cdecl]<byte*, int, IntPtr> _ytSubscribe;
         private static delegate* unmanaged[Cdecl]<byte*, byte*, uint*, IntPtr> _ytSearch, _ytBrowse, _ytPlaylist, _ytPlaylistPage, _ytRelated, _ytChannel, _ytComments, _ytCaptions;
@@ -148,7 +148,6 @@ namespace OmegaTube
             _btAudioDelayMs = (delegate* unmanaged[Cdecl]<int>)Export("omega_bt_audio_delay_ms");
             _ytCaptions = (delegate* unmanaged[Cdecl]<byte*, byte*, uint*, IntPtr>)Export("omega_yt_captions");
             _ytDetails = (delegate* unmanaged[Cdecl]<byte*, IntPtr>)Export("omega_yt_details");
-            _ytRate = (delegate* unmanaged[Cdecl]<byte*, byte*, IntPtr>)Export("omega_yt_rate");
             _ytSubscribe = (delegate* unmanaged[Cdecl]<byte*, int, IntPtr>)Export("omega_yt_subscribe");
             _ytChannel = (delegate* unmanaged[Cdecl]<byte*, byte*, uint*, IntPtr>)Export("omega_yt_channel");
             _ytComments = (delegate* unmanaged[Cdecl]<byte*, byte*, uint*, IntPtr>)Export("omega_yt_comments");
@@ -392,7 +391,6 @@ namespace OmegaTube
         public static IntPtr YtRelated(string videoId, string continuation, out uint len) => CallBinSS(_ytRelated, videoId, continuation, out len);
         public static IntPtr YtCaptions(string url, string translateTo, out uint len) => CallBinSS(_ytCaptions, url, translateTo, out len);
         public static IntPtr YtDetails(string videoId) => CallPtrS(_ytDetails, videoId);
-        public static IntPtr YtRate(string videoId, string rating) => CallPtrSS(_ytRate, videoId, rating);
         public static IntPtr YtSubscribe(string channelId, bool subscribe) => CallPtrSI(_ytSubscribe, channelId, subscribe ? 1 : 0);
         public static IntPtr YtComments(string videoId, string continuation, out uint len) => CallBinSS(_ytComments, videoId, continuation, out len);
         public static IntPtr YtPostComment(string createParams, string text) => CallPtrSS(_ytPostComment, createParams, text);
