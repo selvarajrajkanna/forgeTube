@@ -287,10 +287,11 @@ private:
     std::vector<float> in_buf_;
 };
 
-// Signal-gated, dry-preserving Spectral Band Extender at 48 kHz (187.5 Hz/bin, 256-pt 75% WOLA, 4.0 ms latency).
+// Signal-gated, dry-preserving Hybrid Spectral Band Extender at 48 kHz (187.5 Hz/bin, 256-pt 75% WOLA, 4.0 ms latency).
 // Only injects subtle high-frequency air when a sharp codec brickwall is measured (16 kHz AAC / baked Opus, or
-// 12 kHz SWB Opus). Uses stereo-linked 4-subband envelope extrapolation with power-complementary existing-HF capping,
-// spectral-flatness tonality damping, HF transient flux weighting, and 6-10 kHz speech sibilance ducking.
+// 12 kHz SWB Opus). Combines full-spectrum macro-tilt conditioning + encoder transition-droop recovery with
+// energy-invariant, stereo-locked harmonic + quadrature diffuse-air synthesis, power-complementary existing-HF
+// capping, spectral-flatness tonality damping, HF transient flux weighting, and 6-10 kHz speech sibilance ducking.
 // Everything below the codec cutoff stays 100% dry and phase-untouched.
 class HfExtender {
 public:
@@ -345,6 +346,7 @@ public:
         tonal_guard_ = 1.0f;
         src_pwr_ema_ = 0.0f;
         trans_boost_ = 1.0f;
+        rng_state_ = 0x9E3779B9u;
     }
 
     int active_mode() const { return (blend_ > 0.05f) ? (mode12_blend_ > 0.5f ? 2 : 1) : 0; }
@@ -419,9 +421,12 @@ private:
 
     // All shifts (24, 20, 40) are exact multiples of kFft/kHop = 4, so per-hop carrier phase advance
     // is an integer multiple of 2*pi (zero phase rotation needed between consecutive hops).
+    // Synthesizes a power-normalized blend of coherent harmonic transposition and quadrature-decorrelated
+    // diffuse air (|w_b|^2 == 1.0 exact per bin, preserving 100% L/R energy and inter-channel stereo phase).
     void synthesize_band_stereo(int src_lo, int sub_w, int shift, int step_offset, int fade_in, int fade_out,
-                                float gain_mult, std::array<float, kNumSub>& smooth_gains,
-                                std::array<std::complex<float>, kFft>& dst_spec) const {
+                                float gain_mult, float body_db, float pres_db, float diffuse_beta,
+                                std::array<float, kNumSub>& smooth_gains,
+                                std::array<std::complex<float>, kFft>& dst_spec) {
         // Precomputed 0.5 * (1 - cos(pi * k / (fade + 1))) ramps for fade=3 and fade=5 (zero runtime trig).
         static constexpr float kFade3[3] = {0.14644661f, 0.5f, 0.85355339f};
         static constexpr float kFade5[5] = {0.06698730f, 0.25f, 0.5f, 0.75f, 0.93301270f};
@@ -439,20 +444,34 @@ private:
             return;
         }
 
-        // Stereo-linked local slope + downward curvature extrapolation (clamped so HF always rolls off naturally).
+        // Full-spectrum macro-tilt conditioning + encoder low-pass transition droop compensation.
+        const float mid_src_db = 0.5f * (src_db[1] + src_db[2]);
         const float slope_lo = std::clamp(0.5f * (src_db[2] - src_db[0]), -12.0f, -0.8f);
-        const float slope_hi = std::clamp(0.5f * (src_db[3] - src_db[1]), -12.0f, -0.8f);
+        const float expected_db3 = src_db[2] + slope_lo;
+        // If the final pre-cutoff subband droops abnormally steeper than subbands 0..2 while the 3-8 kHz
+        // presence band confirms a genuinely bright signal, recover up to +4 dB of encoder low-pass knee droop.
+        float droop_rec = 0.0f;
+        if (src_db[3] < expected_db3 - 1.5f && (pres_db - mid_src_db) < 14.0f) {
+            droop_rec = std::clamp(0.65f * (expected_db3 - src_db[3]), 0.0f, 4.0f);
+        }
+        const float anchor_db = src_db[3] + droop_rec;
+        const float slope_hi = std::clamp(0.5f * (anchor_db - src_db[1]), -12.0f, -0.8f);
         const float curv = std::clamp(slope_hi - slope_lo, -2.5f, 0.0f);
         const float step_db = std::clamp(slope_hi + 0.35f * curv, -12.0f, -1.0f);
 
-        constexpr float kTuckDb = -9.0f;  // Tucked -9 dB below natural rolloff baseline
+        // Dark-mix macro guard: tuck further down if 8-15 kHz is already far below the 0.4-3 kHz midrange body.
+        const float body_drop = body_db - mid_src_db;
+        const float macro_tuck_db =
+            (body_drop > 18.0f) ? std::clamp(-0.35f * (body_drop - 18.0f), -6.0f, 0.0f)
+                                : ((body_drop < 10.0f && diffuse_beta > 0.25f) ? 1.2f : 0.0f);
+        const float tuck_db = -9.0f + macro_tuck_db;
         const int dst_lo = src_lo + shift;
         const int dst_hi = dst_lo + kNumSub * sub_w - 1;
 
         for (int m = 0; m < kNumSub; ++m) {
             const int d_lo = dst_lo + m * sub_w;
             const int d_hi = std::min(d_lo + sub_w - 1, kFft / 2 - 1);
-            const float target_db = src_db[kNumSub - 1] + static_cast<float>(step_offset + m + 1) * step_db + kTuckDb;
+            const float target_db = anchor_db + static_cast<float>(step_offset + m + 1) * step_db + tuck_db;
             const float target_pwr = std::exp2f(target_db * kDbToLog2);
             // Power-complementary cap: only synthesize the missing HF deficit above any surviving real HF energy.
             const float exist_pwr = (d_lo <= d_hi) ? band_avg(pwr_, d_lo, d_hi) : 0.0f;
@@ -468,6 +487,10 @@ private:
         const float first_center = static_cast<float>(dst_lo) + 0.5f * static_cast<float>(sub_w) - 0.5f;
         const float* const f_in_tab = (fade_in == 5) ? kFade5 : kFade3;
         const float* const f_out_tab = (fade_out == 5) ? kFade5 : kFade3;
+
+        // Orthogonal coherent + quadrature diffuse weights: c_coh^2 + c_diff^2 == 1.0 exact.
+        const float c_diff = std::clamp(diffuse_beta, 0.0f, 0.70710678f);
+        const float c_coh = std::sqrt(std::max(0.0f, 1.0f - c_diff * c_diff));
 
         for (int b = dst_lo; b <= dst_hi; ++b) {
             const int s = b - shift;
@@ -494,15 +517,25 @@ private:
                 edge *= f_out_tab[dst_hi - b];
             }
 
-            // Apply identical stereo-linked scalar gain to L and R so stereo panning & phase remain locked.
             const float scale = sub_g * edge * gain_mult;
             if (scale <= 1e-7f) continue;
+
+            // Deterministic xorshift32 quadrature phase decorrelator: identical complex rotor (wr + j*wi)
+            // applied to L and R preserves exact bin power and L/R stereo panning while breaking comb correlation.
+            uint32_t r = rng_state_;
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            rng_state_ = r;
+            const float wr = scale * c_coh;
+            const float wi = scale * ((r & 0x80000000u) ? -c_diff : c_diff);
+
             const std::complex<float> rl = spec_l_[s];
             const std::complex<float> rr = spec_r_[s];
-            const float vlr = rl.real() * scale;
-            const float vli = rl.imag() * scale;
-            const float vrr = rr.real() * scale;
-            const float vri = rr.imag() * scale;
+            const float vlr = rl.real() * wr - rl.imag() * wi;
+            const float vli = rl.real() * wi + rl.imag() * wr;
+            const float vrr = rr.real() * wr - rr.imag() * wi;
+            const float vri = rr.real() * wi + rr.imag() * wr;
 
             // Pack L and R Hermitian-symmetrically into one complex spectrum: Y[b] = YL[b] + j*YR[b].
             dst_spec[b] += std::complex<float>(vlr - vri, vli + vrr);
@@ -626,17 +659,29 @@ private:
                     trans_boost_ += trans_coef * (target_trans - trans_boost_);
 
                     const float shaped_gain = eff_gain * tonal_guard_ * trans_boost_;
+                    const float p_pres = band_avg(pwr_, 17, 42);  // 3.19 - 7.88 kHz presence anchor
+                    const float body_db = kLog2ToDb * std::log2f(std::max(p_body, 1e-24f));
+                    const float pres_db = kLog2ToDb * std::log2f(std::max(p_pres, 1e-24f));
+                    // Quadrature diffuse-air weight: high on broadband air/cymbals (high SFM), tucked back on
+                    // sharp transient attacks and tonal harmonics so attacks stay phase-locked.
+                    const float sfm_diffuse = std::clamp((sfm - 0.12f) / 0.50f, 0.0f, 0.70710678f);
+                    const float trans_lock = std::clamp(1.85f - 0.75f * trans_boost_, 0.35f, 1.0f);
+                    const float diffuse_beta = sfm_diffuse * trans_lock;
+
                     fft_in_.fill(std::complex<float>(0.0f, 0.0f));
                     if (w16 > 1e-4f) {
                         // Translate [11.06 .. 15.38 kHz] (+24 bins = +4.50 kHz) -> [15.56 .. 19.88 kHz]
-                        synthesize_band_stereo(59, 6, 24, 0, 3, 5, shaped_gain * w16, smooth_g16_, fft_in_);
+                        synthesize_band_stereo(59, 6, 24, 0, 3, 5, shaped_gain * w16, body_db, pres_db, diffuse_beta,
+                                               smooth_g16_, fft_in_);
                     } else {
                         for (float& g : smooth_g16_) g *= 0.85f;
                     }
                     if (w12 > 1e-4f) {
                         // SWB 12 kHz Opus: [8.06 .. 11.63 kHz] -> [11.81 .. 15.38 kHz] (+20) and [15.56 .. 19.13 kHz] (+40)
-                        synthesize_band_stereo(43, 5, 20, 0, 3, 3, shaped_gain * w12, smooth_g12a_, fft_in_);
-                        synthesize_band_stereo(43, 5, 40, kNumSub, 3, 5, shaped_gain * w12, smooth_g12b_, fft_in_);
+                        synthesize_band_stereo(43, 5, 20, 0, 3, 3, shaped_gain * w12, body_db, pres_db,
+                                               0.85f * diffuse_beta, smooth_g12a_, fft_in_);
+                        synthesize_band_stereo(43, 5, 40, kNumSub, 3, 5, shaped_gain * w12, body_db, pres_db,
+                                               diffuse_beta, smooth_g12b_, fft_in_);
                     } else {
                         for (int m = 0; m < kNumSub; ++m) {
                             smooth_g12a_[m] *= 0.85f;
@@ -714,6 +759,7 @@ private:
     float tonal_guard_ = 1.0f;
     float src_pwr_ema_ = 0.0f;
     float trans_boost_ = 1.0f;
+    uint32_t rng_state_ = 0x9E3779B9u;
     int logged_state_ = -1;
 };
 
