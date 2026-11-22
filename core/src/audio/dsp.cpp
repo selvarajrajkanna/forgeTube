@@ -230,6 +230,66 @@ private:
             if (emit) {
                 const float* __restrict xl = in_l_.data() + consumed;
                 const float* __restrict xr = in_r_.data() + consumed;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                // 2-sample fused rational NEON path: when consecutive output samples share input samples
+                // (adv1 == 0 or 1, true for 100% of 44.1->48 kHz), shift xl/xr in registers via vextq_f32
+                // to cut A72 Load-pipe traffic by ~32.5% (162 vs 240 loads per 2 output frames, 12 q-regs).
+                if (rational_) {
+                    const size_t next_p = phase_num_ + down_;
+                    const size_t adv1 = next_p / up_;
+                    if (adv1 <= 1 && consumed + adv1 + static_cast<size_t>(kTaps) <= total_frames) {
+                        const size_t phase_b = next_p % up_;
+                        const float* __restrict ha = &coeffs_[phase_num_ * kTaps];
+                        const float* __restrict hb = &coeffs_[phase_b * kTaps];
+                        float32x4_t al = vdupq_n_f32(0.0f);
+                        float32x4_t ar = vdupq_n_f32(0.0f);
+                        float32x4_t bl = vdupq_n_f32(0.0f);
+                        float32x4_t br = vdupq_n_f32(0.0f);
+                        if (adv1 == 0) {
+                            for (int k = 0; k < kTaps; k += 4) {
+                                const float32x4_t xl0 = vld1q_f32(xl + k);
+                                const float32x4_t xr0 = vld1q_f32(xr + k);
+                                const float32x4_t ta = vld1q_f32(ha + k);
+                                const float32x4_t tb = vld1q_f32(hb + k);
+                                al = neon_fma(al, ta, xl0);
+                                ar = neon_fma(ar, ta, xr0);
+                                bl = neon_fma(bl, tb, xl0);
+                                br = neon_fma(br, tb, xr0);
+                            }
+                        } else {
+                            float32x4_t xl_cur = vld1q_f32(xl);
+                            float32x4_t xr_cur = vld1q_f32(xr);
+                            for (int k = 0; k < kTaps - 4; k += 4) {
+                                const float32x4_t xl_nxt = vld1q_f32(xl + k + 4);
+                                const float32x4_t xr_nxt = vld1q_f32(xr + k + 4);
+                                const float32x4_t ta = vld1q_f32(ha + k);
+                                const float32x4_t tb = vld1q_f32(hb + k);
+                                al = neon_fma(al, ta, xl_cur);
+                                ar = neon_fma(ar, ta, xr_cur);
+                                bl = neon_fma(bl, tb, vextq_f32(xl_cur, xl_nxt, 1));
+                                br = neon_fma(br, tb, vextq_f32(xr_cur, xr_nxt, 1));
+                                xl_cur = xl_nxt;
+                                xr_cur = xr_nxt;
+                            }
+                            const float32x4_t ta = vld1q_f32(ha + (kTaps - 4));
+                            const float32x4_t tb = vld1q_f32(hb + (kTaps - 4));
+                            al = neon_fma(al, ta, xl_cur);
+                            ar = neon_fma(ar, ta, xr_cur);
+                            bl = neon_fma(bl, tb, vld1q_f32(xl + (kTaps - 3)));
+                            br = neon_fma(br, tb, vld1q_f32(xr + (kTaps - 3)));
+                        }
+                        if (written + 4 > out.size()) out.resize(out.size() + 64);
+                        out[written++] = neon_hsum(al);
+                        out[written++] = neon_hsum(ar);
+                        out[written++] = neon_hsum(bl);
+                        out[written++] = neon_hsum(br);
+                        const size_t next_p2 = phase_b + down_;
+                        consumed += adv1 + next_p2 / up_;
+                        phase_num_ = next_p2 % up_;
+                        continue;
+                    }
+                }
+#endif
                 float out_l = 0.0f;
                 float out_r = 0.0f;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
