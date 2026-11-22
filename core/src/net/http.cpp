@@ -79,6 +79,25 @@ struct TlsContext {
         if (rc > 0) OLOG("tls: %d CA certificates skipped", rc);
         mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
                                     MBEDTLS_SSL_PRESET_DEFAULT);
+#if defined(__arm__) && !defined(__aarch64__)
+        // Mbed TLS 3.6 AESCE hardware AES is AArch64-only; on 32-bit ARM prefer ChaCha20-Poly1305 first
+        // (~2x faster than table-based C AES-GCM) while keeping AES-GCM fallbacks for all servers.
+        static constexpr int kArm32Ciphersuites[] = {
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+            MBEDTLS_TLS1_3_CHACHA20_POLY1305_SHA256,
+            MBEDTLS_TLS1_3_AES_128_GCM_SHA256,
+            MBEDTLS_TLS1_3_AES_256_GCM_SHA384,
+#endif
+            MBEDTLS_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            MBEDTLS_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+            MBEDTLS_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            0
+        };
+        mbedtls_ssl_conf_ciphersuites(&conf, kArm32Ciphersuites);
+#endif
         mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_ca_chain(&conf, &ca, nullptr);
         mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
