@@ -236,7 +236,7 @@ bool JsSolver::preprocess(std::string&& player_js, std::string& preprocessed, st
     return ok;
 }
 
-bool JsSolver::load(std::string&& preprocessed, std::string& error) {
+bool JsSolver::load(std::string&& preprocessed, std::string& error, std::string* bytecode_out) {
     reset();
     rt_ = new_runtime();
     ctx_ = rt_ ? JS_NewContext(rt_) : nullptr;
@@ -245,23 +245,92 @@ bool JsSolver::load(std::string&& preprocessed, std::string& error) {
         error = "quickjs: out of memory";
         return false;
     }
-    // Same instantiation as EJS's core: the preprocessed player fills _result.n / _result.sig.
-    set_global_string(ctx_, "_pre", preprocessed);
-    std::string().swap(preprocessed);  // free the ~2.5 MB C++ copy before compiling bytecode
-    std::string kinds;
-    if (!eval_string(ctx_,
-                     "var _fns = {n: null, sig: null}; Function('_result', _pre)(_fns); delete globalThis._pre;"
-                     " (typeof _fns.n) + ',' + (typeof _fns.sig)",
-                     "ejs-load", &kinds, error)) {
+    // Compile once into a QuickJS script object so we can both execute it and cache its bytecode to disk.
+    static constexpr const char kPrefix[] = "var _fns = {n: null, sig: null}; (function(_result){\n";
+    static constexpr const char kSuffix[] = "\n})(_fns); (typeof _fns.n) + ',' + (typeof _fns.sig);";
+    std::string src;
+    src.reserve(sizeof(kPrefix) + preprocessed.size() + sizeof(kSuffix));
+    src.append(kPrefix, sizeof(kPrefix) - 1);
+    src.append(preprocessed);
+    std::string().swap(preprocessed);  // free the caller's ~2.5 MB buffer immediately
+    src.append(kSuffix, sizeof(kSuffix) - 1);
+
+    JSValue compiled = JS_Eval(ctx_, src.c_str(), src.size(), "ejs-load", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+    std::string().swap(src);
+    if (JS_IsException(compiled)) {
+        error = "ejs-load: " + exception_text(ctx_);
         reset();
         return false;
     }
+    if (bytecode_out) {
+        size_t bc_len = 0;
+        if (uint8_t* bc = JS_WriteObject(ctx_, &bc_len, compiled, JS_WRITE_OBJ_BYTECODE)) {
+            bytecode_out->assign(reinterpret_cast<const char*>(bc), bc_len);
+            js_free(ctx_, bc);
+        }
+    }
+    JSValue v = JS_EvalFunction(ctx_, compiled);  // consumes `compiled`
+    if (JS_IsException(v)) {
+        error = "ejs-load: " + exception_text(ctx_);
+        reset();
+        return false;
+    }
+    std::string kinds;
+    if (const char* s = JS_ToCString(ctx_, v)) {
+        kinds = s;
+        JS_FreeCString(ctx_, s);
+    }
+    JS_FreeValue(ctx_, v);
     if (kinds.compare(0, 8, "function") != 0) {
         error = "ejs-load: no n function (" + kinds + ")";
         reset();
         return false;
     }
     // Collect temporary bootstrap IIFE / Function cyclic garbage immediately (~5-15 MiB).
+    JS_RunGC(rt_);
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+    return true;
+}
+
+bool JsSolver::load_bytecode(const std::string& bytecode, std::string& error) {
+    reset();
+    if (bytecode.empty()) {
+        error = "ejs-bc: empty bytecode";
+        return false;
+    }
+    rt_ = new_runtime();
+    ctx_ = rt_ ? JS_NewContext(rt_) : nullptr;
+    if (!ctx_) {
+        reset();
+        error = "quickjs: out of memory";
+        return false;
+    }
+    JSValue compiled = JS_ReadObject(ctx_, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(),
+                                     JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(compiled)) {
+        error = "ejs-bc: " + exception_text(ctx_);
+        reset();
+        return false;
+    }
+    JSValue v = JS_EvalFunction(ctx_, compiled);  // consumes `compiled`
+    if (JS_IsException(v)) {
+        error = "ejs-bc: " + exception_text(ctx_);
+        reset();
+        return false;
+    }
+    std::string kinds;
+    if (const char* s = JS_ToCString(ctx_, v)) {
+        kinds = s;
+        JS_FreeCString(ctx_, s);
+    }
+    JS_FreeValue(ctx_, v);
+    if (kinds.compare(0, 8, "function") != 0) {
+        error = "ejs-bc: no n function (" + kinds + ")";
+        reset();
+        return false;
+    }
     JS_RunGC(rt_);
 #if defined(__GLIBC__)
     malloc_trim(0);
@@ -326,41 +395,60 @@ bool Decipher::ensure(std::string& error) {
     }
     auto t0 = Clock::now();
     std::string base = cache_dir_.empty() ? "" : cache_dir_ + "/player-" + id;
-    std::string preprocessed = base.empty() ? "" : read_file(base + ".js");
+    const std::string bc_ext = "-qjs0180.bc";
     int sts = base.empty() ? 0 : atoi(read_file(base + ".sts").c_str());
-    if (preprocessed.empty() || sts == 0) {
-        net::Request req;
-        req.url = url;
-        req.headers = {{"User-Agent", kTvUserAgent}};
-        net::Response js = net::fetch(req);
-        if (!js.ok()) {
-            error = "player js: " + (js.error.empty() ? "http " + std::to_string(js.status) : js.error);
-            return false;
-        }
-        sts = parse_sts(js.body);
-        OLOG("decipher: player %s (%zu bytes, sts %d), preprocessing...", id.c_str(), js.body.size(), sts);
-        if (!JsSolver::preprocess(std::move(js.body), preprocessed, error)) return false;
-        if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts)))) {
-            OLOG("decipher: could not cache %s", base.c_str());
-        } else if (!cache_dir_.empty()) {
-            // Prune older player-<id>.js/.sts files so cache storage never grows unbounded across YouTube rotations.
-            const std::string keep_js = "player-" + id + ".js";
-            const std::string keep_sts = "player-" + id + ".sts";
-            if (DIR* dir = opendir(cache_dir_.c_str())) {
-                while (dirent* ent = readdir(dir)) {
-                    std::string name(ent->d_name);
-                    if (name.rfind("player-", 0) == 0 && name != keep_js && name != keep_sts) {
-                        std::remove((cache_dir_ + "/" + name).c_str());
-                    }
-                }
-                closedir(dir);
-            }
+    auto solver = std::make_unique<JsSolver>();
+    bool loaded_bc = false;
+    if (!base.empty() && sts != 0) {
+        std::string bc = read_file(base + bc_ext);
+        if (!bc.empty()) {
+            std::string bc_err;
+            loaded_bc = solver->load_bytecode(bc, bc_err);
+            std::string().swap(bc);
+            if (!loaded_bc) OLOG("decipher: cached bytecode rejected (%s), recompiling", bc_err.c_str());
         }
     }
-    auto solver = std::make_unique<JsSolver>();
-    if (!solver->load(std::move(preprocessed), error)) return false;
-    OLOG("decipher: player %s ready in %lld ms", id.c_str(),
-         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()));
+    if (!loaded_bc) {
+        std::string preprocessed = base.empty() ? "" : read_file(base + ".js");
+        if (preprocessed.empty() || sts == 0) {
+            net::Request req;
+            req.url = url;
+            req.headers = {{"User-Agent", kTvUserAgent}};
+            net::Response js = net::fetch(req);
+            if (!js.ok()) {
+                error = "player js: " + (js.error.empty() ? "http " + std::to_string(js.status) : js.error);
+                return false;
+            }
+            sts = parse_sts(js.body);
+            OLOG("decipher: player %s (%zu bytes, sts %d), preprocessing...", id.c_str(), js.body.size(), sts);
+            if (!JsSolver::preprocess(std::move(js.body), preprocessed, error)) return false;
+            if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts)))) {
+                OLOG("decipher: could not cache %s", base.c_str());
+            } else if (!cache_dir_.empty()) {
+                // Prune older player-<id>.* files so cache storage never grows unbounded across YouTube rotations.
+                const std::string keep_js = "player-" + id + ".js";
+                const std::string keep_sts = "player-" + id + ".sts";
+                const std::string keep_bc = "player-" + id + bc_ext;
+                if (DIR* dir = opendir(cache_dir_.c_str())) {
+                    while (dirent* ent = readdir(dir)) {
+                        std::string name(ent->d_name);
+                        if (name.rfind("player-", 0) == 0 && name != keep_js && name != keep_sts && name != keep_bc) {
+                            std::remove((cache_dir_ + "/" + name).c_str());
+                        }
+                    }
+                    closedir(dir);
+                }
+            }
+        }
+        std::string bytecode;
+        if (!solver->load(std::move(preprocessed), error, base.empty() ? nullptr : &bytecode)) return false;
+        if (!base.empty() && !bytecode.empty()) {
+            write_file(base + bc_ext, bytecode);
+        }
+    }
+    OLOG("decipher: player %s ready in %lld ms%s", id.c_str(),
+         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()),
+         loaded_bc ? " (bytecode)" : "");
     solver_ = std::move(solver);
     player_id_ = id;
     sts_ = sts;

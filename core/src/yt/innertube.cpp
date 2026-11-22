@@ -1,6 +1,7 @@
 #include "yt/innertube.h"
 
 #include <nlohmann/json.hpp>
+#include <yyjson.h>
 
 #include <algorithm>
 #include <cctype>
@@ -56,143 +57,102 @@ net::Headers client_headers(const ClientDef& d, const std::string& visitor) {
     return h;
 }
 
-const json& child_obj(const json& j, const char* key) {
-    static const json kEmpty = json::object();
-    if (!j.is_object()) return kEmpty;
-    auto it = j.find(key);
-    return (it != j.end() && it->is_object()) ? *it : kEmpty;
-}
-
-const json& child_arr(const json& j, const char* key) {
-    static const json kEmpty = json::array();
-    if (!j.is_object()) return kEmpty;
-    auto it = j.find(key);
-    return (it != j.end() && it->is_array()) ? *it : kEmpty;
-}
-
-bool is_skipped_innertube_key(std::string_view k) {
-    return k == "responseContext" || k == "trackingParams" || k == "clickTrackingParams" ||
-           k == "adPlacements" || k == "adSlots" || k == "playerAds" || k == "adSlotRenderer" ||
-           k == "storyboards" || k == "microformat" || k == "loggingDirectives";
-}
-
-// SAX-to-DOM builder that skips unused telemetry/ad subtrees with zero allocations.
-struct FilteringDomSax {
-    json root;
-    std::vector<json*> stack;
-    std::string pending_key;
-    bool skip_next_value = false;
-    int skip_depth = 0;
-    bool failed = false;
-
-    json* attach(json val) {
-        if (stack.empty()) {
-            root = std::move(val);
-            return &root;
+// RAII wrapper for a single-arena yyjson document (4-8x smaller and 5-10x faster than nlohmann::json DOM).
+struct YDoc {
+    yyjson_doc* doc = nullptr;
+    YDoc() = default;
+    explicit YDoc(yyjson_doc* d) : doc(d) {}
+    ~YDoc() { reset(); }
+    YDoc(YDoc&& o) noexcept : doc(o.doc) { o.doc = nullptr; }
+    YDoc& operator=(YDoc&& o) noexcept {
+        if (this != &o) {
+            reset();
+            doc = o.doc;
+            o.doc = nullptr;
         }
-        json* parent = stack.back();
-        if (parent->is_array()) {
-            parent->push_back(std::move(val));
-            return &parent->back();
-        }
-        json& slot = (*parent)[pending_key];
-        pending_key.clear();
-        slot = std::move(val);
-        return &slot;
+        return *this;
     }
-
-    bool consume_scalar(json val) {
-        if (skip_depth > 0) return true;
-        if (skip_next_value) {
-            skip_next_value = false;
-            return true;
+    YDoc(const YDoc&) = delete;
+    YDoc& operator=(const YDoc&) = delete;
+    yyjson_val* root() const { return doc ? yyjson_doc_get_root(doc) : nullptr; }
+    explicit operator bool() const { return doc != nullptr; }
+    void reset() {
+        if (doc) {
+            yyjson_doc_free(doc);
+            doc = nullptr;
         }
-        attach(std::move(val));
-        return true;
-    }
-
-    bool null() { return consume_scalar(nullptr); }
-    bool boolean(bool v) { return consume_scalar(v); }
-    bool number_integer(json::number_integer_t v) { return consume_scalar(v); }
-    bool number_unsigned(json::number_unsigned_t v) { return consume_scalar(v); }
-    bool number_float(json::number_float_t v, const std::string&) { return consume_scalar(v); }
-    bool string(std::string& v) { return consume_scalar(std::move(v)); }
-    bool binary(json::binary_t& v) { return consume_scalar(std::move(v)); }
-
-    bool start_object(std::size_t) {
-        if (skip_depth > 0) {
-            ++skip_depth;
-            return true;
-        }
-        if (skip_next_value) {
-            skip_next_value = false;
-            skip_depth = 1;
-            return true;
-        }
-        stack.push_back(attach(json::object()));
-        return true;
-    }
-    bool end_object() {
-        if (skip_depth > 0) {
-            --skip_depth;
-            return true;
-        }
-        if (!stack.empty()) stack.pop_back();
-        return true;
-    }
-    bool start_array(std::size_t) {
-        if (skip_depth > 0) {
-            ++skip_depth;
-            return true;
-        }
-        if (skip_next_value) {
-            skip_next_value = false;
-            skip_depth = 1;
-            return true;
-        }
-        stack.push_back(attach(json::array()));
-        return true;
-    }
-    bool end_array() {
-        if (skip_depth > 0) {
-            --skip_depth;
-            return true;
-        }
-        if (!stack.empty()) stack.pop_back();
-        return true;
-    }
-    bool key(std::string& k) {
-        if (skip_depth > 0) return true;
-        if (is_skipped_innertube_key(k)) {
-            skip_next_value = true;
-            return true;
-        }
-        pending_key = std::move(k);
-        return true;
-    }
-    bool parse_error(std::size_t, const std::string&, const json::exception&) {
-        failed = true;
-        return false;
     }
 };
 
-json parse_innertube_json(std::string& body) {
-    FilteringDomSax sax;
-    bool ok = json::sax_parse(body, &sax);
-    std::string().swap(body);  // free raw HTTP body immediately after parsing
-    if (!ok || sax.failed) return json(json::value_t::discarded);
-    return std::move(sax.root);
+YDoc yparse(std::string& body) {
+    yyjson_doc* doc = body.empty() ? nullptr : yyjson_read(body.data(), body.size(), 0);
+    std::string().swap(body);  // free raw HTTP body immediately after single-arena parse
+    return YDoc(doc);
 }
 
-std::string text_of(const json& j) {
-    if (!j.is_object()) return "";
-    auto st = j.find("simpleText");
-    if (st != j.end() && st->is_string()) return st->get<std::string>();
+yyjson_val* yobj(yyjson_val* j, const char* key) {
+    yyjson_val* v = yyjson_is_obj(j) ? yyjson_obj_get(j, key) : nullptr;
+    return yyjson_is_obj(v) ? v : nullptr;
+}
+
+yyjson_val* yarr(yyjson_val* j, const char* key) {
+    yyjson_val* v = yyjson_is_obj(j) ? yyjson_obj_get(j, key) : nullptr;
+    return yyjson_is_arr(v) ? v : nullptr;
+}
+
+std::string_view ysv(yyjson_val* v) {
+    if (!yyjson_is_str(v)) return {};
+    const char* s = yyjson_get_str(v);
+    return s ? std::string_view(s, yyjson_get_len(v)) : std::string_view{};
+}
+
+std::string ystr(yyjson_val* j, const char* key, const char* def = "") {
+    yyjson_val* v = yyjson_is_obj(j) ? yyjson_obj_get(j, key) : nullptr;
+    if (yyjson_is_str(v)) {
+        const char* s = yyjson_get_str(v);
+        return s ? std::string(s, yyjson_get_len(v)) : std::string(def);
+    }
+    return def;
+}
+
+bool ybool(yyjson_val* j, const char* key, bool def = false) {
+    yyjson_val* v = yyjson_is_obj(j) ? yyjson_obj_get(j, key) : nullptr;
+    return yyjson_is_bool(v) ? yyjson_get_bool(v) : def;
+}
+
+int64_t yint(yyjson_val* j, const char* key) {
+    yyjson_val* v = yyjson_is_obj(j) ? yyjson_obj_get(j, key) : nullptr;
+    if (!v) return 0;
+    if (yyjson_is_sint(v)) return yyjson_get_sint(v);
+    if (yyjson_is_uint(v)) return static_cast<int64_t>(yyjson_get_uint(v));
+    if (yyjson_is_real(v)) return static_cast<int64_t>(yyjson_get_real(v));
+    if (yyjson_is_str(v)) {
+        std::string_view sv = ysv(v);
+        int64_t n = 0;
+        if (std::from_chars(sv.data(), sv.data() + sv.size(), n).ec == std::errc{}) return n;
+    }
+    return 0;
+}
+
+std::string ytext(yyjson_val* j) {
+    if (!yyjson_is_obj(j)) return "";
+    if (yyjson_val* st = yyjson_obj_get(j, "simpleText"); yyjson_is_str(st)) {
+        std::string_view sv = ysv(st);
+        return std::string(sv.data(), sv.size());
+    }
     std::string out;
-    for (const json& run : child_arr(j, "runs")) out += run.value("text", "");
+    if (yyjson_val* runs = yarr(j, "runs")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(runs);
+        while (yyjson_val* run = yyjson_arr_iter_next(&it)) {
+            std::string_view sv = ysv(yyjson_is_obj(run) ? yyjson_obj_get(run, "text") : nullptr);
+            out.append(sv.data(), sv.size());
+        }
+    }
     if (out.empty()) {
-        auto ct = j.find("content");
-        if (ct != j.end() && ct->is_string()) out = ct->get<std::string>();  // view-model texts
+        if (yyjson_val* ct = yyjson_obj_get(j, "content"); yyjson_is_str(ct)) {
+            std::string_view sv = ysv(ct);
+            out.assign(sv.data(), sv.size());  // view-model texts
+        }
     }
     return out;
 }
@@ -205,15 +165,19 @@ std::string trimmed(std::string s) {
 }
 
 // First value of `key` anywhere under j (depth-first), or nullptr.
-const json* find_key(const json& j, const char* key) {
-    if (j.is_object()) {
-        auto it = j.find(key);
-        if (it != j.end()) return &*it;
-        for (const json& v : j)
-            if (const json* f = find_key(v, key)) return f;
-    } else if (j.is_array()) {
-        for (const json& v : j)
-            if (const json* f = find_key(v, key)) return f;
+yyjson_val* yfind(yyjson_val* j, const char* key) {
+    if (!j) return nullptr;
+    if (yyjson_is_obj(j)) {
+        if (yyjson_val* hit = yyjson_obj_get(j, key)) return hit;
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            if (yyjson_val* f = yfind(yyjson_obj_iter_get_val(k), key)) return f;
+        }
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* v = yyjson_arr_iter_next(&it)) {
+            if (yyjson_val* f = yfind(v, key)) return f;
+        }
     }
     return nullptr;
 }
@@ -227,219 +191,261 @@ bool already_listed(const Feed& out, const FeedItem& item) {
 
 std::string playlist_kind(const std::string& playlist_id) { return playlist_id.compare(0, 2, "RD") == 0 ? "mix" : "playlist"; }
 
-std::string last_thumbnail(const json& thumbs) {
-    const json& list = child_arr(thumbs, "thumbnails");
-    return list.empty() ? "" : list.back().value("url", "");
+std::string ythumb(yyjson_val* thumbs) {
+    yyjson_val* list = yarr(thumbs, "thumbnails");
+    yyjson_val* last = list ? yyjson_arr_get_last(list) : nullptr;
+    return ystr(last, "url");
 }
 
-bool json_contains_str(const json& j, const char* needle) {
-    if (j.is_string()) return j.get_ref<const std::string&>().find(needle) != std::string::npos;
-    if (j.is_object()) {
-        for (auto it = j.begin(); it != j.end(); ++it)
-            if (json_contains_str(it.value(), needle)) return true;
-    } else if (j.is_array()) {
-        for (const json& v : j)
-            if (json_contains_str(v, needle)) return true;
+bool ycontains_str(yyjson_val* j, const char* needle) {
+    if (!j) return false;
+    if (yyjson_is_str(j)) return ysv(j).find(needle) != std::string_view::npos;
+    if (yyjson_is_obj(j)) {
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it))
+            if (ycontains_str(yyjson_obj_iter_get_val(k), needle)) return true;
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* v = yyjson_arr_iter_next(&it))
+            if (ycontains_str(v, needle)) return true;
     }
     return false;
 }
 
 // The account's progress on a video: resume overlay (videoRenderer / tile) or progress bar (lockup).
-int watched_percent(const json& j) {
+int ywatched(yyjson_val* j) {
     for (const char* key : {"percentDurationWatched", "startPercent"}) {
-        if (const json* v = find_key(j, key)) {
+        if (yyjson_val* v = yfind(j, key)) {
             int pct = 0;
-            if (v->is_number()) pct = static_cast<int>(v->get<double>());
-            else if (v->is_string()) pct = atoi(v->get_ref<const std::string&>().c_str());
+            if (yyjson_is_num(v)) pct = static_cast<int>(yyjson_get_num(v));
+            else if (yyjson_is_str(v)) pct = atoi(yyjson_get_str(v));
             return std::max(0, std::min(100, pct));
         }
     }
     return 0;
 }
 
-void parse_video_renderer(const json& v, Feed& out) {
+void parse_video_renderer(yyjson_val* v, Feed& out) {
+    if (!yyjson_is_obj(v)) return;
     FeedItem item;
-    item.video_id = v.value("videoId", "");
+    item.video_id = ystr(v, "videoId");
     if (item.video_id.empty()) return;
-    item.title = text_of(child_obj(v, "title"));
-    const json& owner = child_obj(v, "ownerText");
-    item.channel = text_of(!owner.empty() ? owner : child_obj(v, "longBylineText"));
-    item.duration = text_of(child_obj(v, "lengthText"));
-    const json& short_views = child_obj(v, "shortViewCountText");
-    item.views = text_of(!short_views.empty() ? short_views : child_obj(v, "viewCountText"));
-    item.published = text_of(child_obj(v, "publishedTimeText"));
+    item.title = ytext(yobj(v, "title"));
+    yyjson_val* owner = yobj(v, "ownerText");
+    item.channel = ytext(owner ? owner : yobj(v, "longBylineText"));
+    item.duration = ytext(yobj(v, "lengthText"));
+    yyjson_val* short_views = yobj(v, "shortViewCountText");
+    item.views = ytext(short_views ? short_views : yobj(v, "viewCountText"));
+    item.published = ytext(yobj(v, "publishedTimeText"));
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    for (const json& badge : child_arr(v, "badges"))
-        if (json_contains_str(badge, "LIVE")) item.is_live = true;
+    if (yyjson_val* badges = yarr(v, "badges")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(badges);
+        while (yyjson_val* badge = yyjson_arr_iter_next(&it))
+            if (ycontains_str(badge, "LIVE")) item.is_live = true;
+    }
     // Broadcasts have no length and count viewers ("18 k spectateurs" / "1.2K watching") instead of views.
     if (item.duration.empty() && (item.views.find("spectateur") != std::string::npos ||
                                   item.views.find("watching") != std::string::npos))
         item.is_live = true;
-    item.watched_percent = watched_percent(child_arr(v, "thumbnailOverlays"));
+    item.watched_percent = ywatched(yarr(v, "thumbnailOverlays"));
     out.items.push_back(std::move(item));
 }
 
 // A row of a playlist page (WEB browse VL<id>): no channel avatar, "views • age" in videoInfo.
-void parse_playlist_video(const json& v, Feed& out) {
-    if (!v.value("isPlayable", true)) return;  // deleted / private entries
+void parse_playlist_video(yyjson_val* v, Feed& out) {
+    if (!yyjson_is_obj(v) || !ybool(v, "isPlayable", true)) return;  // deleted / private entries
     FeedItem item;
-    item.video_id = v.value("videoId", "");
+    item.video_id = ystr(v, "videoId");
     if (item.video_id.empty()) return;
-    item.title = text_of(child_obj(v, "title"));
-    item.channel = text_of(child_obj(v, "shortBylineText"));
-    item.duration = text_of(child_obj(v, "lengthText"));
-    const json& runs = child_arr(child_obj(v, "videoInfo"), "runs");
-    if (!runs.empty()) item.views = runs[0].value("text", "");
-    if (runs.size() >= 3) item.published = runs[2].value("text", "");
+    item.title = ytext(yobj(v, "title"));
+    item.channel = ytext(yobj(v, "shortBylineText"));
+    item.duration = ytext(yobj(v, "lengthText"));
+    if (yyjson_val* runs = yarr(yobj(v, "videoInfo"), "runs")) {
+        if (yyjson_val* r0 = yyjson_arr_get(runs, 0)) item.views = ystr(r0, "text");
+        if (yyjson_val* r2 = yyjson_arr_get(runs, 2)) item.published = ystr(r2, "text");
+    }
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    item.watched_percent = watched_percent(child_arr(v, "thumbnailOverlays"));
+    item.watched_percent = ywatched(yarr(v, "thumbnailOverlays"));
     out.items.push_back(std::move(item));
 }
 
 // TV client layout (as in SmartTube's TileItem / ytps5): id in onSelectCommand.watchEndpoint, title in
 // metadata.tileMetadataRenderer, thumbnail and duration in header.tileHeaderRenderer.
-void parse_tile(const json& t, Feed& out) {
-    const json& cmd = child_obj(t, "onSelectCommand");
-    if (!cmd.contains("watchEndpoint")) return;  // Shorts (reelWatchEndpoint), channels
+void parse_tile(yyjson_val* t, Feed& out) {
+    if (!yyjson_is_obj(t)) return;
+    yyjson_val* watch = yobj(yobj(t, "onSelectCommand"), "watchEndpoint");
+    if (!watch) return;  // Shorts (reelWatchEndpoint), channels
     FeedItem item;
-    item.video_id = cmd["watchEndpoint"].value("videoId", "");
+    item.video_id = ystr(watch, "videoId");
     if (item.video_id.empty()) return;
-    if (t.value("contentType", "") == "TILE_CONTENT_TYPE_PLAYLIST") {
-        item.playlist_id = cmd["watchEndpoint"].value("playlistId", "");
+    if (ysv(yyjson_obj_get(t, "contentType")) == "TILE_CONTENT_TYPE_PLAYLIST") {
+        item.playlist_id = ystr(watch, "playlistId");
         if (item.playlist_id.empty()) return;
         item.kind = playlist_kind(item.playlist_id);
     }
     if (already_listed(out, item)) return;
-    const json& meta = child_obj(child_obj(t, "metadata"), "tileMetadataRenderer");
-    const json& header = child_obj(child_obj(t, "header"), "tileHeaderRenderer");
-    item.title = text_of(child_obj(meta, "title"));
+    yyjson_val* meta = yobj(yobj(t, "metadata"), "tileMetadataRenderer");
+    yyjson_val* header = yobj(yobj(t, "header"), "tileHeaderRenderer");
+    item.title = ytext(yobj(meta, "title"));
     if (item.title.empty()) return;
     // lines[0]: channel • views • age (sometimes split over two lines); "•" separators are skipped.
     std::vector<std::string> parts;
-    for (const json& line : child_arr(meta, "lines"))
-        for (const json& li : child_arr(child_obj(line, "lineRenderer"), "items")) {
-            std::string text = text_of(child_obj(child_obj(li, "lineItemRenderer"), "text"));
-            if (!text.empty() && text != "\xE2\x80\xA2" && text != " \xE2\x80\xA2 ") parts.push_back(std::move(text));
+    if (yyjson_val* lines = yarr(meta, "lines")) {
+        yyjson_arr_iter lit = yyjson_arr_iter_with(lines);
+        while (yyjson_val* line = yyjson_arr_iter_next(&lit)) {
+            if (yyjson_val* items = yarr(yobj(line, "lineRenderer"), "items")) {
+                yyjson_arr_iter iit = yyjson_arr_iter_with(items);
+                while (yyjson_val* li = yyjson_arr_iter_next(&iit)) {
+                    std::string text = ytext(yobj(yobj(li, "lineItemRenderer"), "text"));
+                    if (!text.empty() && text != "\xE2\x80\xA2" && text != " \xE2\x80\xA2 ") parts.push_back(std::move(text));
+                }
+            }
         }
+    }
     if (!parts.empty()) item.channel = std::move(parts[0]);
     if (parts.size() > 1) item.views = std::move(parts[1]);
     if (parts.size() > 2) item.published = std::move(parts[2]);
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    const json& overlays = child_arr(header, "thumbnailOverlays");
-    for (const json& o : overlays) {
-        const json& ts = child_obj(o, "thumbnailOverlayTimeStatusRenderer");
-        if (ts.empty()) continue;
-        item.duration = text_of(child_obj(ts, "text"));
-        if (ts.value("style", "") == "LIVE") item.is_live = true;
+    yyjson_val* overlays = yarr(header, "thumbnailOverlays");
+    if (overlays) {
+        yyjson_arr_iter oit = yyjson_arr_iter_with(overlays);
+        while (yyjson_val* o = yyjson_arr_iter_next(&oit)) {
+            yyjson_val* ts = yobj(o, "thumbnailOverlayTimeStatusRenderer");
+            if (!ts) continue;
+            item.duration = ytext(yobj(ts, "text"));
+            if (ysv(yyjson_obj_get(ts, "style")) == "LIVE") item.is_live = true;
+        }
     }
-    item.watched_percent = watched_percent(overlays);
+    item.watched_percent = ywatched(overlays);
     out.items.push_back(std::move(item));
 }
 
 // 2025+ layout: lockupViewModel (contentId, lockupMetadataViewModel; duration in a thumbnail badge).
-void parse_lockup(const json& l, Feed& out) {
-    std::string type = l.value("contentType", "");
+void parse_lockup(yyjson_val* l, Feed& out) {
+    if (!yyjson_is_obj(l)) return;
+    std::string_view type = ysv(yyjson_obj_get(l, "contentType"));
     FeedItem item;
     if (type == "LOCKUP_CONTENT_TYPE_PLAYLIST") {
         // Playlist / mix: contentId is the list; play it from its first video (the card's watchEndpoint).
-        item.playlist_id = l.value("contentId", "");
-        const json* watch = find_key(l, "watchEndpoint");
-        if (item.playlist_id.empty() || !watch || !watch->is_object()) return;
-        item.video_id = watch->value("videoId", "");
+        item.playlist_id = ystr(l, "contentId");
+        yyjson_val* watch = yfind(l, "watchEndpoint");
+        if (item.playlist_id.empty() || !yyjson_is_obj(watch)) return;
+        item.video_id = ystr(watch, "videoId");
         item.kind = playlist_kind(item.playlist_id);
     } else if (type == "LOCKUP_CONTENT_TYPE_VIDEO") {
-        item.video_id = l.value("contentId", "");
+        item.video_id = ystr(l, "contentId");
     } else {
         return;
     }
     if (item.video_id.size() != 11) return;
     if (already_listed(out, item)) return;
-    const json& meta = child_obj(child_obj(l, "metadata"), "lockupMetadataViewModel");
-    item.title = text_of(child_obj(meta, "title"));
+    yyjson_val* meta = yobj(yobj(l, "metadata"), "lockupMetadataViewModel");
+    item.title = ytext(yobj(meta, "title"));
     if (item.title.empty()) return;
     // metadataRows: [channel], [views, age]
     std::vector<std::string> parts;
-    const json& rows = child_arr(child_obj(child_obj(meta, "metadata"), "contentMetadataViewModel"), "metadataRows");
-    for (const json& row : rows)
-        for (const json& part : child_arr(row, "metadataParts")) {
-            std::string text = text_of(child_obj(part, "text"));
-            if (!text.empty()) parts.push_back(std::move(text));
+    if (yyjson_val* rows = yarr(yobj(yobj(meta, "metadata"), "contentMetadataViewModel"), "metadataRows")) {
+        yyjson_arr_iter rit = yyjson_arr_iter_with(rows);
+        while (yyjson_val* row = yyjson_arr_iter_next(&rit)) {
+            if (yyjson_val* mparts = yarr(row, "metadataParts")) {
+                yyjson_arr_iter pit = yyjson_arr_iter_with(mparts);
+                while (yyjson_val* part = yyjson_arr_iter_next(&pit)) {
+                    std::string text = ytext(yobj(part, "text"));
+                    if (!text.empty()) parts.push_back(std::move(text));
+                }
+            }
         }
+    }
     if (!parts.empty()) item.channel = std::move(parts[0]);
     if (parts.size() > 1) item.views = std::move(parts[1]);
     if (parts.size() > 2) item.published = std::move(parts[2]);
     item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
-    const json& content_image = child_obj(l, "contentImage");
-    if (const json* badge = find_key(content_image, "thumbnailBadgeViewModel")) {
-        if (const json* txt = find_key(*badge, "text"); txt && txt->is_string()) {
-            item.duration = txt->get<std::string>();
+    yyjson_val* content_image = yobj(l, "contentImage");
+    if (yyjson_val* badge = yfind(content_image, "thumbnailBadgeViewModel")) {
+        if (yyjson_val* txt = yfind(badge, "text"); yyjson_is_str(txt)) {
+            std::string_view sv = ysv(txt);
+            item.duration.assign(sv.data(), sv.size());
             if (item.duration == "LIVE" || item.duration == "EN DIRECT") item.is_live = true;
         }
     }
     if (item.kind == "mix") item.duration = "MIX";  // its badge is an icon
     if (item.views == "Playlist") item.views.clear();  // the type label, already shown by the badge
-    item.watched_percent = watched_percent(content_image);
+    item.watched_percent = ywatched(content_image);
     out.items.push_back(std::move(item));
+}
+
+bool is_ignored_branch(std::string_view k) {
+    return k == "responseContext" || k == "trackingParams" || k == "clickTrackingParams" ||
+           k == "adPlacements" || k == "adSlots" || k == "playerAds" || k == "adSlotRenderer" ||
+           k == "storyboards" || k == "microformat" || k == "loggingDirectives";
 }
 
 // Walks the whole response: YouTube moves renderers around between layouts, so search by key.
 // highlights: where titled TV shelves go (subscriptions), instead of the main list.
-void collect(const json& j, Feed& out, Feed* highlights = nullptr) {
-    if (j.is_object()) {
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            if (it.key() == "shelfRenderer" && it.value().is_object()) {
-                const json& shelf = it.value();
-                if (shelf.value("tvhtml5ShelfRendererType", "") == "TVHTML5_SHELF_RENDERER_TYPE_SHORTS") continue;
-                if (highlights && shelf.contains("headerRenderer")) collect(shelf, *highlights);
-                else collect(shelf, out, highlights);
-            } else if (it.key() == "videoRenderer" || it.key() == "compactVideoRenderer") {
-                parse_video_renderer(it.value(), out);
-            } else if (it.key() == "lockupViewModel") {
-                parse_lockup(it.value(), out);
-            } else if (it.key() == "playlistVideoRenderer") {
-                parse_playlist_video(it.value(), out);
-            } else if (it.key() == "tileRenderer") {
-                parse_tile(it.value(), out);
-            } else if (it.key() == "nextContinuationData" && out.continuation.empty()) {
-                out.continuation = it.value().value("continuation", "");
-            } else if (it.key() == "reelShelfRenderer" || it.key() == "shortsLockupViewModel") {
-                continue;  // Shorts: not playable in a TV layout
-            } else if (it.key() == "continuationCommand" && out.continuation.empty() && it.value().contains("token")) {
-                out.continuation = it.value().value("token", "");
+void collect(yyjson_val* j, Feed& out, Feed* highlights = nullptr) {
+    if (!j) return;
+    if (yyjson_is_obj(j)) {
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            std::string_view key = ysv(k);
+            yyjson_val* val = yyjson_obj_iter_get_val(k);
+            if (is_ignored_branch(key) || key == "reelShelfRenderer" || key == "shortsLockupViewModel") continue;
+            if (key == "shelfRenderer" && yyjson_is_obj(val)) {
+                if (ysv(yyjson_obj_get(val, "tvhtml5ShelfRendererType")) == "TVHTML5_SHELF_RENDERER_TYPE_SHORTS") continue;
+                if (highlights && yyjson_obj_get(val, "headerRenderer")) collect(val, *highlights);
+                else collect(val, out, highlights);
+            } else if (key == "videoRenderer" || key == "compactVideoRenderer") {
+                parse_video_renderer(val, out);
+            } else if (key == "lockupViewModel") {
+                parse_lockup(val, out);
+            } else if (key == "playlistVideoRenderer") {
+                parse_playlist_video(val, out);
+            } else if (key == "tileRenderer") {
+                parse_tile(val, out);
+            } else if (key == "nextContinuationData" && out.continuation.empty()) {
+                out.continuation = ystr(val, "continuation");
+            } else if (key == "continuationCommand" && out.continuation.empty() && yyjson_is_obj(val) && yyjson_obj_get(val, "token")) {
+                out.continuation = ystr(val, "token");
             } else {  // continuationItemViewModel: the token sits in a nested continuationCommand
-                collect(it.value(), out, highlights);
+                collect(val, out, highlights);
             }
         }
-    } else if (j.is_array()) {
-        for (const json& e : j) collect(e, out, highlights);
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* e = yyjson_arr_iter_next(&it)) collect(e, out, highlights);
     }
 }
 
 // The TV home: one Shelf per titled shelfRenderer (Shorts and ads left out); the page continuation is the one
 // outside the shelves (theirs only extend their own row).
-void collect_shelves(const json& j, Feed& out) {
-    if (j.is_object()) {
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            if (it.key() == "shelfRenderer" && it.value().is_object()) {
-                const json& s = it.value();
-                if (s.value("tvhtml5ShelfRendererType", "") == "TVHTML5_SHELF_RENDERER_TYPE_SHORTS") continue;
+void collect_shelves(yyjson_val* j, Feed& out) {
+    if (!j) return;
+    if (yyjson_is_obj(j)) {
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            std::string_view key = ysv(k);
+            yyjson_val* val = yyjson_obj_iter_get_val(k);
+            if (is_ignored_branch(key)) continue;
+            if (key == "shelfRenderer" && yyjson_is_obj(val)) {
+                if (ysv(yyjson_obj_get(val, "tvhtml5ShelfRendererType")) == "TVHTML5_SHELF_RENDERER_TYPE_SHORTS") continue;
                 Shelf shelf;
-                if (s.contains("headerRenderer"))
-                    if (const json* title = find_key(s["headerRenderer"], "title")) shelf.title = text_of(*title);
+                if (yyjson_val* hdr = yyjson_obj_get(val, "headerRenderer"))
+                    if (yyjson_val* title = yfind(hdr, "title")) shelf.title = ytext(title);
                 Feed row;
-                collect(child_obj(s, "content"), row);
+                collect(yobj(val, "content"), row);
                 if (row.items.empty()) continue;
                 shelf.items = std::move(row.items);
                 shelf.continuation = row.continuation;
                 out.shelves.push_back(std::move(shelf));
-            } else if (it.key() == "nextContinuationData" && out.continuation.empty()) {
-                out.continuation = it.value().value("continuation", "");
-            } else if (it.key() != "adSlotRenderer") {
-                collect_shelves(it.value(), out);
+            } else if (key == "nextContinuationData" && out.continuation.empty()) {
+                out.continuation = ystr(val, "continuation");
+            } else {
+                collect_shelves(val, out);
             }
         }
-    } else if (j.is_array()) {
-        for (const json& e : j) collect_shelves(e, out);
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* e = yyjson_arr_iter_next(&it)) collect_shelves(e, out);
     }
 }
 
@@ -452,38 +458,32 @@ void split_mime(const std::string& full, std::string& mime, std::string& codecs)
     codecs = (q1 != std::string::npos && q2 != std::string::npos) ? full.substr(q1 + 1, q2 - q1 - 1) : "";
 }
 
-int64_t to_int(const json& j, const char* key) {
-    auto it = j.find(key);
-    if (it == j.end()) return 0;
-    if (it->is_number()) return it->get<int64_t>();
-    if (it->is_string()) {
-        const std::string& s = it->get_ref<const std::string&>();
-        int64_t v = 0;
-        if (std::from_chars(s.data(), s.data() + s.size(), v).ec == std::errc{}) return v;
-    }
-    return 0;
-}
-
 // Subtitle tracks and the machine-translation targets (captions.playerCaptionsTracklistRenderer).
-void parse_captions(const json& captions, VideoInfo& out) {
+void parse_captions(yyjson_val* captions, VideoInfo& out) {
     out.captions.clear();
     out.translations.clear();
-    const json& list = child_obj(captions, "playerCaptionsTracklistRenderer");
-    for (const json& t : child_arr(list, "captionTracks")) {
-        CaptionTrack track;
-        track.url = t.value("baseUrl", "");
-        if (track.url.empty()) continue;
-        if (track.url[0] == '/') track.url = "https://www.youtube.com" + track.url;
-        track.lang = t.value("languageCode", "");
-        track.name = text_of(child_obj(t, "name"));
-        track.automatic = t.value("kind", "") == "asr";
-        track.translatable = t.value("isTranslatable", false);
-        if (track.name.empty()) track.name = track.lang;
-        out.captions.push_back(std::move(track));
+    yyjson_val* list = yobj(captions, "playerCaptionsTracklistRenderer");
+    if (yyjson_val* tracks = yarr(list, "captionTracks")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(tracks);
+        while (yyjson_val* t = yyjson_arr_iter_next(&it)) {
+            CaptionTrack track;
+            track.url = ystr(t, "baseUrl");
+            if (track.url.empty()) continue;
+            if (track.url[0] == '/') track.url = "https://www.youtube.com" + track.url;
+            track.lang = ystr(t, "languageCode");
+            track.name = ytext(yobj(t, "name"));
+            track.automatic = ysv(yyjson_is_obj(t) ? yyjson_obj_get(t, "kind") : nullptr) == "asr";
+            track.translatable = ybool(t, "isTranslatable");
+            if (track.name.empty()) track.name = track.lang;
+            out.captions.push_back(std::move(track));
+        }
     }
-    for (const json& l : child_arr(list, "translationLanguages")) {
-        std::string code = l.value("languageCode", "");
-        if (!code.empty()) out.translations.emplace_back(code, text_of(child_obj(l, "languageName")));
+    if (yyjson_val* langs = yarr(list, "translationLanguages")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(langs);
+        while (yyjson_val* l = yyjson_arr_iter_next(&it)) {
+            std::string code = ystr(l, "languageCode");
+            if (!code.empty()) out.translations.emplace_back(std::move(code), ytext(yobj(l, "languageName")));
+        }
     }
 }
 
@@ -528,17 +528,22 @@ std::string http_error(const char* what, const net::Response& res) {
 }
 
 // Every text of `key` objects under j (e.g. all "metadataParts" texts of a header).
-void texts_under(const json& j, const char* key, std::vector<std::string>& out) {
-    if (j.is_object()) {
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            if (it.key() == key && it.value().is_array()) {
-                for (const json& part : it.value()) out.push_back(text_of(child_obj(part, "text")));
+void texts_under(yyjson_val* j, const char* key, std::vector<std::string>& out) {
+    if (!j) return;
+    if (yyjson_is_obj(j)) {
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            yyjson_val* val = yyjson_obj_iter_get_val(k);
+            if (yyjson_equals_str(k, key) && yyjson_is_arr(val)) {
+                yyjson_arr_iter ait = yyjson_arr_iter_with(val);
+                while (yyjson_val* part = yyjson_arr_iter_next(&ait)) out.push_back(ytext(yobj(part, "text")));
             } else {
-                texts_under(it.value(), key, out);
+                texts_under(val, key, out);
             }
         }
-    } else if (j.is_array()) {
-        for (const json& e : j) texts_under(e, key, out);
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* e = yyjson_arr_iter_next(&it)) texts_under(e, key, out);
     }
 }
 
@@ -724,89 +729,94 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     }
 
     record_response(res.body);
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    yyjson_val* r = doc.root();
+    if (!yyjson_is_obj(r)) {
         error = "player: invalid json";
         return false;
     }
-    const json& ps = child_obj(r, "playabilityStatus");
-    std::string status = ps.value("status", "");
+    yyjson_val* ps = yobj(r, "playabilityStatus");
+    std::string status = ystr(ps, "status");
     if (status != "OK") {
-        error = "playability " + status + ": " + ps.value("reason", "");
-        refusal_ = {status, ps.value("reason", "")};
+        std::string reason = ystr(ps, "reason");
+        error = "playability " + status + ": " + reason;
+        refusal_ = {std::move(status), std::move(reason)};
         return false;
     }
-    const json& details = child_obj(r, "videoDetails");
+    yyjson_val* details = yobj(r, "videoDetails");
     out.id = video_id;
-    out.title = details.value("title", "");
-    out.author = details.value("author", "");
-    out.length_s = to_int(details, "lengthSeconds");
-    out.is_live = details.value("isLive", false);
-    out.description = details.value("shortDescription", "");
-    out.channel_id = details.value("channelId", "");
-    out.views = details.value("viewCount", "");
+    out.title = ystr(details, "title");
+    out.author = ystr(details, "author");
+    out.length_s = yint(details, "lengthSeconds");
+    out.is_live = ybool(details, "isLive");
+    out.description = ystr(details, "shortDescription");
+    out.channel_id = ystr(details, "channelId");
+    out.views = ystr(details, "viewCount");
     out.has_audio_loudness = false;
     out.audio_loudness_db = 0.0;
-    const json& ac = child_obj(child_obj(r, "playerConfig"), "audioConfig");
-    if (ac.contains("loudnessDb") && ac["loudnessDb"].is_number()) {
-        out.has_audio_loudness = true;
-        out.audio_loudness_db = ac["loudnessDb"].get<double>();
+    if (yyjson_val* ac = yobj(yobj(r, "playerConfig"), "audioConfig")) {
+        if (yyjson_val* ld = yyjson_obj_get(ac, "loudnessDb"); yyjson_is_num(ld)) {
+            out.has_audio_loudness = true;
+            out.audio_loudness_db = yyjson_get_num(ld);
+        }
     }
-    parse_captions(child_obj(r, "captions"), out);
+    parse_captions(yobj(r, "captions"), out);
     out.formats.clear();
     out.user_agent = def.user_agent;
     size_t failed = 0;
     size_t total_adaptive = 0;
     std::string first_err;
-    const json& sd = child_obj(r, "streamingData");
-    for (const json& f : child_arr(sd, "adaptiveFormats")) {
-        ++total_adaptive;
-        Format fmt;
-        if (decipher) {
-            std::string err;
-            std::string sc = f.value("signatureCipher", f.value("cipher", ""));
-            if (!shared_decipher().stream_url(f.value("url", ""), sc, fmt.url, err)) {
-                if (failed++ == 0) {
-                    first_err = err;
-                    OLOG("yt: decipher itag %lld: %s", static_cast<long long>(to_int(f, "itag")), err.c_str());
+    if (yyjson_val* af = yarr(yobj(r, "streamingData"), "adaptiveFormats")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(af);
+        while (yyjson_val* f = yyjson_arr_iter_next(&it)) {
+            if (!yyjson_is_obj(f)) continue;
+            ++total_adaptive;
+            Format fmt;
+            if (decipher) {
+                std::string err;
+                std::string sc = ystr(f, "signatureCipher");
+                if (sc.empty()) sc = ystr(f, "cipher");
+                if (!shared_decipher().stream_url(ystr(f, "url"), sc, fmt.url, err)) {
+                    if (failed++ == 0) {
+                        first_err = err;
+                        OLOG("yt: decipher itag %lld: %s", static_cast<long long>(yint(f, "itag")), err.c_str());
+                    }
+                    continue;
                 }
-                continue;
+            } else {
+                fmt.url = ystr(f, "url");
+                if (fmt.url.empty()) continue;  // ciphered formats: only through a deciphering client
             }
-        } else {
-            if (!f.contains("url")) continue;  // ciphered formats: only through a deciphering client
-            fmt.url = f.value("url", "");
-            if (fmt.url.empty()) continue;
-        }
-        fmt.itag = static_cast<int>(to_int(f, "itag"));
-        split_mime(f.value("mimeType", ""), fmt.mime, fmt.codecs);
-        fmt.width = static_cast<int>(to_int(f, "width"));
-        fmt.height = static_cast<int>(to_int(f, "height"));
-        fmt.fps = static_cast<int>(to_int(f, "fps"));
-        int64_t avg_br = to_int(f, "averageBitrate");
-        fmt.bitrate = avg_br > 0 ? avg_br : to_int(f, "bitrate");
-        fmt.content_length = to_int(f, "contentLength");
-        fmt.audio_sample_rate = static_cast<int>(to_int(f, "audioSampleRate"));
-        int ch = static_cast<int>(to_int(f, "audioChannels"));
-        fmt.audio_channels = ch > 0 ? ch : 2;
-        if (f.value("isDrc", false)) continue;  // loudness-compressed duplicate of an audio format
-        const json& track = child_obj(f, "audioTrack");
-        fmt.audio_track_id = track.value("id", "");
-        fmt.audio_track_name = track.value("displayName", "");
-        fmt.audio_default = track.value("audioIsDefault", false);
+            fmt.itag = static_cast<int>(yint(f, "itag"));
+            split_mime(ystr(f, "mimeType"), fmt.mime, fmt.codecs);
+            fmt.width = static_cast<int>(yint(f, "width"));
+            fmt.height = static_cast<int>(yint(f, "height"));
+            fmt.fps = static_cast<int>(yint(f, "fps"));
+            int64_t avg_br = yint(f, "averageBitrate");
+            fmt.bitrate = avg_br > 0 ? avg_br : yint(f, "bitrate");
+            fmt.content_length = yint(f, "contentLength");
+            fmt.audio_sample_rate = static_cast<int>(yint(f, "audioSampleRate"));
+            int ch = static_cast<int>(yint(f, "audioChannels"));
+            fmt.audio_channels = ch > 0 ? ch : 2;
+            if (ybool(f, "isDrc")) continue;  // loudness-compressed duplicate of an audio format
+            yyjson_val* track = yobj(f, "audioTrack");
+            fmt.audio_track_id = ystr(track, "id");
+            fmt.audio_track_name = ystr(track, "displayName");
+            fmt.audio_default = ybool(track, "audioIsDefault");
 
-        if (fmt.is_video()) {
-            fmt.codec = classify_video_codec(fmt.mime, fmt.codecs);
-
-            const json& ci = child_obj(f, "colorInfo");
-            std::string tc = ci.value("transferCharacteristics", "");
-            if (tc.find("SMPTEST2084") != std::string::npos) {
-                fmt.hdr_mode = HdrMode::HDR10;
-            } else if (tc.find("ARIB_STD_B67") != std::string::npos) {
-                fmt.hdr_mode = HdrMode::HLG;
+            if (fmt.is_video()) {
+                fmt.codec = classify_video_codec(fmt.mime, fmt.codecs);
+                yyjson_val* ci = yobj(f, "colorInfo");
+                std::string_view tc = ysv(ci ? yyjson_obj_get(ci, "transferCharacteristics") : nullptr);
+                if (tc.find("SMPTEST2084") != std::string_view::npos) {
+                    fmt.hdr_mode = HdrMode::HDR10;
+                } else if (tc.find("ARIB_STD_B67") != std::string_view::npos) {
+                    fmt.hdr_mode = HdrMode::HLG;
+                }
             }
-        }
 
-        out.formats.push_back(std::move(fmt));
+            out.formats.push_back(std::move(fmt));
+        }
     }
     OLOG("yt: '%s' by %s, %llds, %zu formats (%s client%s)", out.title.c_str(), out.author.c_str(),
          static_cast<long long>(out.length_s), out.formats.size(), def.client.value("clientName", "").c_str(),
@@ -843,13 +853,13 @@ bool Client::search(const std::string& query, const std::string& continuation, F
         return false;
     }
     record_response(res.body);
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    if (!doc) {
         error = "search: invalid json";
         return false;
     }
     out = Feed{};
-    collect(r, out);
+    collect(doc.root(), out);
     OLOG("yt: search '%s'%s -> %zu items", query.c_str(), continuation.empty() ? "" : " (next page)", out.items.size());
     return true;
 }
@@ -869,30 +879,33 @@ bool Client::playlist(const std::string& video_id, const std::string& playlist_i
         error = "playlist: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = parse_innertube_json(res.body);
-    const json* panel = r.is_discarded() ? nullptr : find_key(r, "playlist");
-    if (panel && panel->is_object() && panel->contains("playlist")) panel = &(*panel)["playlist"];
-    if (!panel || !panel->is_object() || !panel->contains("contents")) {
+    YDoc doc = yparse(res.body);
+    yyjson_val* panel = doc ? yfind(doc.root(), "playlist") : nullptr;
+    if (yyjson_val* inner = yobj(panel, "playlist")) panel = inner;
+    yyjson_val* contents = yarr(panel, "contents");
+    if (!panel || !contents) {
         error = "playlist: no playlist panel";
         return false;
     }
-    const json& t = panel->value("title", json());
-    title = t.is_string() ? t.get<std::string>() : text_of(t);
+    yyjson_val* t = yyjson_obj_get(panel, "title");
+    title = yyjson_is_str(t) ? std::string(ysv(t)) : ytext(t);
     out = Feed{};
     // The panel is a window of the list around the current video: keep what comes after it.
     std::vector<FeedItem> all;
     size_t after = 0;
-    for (const json& c : child_arr(*panel, "contents")) {
-        const json& v = child_obj(c, "playlistPanelVideoRenderer");
+    yyjson_arr_iter cit = yyjson_arr_iter_with(contents);
+    while (yyjson_val* c = yyjson_arr_iter_next(&cit)) {
+        yyjson_val* v = yobj(c, "playlistPanelVideoRenderer");
+        if (!v) continue;
         FeedItem item;
-        item.video_id = v.value("videoId", "");
+        item.video_id = ystr(v, "videoId");
         if (item.video_id.empty()) continue;  // unavailable entries
-        item.title = text_of(child_obj(v, "title"));
-        item.channel = text_of(child_obj(v, "shortBylineText"));
-        item.duration = text_of(child_obj(v, "lengthText"));
+        item.title = ytext(yobj(v, "title"));
+        item.channel = ytext(yobj(v, "shortBylineText"));
+        item.duration = ytext(yobj(v, "lengthText"));
         item.thumbnail = "https://i.ytimg.com/vi/" + item.video_id + "/mqdefault.jpg";
         item.playlist_id = playlist_id;
-        if (v.value("selected", false) || item.video_id == video_id) after = all.size() + 1;
+        if (ybool(v, "selected") || item.video_id == video_id) after = all.size() + 1;
         all.push_back(std::move(item));
     }
     // A window of what follows (each new video asks again, so it slides along the list): a row of hundreds of
@@ -924,15 +937,15 @@ bool Client::playlist_page(const std::string& playlist_id, const std::string& co
         return false;
     }
     record_response(res.body);
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    if (!doc) {
         error = "playlist: invalid json";
         return false;
     }
     out = Feed{};
-    collect(r, out);
+    collect(doc.root(), out);
     for (FeedItem& item : out.items) item.playlist_id = playlist_id;
-    if (const json* meta = find_key(r, "playlistMetadataRenderer")) title = meta->value("title", "");
+    if (yyjson_val* meta = yfind(doc.root(), "playlistMetadataRenderer")) title = ystr(meta, "title");
     OLOG("yt: playlist page %s%s '%s' -> %zu items", playlist_id.c_str(), continuation.empty() ? "" : " (next page)",
          title.c_str(), out.items.size());
     return true;
@@ -946,21 +959,16 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
     if (!access_token.empty()) {
         json tv_params = continuation.empty() ? json{{"videoId", video_id}} : json{{"continuation", continuation}};
         net::Response tv = post_as_account("next", tv_params, access_token);
-        json t = tv.ok() ? parse_innertube_json(tv.body) : json();
-        if (t.is_object()) {
+        YDoc tdoc = tv.ok() ? yparse(tv.body) : YDoc();
+        yyjson_val* t = tdoc.root();
+        if (yyjson_is_obj(t)) {
             out = Feed{};
-            const json* sc = nullptr;
-            if (continuation.empty()) {
-                try {
-                    sc = &t.at("contents").at("singleColumnWatchNextResults");
-                } catch (const json::exception&) {
-                }
-            }
-            if (sc && sc->contains("results")) {
-                collect((*sc)["results"], out);
-                if (sc->contains("autoplay")) {
-                    if (const json* we = find_key((*sc)["autoplay"], "watchEndpoint")) {
-                        std::string next_id = we->value("videoId", "");
+            yyjson_val* sc = continuation.empty() ? yobj(yobj(t, "contents"), "singleColumnWatchNextResults") : nullptr;
+            if (yyjson_val* results = sc ? yyjson_obj_get(sc, "results") : nullptr) {
+                collect(results, out);
+                if (yyjson_val* autoplay = yyjson_obj_get(sc, "autoplay")) {
+                    if (yyjson_val* we = yfind(autoplay, "watchEndpoint")) {
+                        std::string next_id = ystr(we, "videoId");
                         if (!next_id.empty()) {
                             auto it = std::find_if(out.items.begin(), out.items.end(),
                                                    [&](const FeedItem& i) { return i.video_id == next_id; });
@@ -1003,19 +1011,15 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
         error = "next: "+ (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    if (!doc) {
         error = "next: invalid json";
         return false;
     }
     out = Feed{};
     // Only the secondary results column: the primary one repeats the current video.
-    const json* secondary = nullptr;
-    try {
-        secondary = &r.at("contents").at("twoColumnWatchNextResults").at("secondaryResults");
-    } catch (const json::exception&) {
-    }
-    collect(secondary ? *secondary : r, out);
+    yyjson_val* secondary = yobj(yobj(yobj(doc.root(), "contents"), "twoColumnWatchNextResults"), "secondaryResults");
+    collect(secondary ? secondary : doc.root(), out);
     out.items.erase(std::remove_if(out.items.begin(), out.items.end(),
                                    [&](const FeedItem& i) { return i.video_id == video_id; }),
                     out.items.end());
@@ -1047,56 +1051,58 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
         error = http_error("next", res);
         return false;
     }
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    yyjson_val* r = doc.root();
+    if (!r) {
         error = "next: invalid json";
         return false;
     }
     out = VideoDetails{};
-    if (const json* primary = find_key(r, "videoPrimaryInfoRenderer"))
-        out.date = text_of(child_obj(*primary, "dateText"));
-    if (const json* owner = find_key(r, "videoOwnerRenderer")) {
-        out.channel = text_of(child_obj(*owner, "title"));
-        out.channel_avatar = last_thumbnail(child_obj(*owner, "thumbnail"));
-        out.subscribers = text_of(child_obj(*owner, "subscriberCountText"));
+    if (yyjson_val* primary = yfind(r, "videoPrimaryInfoRenderer"))
+        out.date = ytext(yobj(primary, "dateText"));
+    if (yyjson_val* owner = yfind(r, "videoOwnerRenderer")) {
+        out.channel = ytext(yobj(owner, "title"));
+        out.channel_avatar = ythumb(yobj(owner, "thumbnail"));
+        out.subscribers = ytext(yobj(owner, "subscriberCountText"));
         // The channel link moved from navigationEndpoint into the title runs: take any browseId under the owner.
-        if (const json* browse = find_key(*owner, "browseId"))
-            if (browse->is_string()) out.channel_id = browse->get<std::string>();
+        if (yyjson_val* browse = yfind(owner, "browseId"); yyjson_is_str(browse))
+            out.channel_id.assign(yyjson_get_str(browse), yyjson_get_len(browse));
     }
     if (out.channel_id.empty())
-        if (const json* sub = find_key(r, "subscribeButtonRenderer"))
-            if (sub->is_object()) out.channel_id = sub->value("channelId", "");
+        if (yyjson_val* sub = yfind(r, "subscribeButtonRenderer"); yyjson_is_obj(sub))
+            out.channel_id = ystr(sub, "channelId");
     if (out.channel_avatar.compare(0, 2, "//") == 0) out.channel_avatar = "https:" + out.channel_avatar;
-    if (const json* lb = find_key(r, "likeButtonViewModel")) {
-        if (const json* def = find_key(*lb, "defaultButtonViewModel")) {
-            if (const json* vm = find_key(*def, "buttonViewModel");
-                vm && vm->contains("title") && (*vm)["title"].is_string())
-                out.like_count = trimmed((*vm)["title"].get<std::string>());
-        }
-        if (out.like_count.empty()) {
-            if (const json* ent = find_key(*lb, "likeCountEntity")) {
-                if (const json* txt = find_key(*ent, "likeCountIfIndifferent"))
-                    out.like_count = text_of(*txt);
+    if (yyjson_val* lb = yfind(r, "likeButtonViewModel")) {
+        if (yyjson_val* def_btn = yfind(lb, "defaultButtonViewModel")) {
+            if (yyjson_val* vm = yfind(def_btn, "buttonViewModel")) {
+                std::string t = ystr(vm, "title");
+                if (!t.empty()) out.like_count = trimmed(std::move(t));
             }
         }
-    } else if (const json* seg = find_key(r, "segmentedLikeDislikeButtonRenderer")) {
-        if (const json* lb = find_key(*seg, "likeButton"))
-            out.like_count = text_of(child_obj(child_obj(*lb, "toggleButtonRenderer"), "defaultText"));
+        if (out.like_count.empty()) {
+            if (yyjson_val* ent = yfind(lb, "likeCountEntity")) {
+                if (yyjson_val* txt = yfind(ent, "likeCountIfIndifferent"))
+                    out.like_count = ytext(txt);
+            }
+        }
+    } else if (yyjson_val* seg = yfind(r, "segmentedLikeDislikeButtonRenderer")) {
+        if (yyjson_val* lb = yfind(seg, "likeButton"))
+            out.like_count = ytext(yobj(yobj(lb, "toggleButtonRenderer"), "defaultText"));
     }
     if (out.like_count.find_first_of("0123456789") == std::string::npos) out.like_count.clear();
-    r = json();  // release the WEB DOM before parsing the TV account-state DOM
+    doc.reset();  // release the WEB arena before parsing the TV account-state arena
 
     // Parse the account's like/subscribe state fetched above.
     if (!access_token.empty()) {
-        json t = tv.ok() ? parse_innertube_json(tv.body) : json();
-        if (t.is_object()) {
-            if (const json* like = find_key(t, "likeStatus"))
-                if (like->is_string()) out.like_status = like->get<std::string>();
-            if (const json* sub = find_key(t, "subscribeButtonRenderer"))
-                if (sub->is_object()) {
-                    if (sub->contains("subscribed")) out.subscribed = sub->value("subscribed", false) ? 1 : 0;
-                    if (out.channel_id.empty()) out.channel_id = sub->value("channelId", "");
-                }
+        YDoc tdoc = tv.ok() ? yparse(tv.body) : YDoc();
+        yyjson_val* t = tdoc.root();
+        if (yyjson_is_obj(t)) {
+            if (yyjson_val* like = yfind(t, "likeStatus"); yyjson_is_str(like))
+                out.like_status.assign(yyjson_get_str(like), yyjson_get_len(like));
+            if (yyjson_val* sub = yfind(t, "subscribeButtonRenderer"); yyjson_is_obj(sub)) {
+                if (yyjson_obj_get(sub, "subscribed")) out.subscribed = ybool(sub, "subscribed") ? 1 : 0;
+                if (out.channel_id.empty()) out.channel_id = ystr(sub, "channelId");
+            }
         } else {
             OLOG("yt: details %s: account state %s", video_id.c_str(), http_error("tv next", tv).c_str());
         }
@@ -1128,20 +1134,21 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
         return false;
     }
     record_response(res.body);
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    yyjson_val* r = doc.root();
+    if (!r) {
         error = "channel: invalid json";
         return false;
     }
     out = Feed{};
     collect(r, out);
-    if (const json* meta = find_key(r, "channelMetadataRenderer")) {
-        header.title = meta->value("title", "");
-        header.avatar = last_thumbnail(child_obj(*meta, "avatar"));
+    if (yyjson_val* meta = yfind(r, "channelMetadataRenderer")) {
+        header.title = ystr(meta, "title");
+        header.avatar = ythumb(yobj(meta, "avatar"));
     }
-    if (const json* page = find_key(r, "pageHeaderViewModel")) {
+    if (yyjson_val* page = yfind(r, "pageHeaderViewModel")) {
         std::vector<std::string> parts;
-        texts_under(*page, "metadataParts", parts);
+        texts_under(page, "metadataParts", parts);
         for (const std::string& p : parts)
             if (contains_any(p, {"abonn", "subscriber"})) header.subscribers = p;
     }
@@ -1162,135 +1169,131 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
 
 namespace {
 
-std::string string_at(const json& j, std::initializer_list<const char*> path) {
-    const json* at = &j;
+std::string ypath_str(yyjson_val* j, std::initializer_list<const char*> path) {
+    yyjson_val* at = j;
     for (const char* k : path) {
-        if (!at->is_object() || !at->contains(k)) return "";
-        at = &(*at)[k];
+        if (!yyjson_is_obj(at)) return "";
+        at = yyjson_obj_get(at, k);
+        if (!at) return "";
     }
-    return at->is_string() ? at->get<std::string>() : "";
+    return yyjson_is_str(at) ? std::string(yyjson_get_str(at), yyjson_get_len(at)) : "";
 }
 
 // First continuationCommand token under j.
-std::string continuation_token(const json& j) {
-    if (const json* cmd = find_key(j, "continuationCommand"))
-        if (cmd->is_object()) return cmd->value("token", "");
+std::string continuation_token(yyjson_val* j) {
+    if (yyjson_val* cmd = yfind(j, "continuationCommand"); yyjson_is_obj(cmd))
+        return ystr(cmd, "token");
     return "";
 }
 
 // New layout: the thread only holds keys, the texts are commentEntityPayload mutations of frameworkUpdates.
-Comment comment_from_entity(const json& p) {
+Comment comment_from_entity(yyjson_val* p) {
     Comment c;
-    const json& props = child_obj(p, "properties");
-    const json& author = child_obj(p, "author");
-    const json& toolbar = child_obj(p, "toolbar");
-    c.id = props.value("commentId", "");
-    c.text = string_at(props, {"content", "content"});
-    c.published = props.value("publishedTime", "");
-    c.author = author.value("displayName", "");
-    c.avatar = author.value("avatarThumbnailUrl", "");
-    c.creator = author.value("isCreator", false);
+    yyjson_val* props = yobj(p, "properties");
+    yyjson_val* author = yobj(p, "author");
+    yyjson_val* toolbar = yobj(p, "toolbar");
+    c.id = ystr(props, "commentId");
+    c.text = ypath_str(props, {"content", "content"});
+    c.published = ystr(props, "publishedTime");
+    c.author = ystr(author, "displayName");
+    c.avatar = ystr(author, "avatarThumbnailUrl");
+    c.creator = ybool(author, "isCreator");
     if (c.avatar.empty())
-        if (const json* src = find_key(child_obj(p, "avatar"), "sources"))
-            if (src->is_array() && !src->empty()) c.avatar = src->back().value("url", "");
-    c.likes = trimmed(toolbar.value("likeCountNotliked", ""));
+        if (yyjson_val* src = yfind(yobj(p, "avatar"), "sources"); yyjson_is_arr(src))
+            if (yyjson_val* last = yyjson_arr_get_last(src)) c.avatar = ystr(last, "url");
+    c.likes = trimmed(ystr(toolbar, "likeCountNotliked"));
     if (c.likes == "0") c.likes.clear();
-    c.replies = trimmed(toolbar.value("replyCount", ""));
+    c.replies = trimmed(ystr(toolbar, "replyCount"));
     if (c.replies == "0") c.replies.clear();
-    c.hearted = toolbar.value("heartState", "") == "TOOLBAR_HEART_STATE_HEARTED";
+    c.hearted = ysv(toolbar ? yyjson_obj_get(toolbar, "heartState") : nullptr) == "TOOLBAR_HEART_STATE_HEARTED";
     return c;
 }
 
 // Old layout: commentRenderer carries everything.
-Comment comment_from_renderer(const json& r) {
+Comment comment_from_renderer(yyjson_val* r) {
     Comment c;
-    c.id = r.value("commentId", "");
-    c.author = text_of(child_obj(r, "authorText"));
-    c.avatar = last_thumbnail(child_obj(r, "authorThumbnail"));
-    c.text = text_of(child_obj(r, "contentText"));
-    c.published = text_of(child_obj(r, "publishedTimeText"));
-    c.likes = trimmed(text_of(child_obj(r, "voteCount")));
-    c.replies = r.contains("replyCount") ? std::to_string(r.value("replyCount", 0)) : "";
+    c.id = ystr(r, "commentId");
+    c.author = ytext(yobj(r, "authorText"));
+    c.avatar = ythumb(yobj(r, "authorThumbnail"));
+    c.text = ytext(yobj(r, "contentText"));
+    c.published = ytext(yobj(r, "publishedTimeText"));
+    c.likes = trimmed(ytext(yobj(r, "voteCount")));
+    if (yyjson_is_obj(r) && yyjson_obj_get(r, "replyCount"))
+        c.replies = std::to_string(yint(r, "replyCount"));
     if (c.replies == "0") c.replies.clear();
-    c.creator = r.value("authorIsChannelOwner", false);
-    c.pinned = r.contains("pinnedCommentBadge");
+    c.creator = ybool(r, "authorIsChannelOwner");
+    c.pinned = yyjson_is_obj(r) && yyjson_obj_get(r, "pinnedCommentBadge") != nullptr;
     return c;
 }
 
 // Header + threads + next page of a comments continuation answer (reload or append), or of a create_comment one.
-void parse_comments(const json& r, CommentPage& out) {
-    std::unordered_map<std::string, const json*> entities;
-    static const json kNone = json::array();
-    const json* mutations = &kNone;
-    if (r.contains("frameworkUpdates") && r["frameworkUpdates"].is_object()) {
-        const json& fu = r["frameworkUpdates"];
-        if (fu.contains("entityBatchUpdate") && fu["entityBatchUpdate"].contains("mutations"))
-            mutations = &fu["entityBatchUpdate"]["mutations"];
-    }
-    // Pointers into r itself (value() would return copies).
-    if (mutations->is_array())
-        for (const json& m : *mutations) {
-            if (!m.is_object() || !m.contains("payload") || !m["payload"].is_object()) continue;
-            const json& p = m["payload"];
-            if (!p.contains("commentEntityPayload") || !p["commentEntityPayload"].is_object()) continue;
-            const json& e = p["commentEntityPayload"];
-            entities[m.value("entityKey", "")] = &e;
-            if (e.contains("key")) entities[e.value("key", "")] = &e;
+void parse_comments(yyjson_val* r, CommentPage& out) {
+    std::unordered_map<std::string_view, yyjson_val*> entities;
+    if (yyjson_val* mutations = yarr(yobj(yobj(r, "frameworkUpdates"), "entityBatchUpdate"), "mutations")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(mutations);
+        while (yyjson_val* m = yyjson_arr_iter_next(&it)) {
+            yyjson_val* e = yobj(yobj(m, "payload"), "commentEntityPayload");
+            if (!e) continue;
+            if (std::string_view ek = ysv(yyjson_obj_get(m, "entityKey")); !ek.empty()) entities[ek] = e;
+            if (std::string_view k = ysv(yyjson_obj_get(e, "key")); !k.empty()) entities[k] = e;
         }
-    auto from_view_model = [&](const json& vm, Comment& c) {
-        const json& model = vm.contains("commentViewModel") ? vm["commentViewModel"] : vm;
-        auto e = entities.find(model.value("commentKey", ""));
+    }
+    auto from_view_model = [&](yyjson_val* vm, Comment& c) {
+        yyjson_val* model = yobj(vm, "commentViewModel");
+        if (!model) model = vm;
+        auto e = entities.find(ysv(yyjson_is_obj(model) ? yyjson_obj_get(model, "commentKey") : nullptr));
         if (e == entities.end()) return false;
-        c = comment_from_entity(*e->second);
-        c.pinned = model.contains("pinnedText");
+        c = comment_from_entity(e->second);
+        c.pinned = yyjson_is_obj(model) && yyjson_obj_get(model, "pinnedText") != nullptr;
         return true;
     };
     auto add = [&](Comment c) {
         if (c.avatar.compare(0, 2, "//") == 0) c.avatar = "https:" + c.avatar;
         if (!c.text.empty() || !c.author.empty()) out.items.push_back(std::move(c));
     };
-    std::function<void(const json&)> walk = [&](const json& j) {
-        if (j.is_array()) {
-            for (const json& e : j) walk(e);
+    std::function<void(yyjson_val*)> walk = [&](yyjson_val* j) {
+        if (!j) return;
+        if (yyjson_is_arr(j)) {
+            yyjson_arr_iter it = yyjson_arr_iter_with(j);
+            while (yyjson_val* e = yyjson_arr_iter_next(&it)) walk(e);
             return;
         }
-        if (!j.is_object()) return;
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            const std::string& k = it.key();
-            const json& v = it.value();
-            if (k == "commentsHeaderRenderer" && v.is_object()) {
-                out.count = text_of(child_obj(v, "countText"));
-                if (out.count.empty()) out.count = text_of(child_obj(v, "commentsCount"));
-                if (const json* items = find_key(v, "subMenuItems"))
-                    if (items->is_array()) {
-                        if (items->size() > 0) out.sort_top = continuation_token((*items)[0]);
-                        if (items->size() > 1) out.sort_newest = continuation_token((*items)[1]);
-                    }
-                if (const json* params = find_key(v, "createCommentParams"))
-                    if (params->is_string()) out.create_params = params->get<std::string>();
-            } else if (k == "commentThreadRenderer" && v.is_object()) {
+        if (!yyjson_is_obj(j)) return;
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* kp = yyjson_obj_iter_next(&it)) {
+            std::string_view k = ysv(kp);
+            yyjson_val* v = yyjson_obj_iter_get_val(kp);
+            if (is_ignored_branch(k) || k == "frameworkUpdates") continue;
+            if (k == "commentsHeaderRenderer" && yyjson_is_obj(v)) {
+                out.count = ytext(yobj(v, "countText"));
+                if (out.count.empty()) out.count = ytext(yobj(v, "commentsCount"));
+                if (yyjson_val* items = yfind(v, "subMenuItems"); yyjson_is_arr(items)) {
+                    if (yyjson_val* i0 = yyjson_arr_get(items, 0)) out.sort_top = continuation_token(i0);
+                    if (yyjson_val* i1 = yyjson_arr_get(items, 1)) out.sort_newest = continuation_token(i1);
+                }
+                if (yyjson_val* params = yfind(v, "createCommentParams"); yyjson_is_str(params))
+                    out.create_params.assign(yyjson_get_str(params), yyjson_get_len(params));
+            } else if (k == "commentThreadRenderer" && yyjson_is_obj(v)) {
                 Comment c;
-                if (const json* vm = find_key(v, "commentViewModel")) {
-                    if (!from_view_model(*vm, c)) continue;
-                } else if (const json* cr = find_key(v, "commentRenderer")) {
-                    c = comment_from_renderer(*cr);
+                if (yyjson_val* vm = yfind(v, "commentViewModel")) {
+                    if (!from_view_model(vm, c)) continue;
+                } else if (yyjson_val* cr = yfind(v, "commentRenderer")) {
+                    c = comment_from_renderer(cr);
                 } else {
                     continue;
                 }
-                if (v.contains("replies")) c.reply_token = continuation_token(v["replies"]);
+                if (yyjson_val* rep = yyjson_obj_get(v, "replies")) c.reply_token = continuation_token(rep);
                 add(std::move(c));
-            } else if (k == "commentViewModel" && v.is_object()) {
+            } else if (k == "commentViewModel" && yyjson_is_obj(v)) {
                 // A reply: outside any thread.
                 Comment c;
                 if (from_view_model(v, c)) add(std::move(c));
-            } else if (k == "commentRenderer" && v.is_object()) {
+            } else if (k == "commentRenderer" && yyjson_is_obj(v)) {
                 add(comment_from_renderer(v));
-            } else if (k == "continuationItemRenderer" && v.is_object()) {
+            } else if (k == "continuationItemRenderer" && yyjson_is_obj(v)) {
                 // The thread's own replies continuation sits inside commentThreadRenderer, skipped above.
                 std::string token = continuation_token(v);
-                if (!token.empty()) out.continuation = token;
-            } else if (k == "frameworkUpdates") {
-                continue;
+                if (!token.empty()) out.continuation = std::move(token);
             } else {
                 walk(v);
             }
@@ -1368,28 +1371,32 @@ void apply_votes(net::Response& res, CommentPage& page) {
         OLOG("yt: comment votes: http %d", res.status);
         return;
     }
-    json r = parse_innertube_json(res.body);
-    std::unordered_map<std::string, std::string> votes;
-    std::function<void(const json&)> walk = [&](const json& j) {
-        if (j.is_array()) {
-            for (const json& e : j) walk(e);
-        } else if (j.is_object()) {
-            for (auto it = j.begin(); it != j.end(); ++it) {
-                if (it.key() == "commentRenderer" && it.value().is_object()) {
-                    const json& c = it.value();
-                    votes[c.value("commentId", "")] = c.value("isLiked", false) ? "LIKE" : c.value("voteStatus", "");
+    YDoc doc = yparse(res.body);
+    if (!doc) return;
+    std::unordered_map<std::string_view, std::string_view> votes;
+    std::function<void(yyjson_val*)> walk = [&](yyjson_val* j) {
+        if (!j) return;
+        if (yyjson_is_arr(j)) {
+            yyjson_arr_iter it = yyjson_arr_iter_with(j);
+            while (yyjson_val* e = yyjson_arr_iter_next(&it)) walk(e);
+        } else if (yyjson_is_obj(j)) {
+            yyjson_obj_iter it = yyjson_obj_iter_with(j);
+            while (yyjson_val* kp = yyjson_obj_iter_next(&it)) {
+                std::string_view k = ysv(kp);
+                yyjson_val* v = yyjson_obj_iter_get_val(kp);
+                if (is_ignored_branch(k)) continue;
+                if (k == "commentRenderer" && yyjson_is_obj(v)) {
+                    std::string_view cid = ysv(yyjson_obj_get(v, "commentId"));
+                    if (!cid.empty()) {
+                        votes[cid] = ybool(v, "isLiked") ? std::string_view("LIKE") : ysv(yyjson_obj_get(v, "voteStatus"));
+                    }
                 } else {
-                    walk(it.value());
+                    walk(v);
                 }
             }
         }
     };
-    try {
-        walk(r);
-    } catch (const json::exception& e) {
-        OLOG("yt: comment votes: %s", e.what());
-        return;
-    }
+    walk(doc.root());
     for (Comment& c : page.items) {
         auto v = votes.find(c.id);
         if (v == votes.end()) continue;
@@ -1404,7 +1411,7 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
                       CommentPage& out, std::string& error) {
     if (!ensure_visitor(error)) return false;
     ClientDef def = client_def("search", visitor_data_, web_client_version_);
-    auto next = [&](json body, json& r) {
+    auto next = [&](json body, YDoc& doc) {
         body["context"] = {{"client", def.client}};
         net::Request req;
         req.method = "POST";
@@ -1417,8 +1424,8 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
             return false;
         }
         record_response(res.body);
-        r = parse_innertube_json(res.body);
-        if (r.is_discarded()) {
+        doc = yparse(res.body);
+        if (!doc) {
             error = "comments: invalid json";
             return false;
         }
@@ -1428,22 +1435,24 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
     std::string token = continuation;
     if (token.empty()) {
         // The watch page only holds the continuation of the comments section.
-        json watch;
+        YDoc watch;
         if (!next({{"videoId", video_id}}, watch)) return false;
-        std::function<void(const json&)> find_section = [&](const json& j) {
-            if (!token.empty()) return;
-            if (j.is_object()) {
-                auto it = j.find("itemSectionRenderer");
-                if (it != j.end() && it->is_object() && it->value("sectionIdentifier", "") == "comment-item-section") {
-                    token = continuation_token(*it);
+        std::function<void(yyjson_val*)> find_section = [&](yyjson_val* j) {
+            if (!token.empty() || !j) return;
+            if (yyjson_is_obj(j)) {
+                if (yyjson_val* isr = yobj(j, "itemSectionRenderer");
+                    isr && ysv(yyjson_obj_get(isr, "sectionIdentifier")) == "comment-item-section") {
+                    token = continuation_token(isr);
                     return;
                 }
-                for (const json& v : j) find_section(v);
-            } else if (j.is_array()) {
-                for (const json& v : j) find_section(v);
+                yyjson_obj_iter it = yyjson_obj_iter_with(j);
+                while (yyjson_val* k = yyjson_obj_iter_next(&it)) find_section(yyjson_obj_iter_get_val(k));
+            } else if (yyjson_is_arr(j)) {
+                yyjson_arr_iter it = yyjson_arr_iter_with(j);
+                while (yyjson_val* v = yyjson_arr_iter_next(&it)) find_section(v);
             }
         };
-        find_section(watch);
+        find_section(watch.root());
         if (token.empty()) {
             out.disabled = true;  // turned off, or a live chat instead
             OLOG("yt: comments %s: none (disabled)", video_id.c_str());
@@ -1456,17 +1465,12 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
     if (!access_token.empty()) {
         votes_thread = std::thread([&] { votes_res = post_as_account("next", {{"continuation", token}}, access_token); });
     }
-    json r;
-    bool ok = next({{"continuation", token}}, r);
+    YDoc doc;
+    bool ok = next({{"continuation", token}}, doc);
     if (votes_thread.joinable()) votes_thread.join();
     if (!ok) return false;
-    try {
-        parse_comments(r, out);
-    } catch (const json::exception& e) {
-        error = std::string("comments: ") + e.what();
-        return false;
-    }
-    r = json();  // release WEB comments DOM before parsing TV votes DOM
+    parse_comments(doc.root(), out);
+    doc.reset();  // release WEB comments arena before parsing TV votes arena
     if (out.create_params.empty()) out.create_params = create_params(video_id, "");
     if (!access_token.empty() && !out.items.empty()) apply_votes(votes_res, out);
     OLOG("yt: comments %s%s -> %zu items, count '%s', next %s, post %s", video_id.c_str(),
@@ -1493,19 +1497,19 @@ bool Client::browse(const std::string& browse_id, const std::string& continuatio
         return false;
     }
     record_response(res.body);
-    json r = parse_innertube_json(res.body);
-    if (r.is_discarded()) {
+    YDoc doc = yparse(res.body);
+    if (!doc) {
         error = "browse: invalid json";
         return false;
     }
     out = Feed{};
     if (browse_id == "FEwhat_to_watch") {
         // Home: rows by topic (next pages bring more rows).
-        collect_shelves(r, out);
+        collect_shelves(doc.root(), out);
     } else {
         // Subscriptions "Tous" tab: a titled "most relevant" shelf, then untitled shelves in date order.
         Feed picked;
-        collect(r, out, browse_id == "FEsubscriptions" && continuation.empty() ? &picked : nullptr);
+        collect(doc.root(), out, browse_id == "FEsubscriptions" && continuation.empty() ? &picked : nullptr);
         out.highlights = std::move(picked.items);
     }
     OLOG("yt: browse %s%s -> %zu items, %zu highlights, %zu shelves", browse_id.c_str(),
@@ -1531,11 +1535,15 @@ bool suggest(const std::string& query, std::vector<std::string>& out, std::strin
         error = "suggest: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);  // ["query", ["s1", "s2", ...]]
+    YDoc doc = yparse(res.body);  // ["query", ["s1", "s2", ...]]
     out.clear();
-    if (r.is_array() && r.size() > 1 && r[1].is_array())
-        for (const json& s : r[1])
-            if (s.is_string()) out.push_back(s.get<std::string>());
+    if (yyjson_val* r = doc.root(); yyjson_is_arr(r)) {
+        if (yyjson_val* arr = yyjson_arr_get(r, 1); yyjson_is_arr(arr)) {
+            yyjson_arr_iter it = yyjson_arr_iter_with(arr);
+            while (yyjson_val* s = yyjson_arr_iter_next(&it))
+                if (yyjson_is_str(s)) out.emplace_back(yyjson_get_str(s), yyjson_get_len(s));
+        }
+    }
     return true;
 }
 
@@ -1740,155 +1748,34 @@ bool fetch_captions(const std::string& url, const std::string& translate_to, std
         error = "captions: empty answer";
         return false;
     }
-    out.clear();
-    // Zero-DOM SAX parse of json3: events[].{tStartMs, dDurationMs, segs:[{utf8}]}.
-    // Speech-recognition tracks split lines into word segments and add "\n"-only events.
-    struct CaptionsSax {
-        std::vector<CaptionCue>& out;
-        int depth = 0;
-        bool root_is_object = false;
-        bool failed = false;
-        bool next_is_events = false;
-        bool in_events = false;
-        bool in_event = false;
-        enum class EvField { None, Start, Dur, Segs } ev_field = EvField::None;
-        bool in_segs = false;
-        bool in_seg = false;
-        bool want_utf8 = false;
-        int64_t cur_start = 0;
-        int64_t cur_dur = 0;
-        bool cur_has_segs = false;
-        std::string cur_text;
-
-        void assign_ev_int(int64_t v) {
-            if (depth == 3 && in_event) {
-                if (ev_field == EvField::Start) cur_start = v;
-                else if (ev_field == EvField::Dur) cur_dur = v;
-                ev_field = EvField::None;
-            }
-        }
-        bool clear_scalar() {
-            if (depth == 1) next_is_events = false;
-            else if (depth == 3 && in_event) ev_field = EvField::None;
-            else if (depth == 5 && in_seg) want_utf8 = false;
-            return true;
-        }
-        bool null() { return clear_scalar(); }
-        bool boolean(bool) { return clear_scalar(); }
-        bool number_integer(json::number_integer_t v) {
-            assign_ev_int(static_cast<int64_t>(v));
-            return clear_scalar();
-        }
-        bool number_unsigned(json::number_unsigned_t v) {
-            assign_ev_int(static_cast<int64_t>(v));
-            return clear_scalar();
-        }
-        bool number_float(json::number_float_t v, const std::string&) {
-            assign_ev_int(static_cast<int64_t>(v));
-            return clear_scalar();
-        }
-        bool binary(json::binary_t&) { return clear_scalar(); }
-        bool string(std::string& v) {
-            if (depth == 5 && in_seg && want_utf8) {
-                cur_text += v;
-                want_utf8 = false;
-            } else if (depth == 3 && in_event && (ev_field == EvField::Start || ev_field == EvField::Dur)) {
-                int64_t n = 0;
-                auto parsed = std::from_chars(v.data(), v.data() + v.size(), n);
-                if (parsed.ec == std::errc{}) assign_ev_int(n);
-            }
-            return clear_scalar();
-        }
-        bool start_object(std::size_t) {
-            ++depth;
-            if (depth == 1) {
-                root_is_object = true;
-            } else if (depth == 2) {
-                next_is_events = false;
-            } else if (depth == 3 && in_events) {
-                in_event = true;
-                ev_field = EvField::None;
-                cur_start = 0;
-                cur_dur = 0;
-                cur_has_segs = false;
-                cur_text.clear();
-            } else if (depth == 4 && in_event) {
-                ev_field = EvField::None;
-            } else if (depth == 5 && in_segs) {
-                in_seg = true;
-                want_utf8 = false;
-            }
-            return true;
-        }
-        bool end_object() {
-            if (depth == 5 && in_seg) {
-                in_seg = false;
-                want_utf8 = false;
-            } else if (depth == 3 && in_event) {
-                if (cur_has_segs) {
-                    size_t first = cur_text.find_first_not_of(" \r\n\t");
-                    if (first != std::string::npos) {
-                        size_t last = cur_text.find_last_not_of(" \r\n\t");
-                        CaptionCue cue;
-                        cue.text = cur_text.substr(first, last + 1 - first);
-                        cue.start_ms = cur_start;
-                        cue.end_ms = cur_dur > 0 ? cur_start + cur_dur : 0;
-                        out.push_back(std::move(cue));
-                    }
-                }
-                in_event = false;
-                ev_field = EvField::None;
-            }
-            --depth;
-            return true;
-        }
-        bool start_array(std::size_t) {
-            ++depth;
-            if (depth == 2 && next_is_events) {
-                in_events = true;
-                next_is_events = false;
-            } else if (depth == 2) {
-                next_is_events = false;
-            } else if (depth == 4 && in_event && ev_field == EvField::Segs) {
-                in_segs = true;
-                cur_has_segs = true;
-                ev_field = EvField::None;
-            } else if (depth == 4 && in_event) {
-                ev_field = EvField::None;
-            }
-            return true;
-        }
-        bool end_array() {
-            if (depth == 4 && in_segs) in_segs = false;
-            else if (depth == 2 && in_events) in_events = false;
-            --depth;
-            return true;
-        }
-        bool key(std::string& k) {
-            if (depth == 1) {
-                next_is_events = (k == "events");
-            } else if (depth == 3 && in_event) {
-                ev_field = (k == "tStartMs")      ? EvField::Start
-                           : (k == "dDurationMs") ? EvField::Dur
-                           : (k == "segs")        ? EvField::Segs
-                                                  : EvField::None;
-            } else if (depth == 5 && in_seg) {
-                want_utf8 = (k == "utf8");
-            }
-            return true;
-        }
-        bool parse_error(std::size_t, const std::string&, const json::exception&) {
-            failed = true;
-            return false;
-        }
-    };
-    CaptionsSax sax{out};
-    bool ok = json::sax_parse(res.body, &sax);
-    std::string().swap(res.body);
-    if (!ok || sax.failed || !sax.root_is_object) {
-        out.clear();
+    YDoc doc = yparse(res.body);
+    yyjson_val* r = doc.root();
+    if (!yyjson_is_obj(r)) {
         error = "captions: invalid json";
         return false;
+    }
+    out.clear();
+    // json3: events[].{tStartMs, dDurationMs, segs:[{utf8}]}; ASR tracks split lines into word segments.
+    if (yyjson_val* events = yarr(r, "events")) {
+        out.reserve(yyjson_arr_size(events));
+        yyjson_arr_iter eit = yyjson_arr_iter_with(events);
+        while (yyjson_val* e = yyjson_arr_iter_next(&eit)) {
+            yyjson_val* segs = yarr(e, "segs");
+            if (!segs) continue;
+            CaptionCue cue;
+            yyjson_arr_iter sit = yyjson_arr_iter_with(segs);
+            while (yyjson_val* seg = yyjson_arr_iter_next(&sit)) {
+                std::string_view sv = ysv(yyjson_is_obj(seg) ? yyjson_obj_get(seg, "utf8") : nullptr);
+                cue.text.append(sv.data(), sv.size());
+            }
+            size_t first = cue.text.find_first_not_of(" \r\n\t");
+            if (first == std::string::npos) continue;
+            cue.text = cue.text.substr(first, cue.text.find_last_not_of(" \r\n\t") + 1 - first);
+            cue.start_ms = yint(e, "tStartMs");
+            int64_t dur = yint(e, "dDurationMs");
+            cue.end_ms = dur > 0 ? cue.start_ms + dur : 0;
+            out.push_back(std::move(cue));
+        }
     }
     // Infer end_ms for cues that omit dDurationMs (common on ASR / live-originated json3 tracks).
     for (size_t i = 0; i < out.size(); ++i) {
@@ -1937,20 +1824,17 @@ bool create_comment_request(const char* endpoint, const json& body, const std::s
         OLOG("yt: %s %s", error.c_str(), res.body.substr(0, 300).c_str());
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    std::string body_preview = res.body.substr(0, 600);
+    YDoc doc = yparse(res.body);
     CommentPage page;
     std::string status;
-    if (r.is_object()) {
-        try {
-            parse_comments(r, page);
-            status = child_obj(r, "actionResult").value("status", "");
-        } catch (const json::exception& e) {
-            OLOG("yt: %s answer: %s", endpoint, e.what());
-        }
+    if (yyjson_val* r = doc.root(); yyjson_is_obj(r)) {
+        parse_comments(r, page);
+        status = ystr(yobj(r, "actionResult"), "status");
     }
     if (page.items.empty() && status != "STATUS_SUCCEEDED") {
         error = std::string(endpoint) + ": refused" + (status.empty() ? std::string() : " (" + status + ")");
-        OLOG("yt: %s %s", error.c_str(), res.body.substr(0, 600).c_str());
+        OLOG("yt: %s %s", error.c_str(), body_preview.c_str());
         return false;
     }
     if (!page.items.empty()) out = page.items.front();
@@ -1989,17 +1873,17 @@ bool comment_action(const std::string& video_id, const std::string& comment_id, 
         OLOG("yt: %s %s", error.c_str(), res.body.substr(0, 300).c_str());
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    std::string body_preview = res.body.substr(0, 600);
+    YDoc doc = yparse(res.body);
     bool done = false;
-    try {
-        if (r.is_object() && r.contains("actionResults") && r["actionResults"].is_array())
-            for (const json& a : r["actionResults"]) done = done || a.value("status", "") == "STATUS_SUCCEEDED";
-    } catch (const json::exception& e) {
-        OLOG("yt: comment action answer: %s", e.what());
+    if (yyjson_val* arr = yarr(doc.root(), "actionResults")) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(arr);
+        while (yyjson_val* a = yyjson_arr_iter_next(&it))
+            done = done || (ysv(yyjson_is_obj(a) ? yyjson_obj_get(a, "status") : nullptr) == "STATUS_SUCCEEDED");
     }
     if (!done) {
         error = "comment action: refused";
-        OLOG("yt: %s %s", error.c_str(), res.body.substr(0, 600).c_str());
+        OLOG("yt: %s %s", error.c_str(), body_preview.c_str());
         return false;
     }
     OLOG("yt: comment %s %s ok", action.c_str(), comment_id.c_str());
@@ -2020,32 +1904,37 @@ bool account_info(const std::string& access_token, AccountInfo& out, std::string
         error = "accounts_list: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
         return false;
     }
-    json r = json::parse(res.body, nullptr, false);
+    YDoc doc = yparse(res.body);
     // accountItem {accountName, accountPhoto, channelHandle, isSelected}: the selected one, else the first.
-    std::vector<const json*> items;
-    std::function<void(const json&)> walk = [&](const json& j) {
-        if (j.is_object()) {
-            for (auto it = j.begin(); it != j.end(); ++it) {
-                if ((it.key() == "accountItem" || it.key() == "accountItemRenderer") && it.value().is_object())
-                    items.push_back(&it.value());
+    std::vector<yyjson_val*> items;
+    std::function<void(yyjson_val*)> walk = [&](yyjson_val* j) {
+        if (!j) return;
+        if (yyjson_is_obj(j)) {
+            yyjson_obj_iter it = yyjson_obj_iter_with(j);
+            while (yyjson_val* kp = yyjson_obj_iter_next(&it)) {
+                std::string_view k = ysv(kp);
+                yyjson_val* v = yyjson_obj_iter_get_val(kp);
+                if ((k == "accountItem" || k == "accountItemRenderer") && yyjson_is_obj(v))
+                    items.push_back(v);
                 else
-                    walk(it.value());
+                    walk(v);
             }
-        } else if (j.is_array()) {
-            for (const json& e : j) walk(e);
+        } else if (yyjson_is_arr(j)) {
+            yyjson_arr_iter it = yyjson_arr_iter_with(j);
+            while (yyjson_val* e = yyjson_arr_iter_next(&it)) walk(e);
         }
     };
-    if (!r.is_discarded()) walk(r);
-    const json* item = nullptr;
-    for (const json* i : items)
-        if (!item || i->value("isSelected", false)) item = i;
+    walk(doc.root());
+    yyjson_val* item = nullptr;
+    for (yyjson_val* i : items)
+        if (!item || ybool(i, "isSelected")) item = i;
     if (!item) {
         error = "accounts_list: no account";
         return false;
     }
-    out.name = text_of(child_obj(*item, "accountName"));
-    out.handle = text_of(child_obj(*item, "channelHandle"));
-    out.photo = last_thumbnail(child_obj(*item, "accountPhoto"));
+    out.name = ytext(yobj(item, "accountName"));
+    out.handle = ytext(yobj(item, "channelHandle"));
+    out.photo = ythumb(yobj(item, "accountPhoto"));
     if (out.photo.compare(0, 2, "//") == 0) out.photo = "https:" + out.photo;
     return true;
 }

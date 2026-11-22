@@ -6,6 +6,7 @@
     <AssemblyName>OmegaTube</AssemblyName>
     <RootNamespace>OmegaTube</RootNamespace>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
 </Project>

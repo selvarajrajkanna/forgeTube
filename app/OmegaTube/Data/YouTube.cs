@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using OmegaTube.Util;
@@ -561,11 +562,17 @@ namespace OmegaTube.Data
             };
         }
 
-        private static T ParseNative<T>(IntPtr json, Func<JsonElement, T> read, Func<string, T> onError)
+        private static unsafe T ParseNative<T>(IntPtr json, Func<JsonElement, T> read, Func<string, T> onError)
         {
+            if (json == IntPtr.Zero)
+            {
+                return onError("null response");
+            }
             try
             {
-                using JsonDocument doc = JsonDocument.Parse(NativeCore.Utf8(json));
+                ReadOnlySpan<byte> utf8 = MemoryMarshal.CreateReadOnlySpanFromNullTerminated((byte*)json);
+                var reader = new Utf8JsonReader(utf8);
+                using JsonDocument doc = JsonDocument.ParseValue(ref reader);
                 return read(doc.RootElement);
             }
             catch (Exception e)
@@ -578,11 +585,16 @@ namespace OmegaTube.Data
             }
         }
 
-        public static object Call(IntPtr json)
+        public static unsafe object Call(IntPtr json)
         {
+            if (json == IntPtr.Zero)
+            {
+                return new Dictionary<string, object> { ["error"] = "null response" };
+            }
             try
             {
-                return Json.Parse(NativeCore.Utf8(json));
+                ReadOnlySpan<byte> utf8 = MemoryMarshal.CreateReadOnlySpanFromNullTerminated((byte*)json);
+                return Json.Parse(utf8);
             }
             catch (Exception e)
             {

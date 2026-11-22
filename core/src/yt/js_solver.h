@@ -22,8 +22,10 @@ public:
 
     // Slow (parses the whole ~2.5 MB player): the preprocessed player, a few MB, to keep for load().
     static bool preprocess(std::string&& player_js, std::string& preprocessed, std::string& error);
-    // Fast: instantiates the n / sig functions of a preprocessed player.
-    bool load(std::string&& preprocessed, std::string& error);
+    // Fast: compiles & instantiates the n / sig functions; optionally emits QuickJS bytecode for disk caching.
+    bool load(std::string&& preprocessed, std::string& error, std::string* bytecode_out = nullptr);
+    // Fastest: instantiates n / sig directly from cached QuickJS bytecode without parsing/compiling JS text.
+    bool load_bytecode(const std::string& bytecode, std::string& error);
     // type: "n" or "sig".
     bool solve(const char* type, const std::string& challenge, std::string& out, std::string& error);
 

@@ -481,10 +481,52 @@ namespace OmegaTube.Ui
 
         private Entry AddEntry(Comment c, int at, Entry parent, int indent = 0)
         {
-            int x = indent;
+            var e = new Entry
+            {
+                Comment = c,
+                Parent = parent,
+                Indent = indent,
+            };
+            MeasureEntry(e);
+            entries.Insert(at, e);
+            parent?.Children.Add(e);
+            return e;
+        }
+
+        // Computes comment layout height purely in managed code so off-screen entries need zero DALi views.
+        private void MeasureEntry(Entry e)
+        {
+            if (e.Comment == null)
+            {
+                return;
+            }
+            float y = 4;
+            if (e.Comment.Pinned)
+            {
+                y += 22;
+            }
+            y += 26;
+            e.Top = y;
+            int perLine = Widgets.CharsPerLine(ContentWidth - TextX - e.Indent - 12, BodyFont);
+            List<string> lines = Widgets.WrapLines(e.Comment.Text, perLine);
+            e.Truncated = lines.Count > CommentLines;
+            int shown = e.Expanded || !e.Truncated ? lines.Count : CommentLines;
+            float textH = Math.Max(1, shown) * BodyFont * LineFactor;
+            float endY = e.Top + textH + 4 + (e.Truncated ? 28 : 0);
+            e.Height = endY + 2 + ToolH + 12;
+        }
+
+        private void MaterializeEntry(Entry e)
+        {
+            if (e.View != null || e.Comment == null)
+            {
+                return;
+            }
+            Comment c = e.Comment;
+            int x = e.Indent;
             int w = ContentWidth - x;
-            var view = new View { Size = new Size(w, 80), PositionX = x };
-            var highlight = Widgets.Rounded(SortIdleBg, w + 12, 80, 12);
+            var view = new View { Size = new Size(w, e.Height), PositionX = x, PositionY = e.Y };
+            var highlight = Widgets.Rounded(SortIdleBg, w + 12, e.Height, 12);
             highlight.Position = new Position(-6, -4);
             highlight.Hide();
             view.Add(highlight);
@@ -534,29 +576,51 @@ namespace OmegaTube.Ui
             var toolbar = new View { Size = new Size(w - TextX, ToolH), PositionX = TextX };
             view.Add(toolbar);
 
-            var e = new Entry
-            {
-                Comment = c,
-                Parent = parent,
-                Indent = indent,
-                View = view,
-                Highlight = highlight,
-                Avatar = avatar,
-                Text = body,
-                More = more,
-                Toolbar = toolbar,
-                Top = y,
-            };
+            e.View = view;
+            e.Highlight = highlight;
+            e.Avatar = avatar;
+            e.Text = body;
+            e.More = more;
+            e.Toolbar = toolbar;
+            e.Top = y;
             BuildTools(e);
             FillEntry(e);
+            if (!string.IsNullOrEmpty(c.Avatar))
+            {
+                e.AvatarLoaded = true;
+                Widgets.RoundedImage(avatar, c.Avatar, AvatarSize / 2, AvatarSize, AvatarSize);
+            }
             list.Add(view);
-            entries.Insert(at, e);
-            parent?.Children.Add(e);
-            return e;
+        }
+
+        private void DematerializeEntry(Entry e)
+        {
+            if (e.View == null || e.Comment == null)
+            {
+                return;
+            }
+            if (painted == e)
+            {
+                painted = null;
+            }
+            list.Remove(e.View);
+            e.View.Dispose();
+            e.View = null;
+            e.Highlight = null;
+            e.Avatar = null;
+            e.AvatarLoaded = false;
+            e.Text = null;
+            e.More = null;
+            e.Toolbar = null;
+            e.Tools.Clear();
         }
 
         private void BuildTools(Entry e)
         {
+            if (e.Toolbar == null)
+            {
+                return;
+            }
             foreach (ToolButton tb in e.Tools)
             {
                 e.Toolbar.Remove(tb.Pill);
@@ -629,6 +693,11 @@ namespace OmegaTube.Ui
 
         private void FillEntry(Entry e)
         {
+            if (e.View == null)
+            {
+                MeasureEntry(e);
+                return;
+            }
             float textTop = e.Top;
             int perLine = Widgets.CharsPerLine(ContentWidth - TextX - e.Indent - 12, BodyFont);
             List<string> lines = Widgets.WrapLines(e.Comment.Text, perLine);
@@ -676,7 +745,10 @@ namespace OmegaTube.Ui
             foreach (Entry e in entries)
             {
                 e.Y = cy;
-                e.View.PositionY = cy;
+                if (e.View != null)
+                {
+                    e.View.PositionY = cy;
+                }
                 cy += e.Height;
             }
             list.SizeHeight = cy;
@@ -685,28 +757,38 @@ namespace OmegaTube.Ui
             UpdateViewport();
         }
 
-        // Hides far off-screen entries and loads/unloads 36x36 comment avatars around the viewport.
+        // Virtualizes comment view trees: only entries around the viewport are materialized in DALi.
         private void UpdateViewport()
         {
-            float viewTop = scrollY - ViewportHeight;
-            float viewBot = scrollY + 2 * ViewportHeight;
-            float avTop = scrollY - 2 * ViewportHeight;
-            float avBot = scrollY + 3 * ViewportHeight;
+            float matTop = scrollY - ViewportHeight;
+            float matBot = scrollY + 2 * ViewportHeight;
+            float keepTop = scrollY - 2 * ViewportHeight;
+            float keepBot = scrollY + 3 * ViewportHeight;
+            Entry focused = FocusedEntry;
             foreach (Entry e in entries)
             {
                 float top = listTop + e.Y;
                 float bot = top + e.Height;
-                Widgets.SetVisible(e.View, bot >= viewTop && top <= viewBot);
-                bool wantAvatar = !string.IsNullOrEmpty(e.Comment.Avatar) && bot >= avTop && top <= avBot;
-                if (wantAvatar && !e.AvatarLoaded)
+                bool inWindow = e == focused || (bot >= matTop && top <= matBot);
+                if (inWindow)
                 {
-                    e.AvatarLoaded = true;
-                    Widgets.RoundedImage(e.Avatar, e.Comment.Avatar, AvatarSize / 2, AvatarSize, AvatarSize);
+                    if (e.View == null && e.Comment != null)
+                    {
+                        MaterializeEntry(e);
+                    }
+                    if (e.View != null)
+                    {
+                        e.View.PositionY = e.Y;
+                        Widgets.SetVisible(e.View, true);
+                    }
                 }
-                else if (!wantAvatar && e.AvatarLoaded)
+                else if (e.Comment != null && (bot < keepTop || top > keepBot))
                 {
-                    e.AvatarLoaded = false;
-                    e.Avatar.ResourceUrl = "";
+                    DematerializeEntry(e);
+                }
+                else if (e.View != null)
+                {
+                    Widgets.SetVisible(e.View, false);
                 }
             }
         }
@@ -732,7 +814,7 @@ namespace OmegaTube.Ui
                     return (formTop, formTop + 56);
                 default:
                     Entry e = entries[index - 2];
-                    return (listTop + e.View.PositionY, listTop + e.View.PositionY + e.Height);
+                    return (listTop + e.Y, listTop + e.Y + e.Height);
             }
         }
 
@@ -748,11 +830,18 @@ namespace OmegaTube.Ui
             formLine.SizeHeight = field ? 3 : 2;
             form.BackgroundColor = field ? FormFocusBg : Color.Transparent;
 
+            Entry current = FocusedEntry;
+            if (current != null && current.View == null && current.Comment != null)
+            {
+                MaterializeEntry(current);
+            }
             for (int i = 0; i < entries.Count; i++)
             {
-                Widgets.SetVisible(entries[i].Highlight, focusIndex == i + 2);
+                if (entries[i].Highlight != null)
+                {
+                    Widgets.SetVisible(entries[i].Highlight, focusIndex == i + 2);
+                }
             }
-            Entry current = FocusedEntry;
             if (painted != null && painted != current)
             {
                 PaintTools(painted, -1);
@@ -993,7 +1082,10 @@ namespace OmegaTube.Ui
                 int at = entries.IndexOf(e) + 1;
                 foreach (Entry r in e.Children)
                 {
-                    list.Add(r.View);
+                    if (r.View != null)
+                    {
+                        list.Add(r.View);
+                    }
                     entries.Insert(at++, r);
                 }
                 BuildTools(e);
@@ -1094,7 +1186,14 @@ namespace OmegaTube.Ui
             foreach (Entry r in parent.Children)
             {
                 entries.Remove(r);
-                list.Remove(r.View);
+                if (r.Comment != null)
+                {
+                    DematerializeEntry(r);
+                }
+                else if (r.View != null)
+                {
+                    list.Remove(r.View);
+                }
             }
             if (painted != null && painted.Parent == parent)
             {

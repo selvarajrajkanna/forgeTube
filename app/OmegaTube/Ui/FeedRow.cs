@@ -31,7 +31,10 @@ namespace OmegaTube.Ui
         private readonly TextLabel status;
         private readonly View strip;
         private readonly List<VideoItem> items = new List<VideoItem>();
-        private readonly List<Card> cards = new List<Card>();   // cards of items[0 .. cards.Count)
+        private readonly Dictionary<int, Card> activeCards = new Dictionary<int, Card>();
+        private readonly Stack<Card> cardPool = new Stack<Card>();
+        private readonly List<int> recycleScratch = new List<int>();
+        private const int MaxPoolSize = 14;
         private string continuation = "";
         private bool fresh;        // first network page received
         private bool loading;
@@ -95,44 +98,82 @@ namespace OmegaTube.Ui
             UpdateVisible();
         }
 
-        // New items in place of the current ones. Existing cards of the same videos are reused (their
-        // thumbnail is already there), the others are dropped; the focus index stays.
+        // New items in place of the current ones. Existing active cards of the same videos are reused (their
+        // thumbnail is already there), the others return to the pool; the focus index stays.
         private void ReplaceItems(List<VideoItem> newItems)
         {
-            if (FocusIndex < cards.Count)
+            if (activeCards.TryGetValue(FocusIndex, out Card prev))
             {
-                cards[FocusIndex].SetFocused(false);   // its video may land elsewhere; UpdateVisible refocuses
+                prev.SetFocused(false);   // its video may land elsewhere; UpdateVisible refocuses
             }
-            Dictionary<string, Card> old = Card.IndexById(cards);
-            int built = cards.Count;
-            cards.Clear();
+            Dictionary<string, Card> old = Card.IndexById(activeCards.Values);
+            activeCards.Clear();
             items.Clear();
             items.AddRange(newItems);
-            for (int i = 0; i < Math.Min(built, items.Count); i++)
-            {
-                Card card = Card.Take(old, items[i]) ?? new Card(items[i], cardWidth);
-                card.Position = new Position(i * Step, 16);
-                if (card.GetParent() == null)
-                {
-                    strip.Add(card);
-                }
-                cards.Add(card);
-            }
-            Card.Drop(old);
             FocusIndex = Math.Min(FocusIndex, Math.Max(0, items.Count - 1));
+            int winStart = Math.Max(0, FocusIndex - 2);
+            int winEnd = Math.Min(items.Count - 1, FocusIndex + VisibleAhead + 1);
+            for (int i = winStart; i <= winEnd; i++)
+            {
+                Card card = Card.Take(old, items[i]);
+                if (card == null)
+                {
+                    card = TakeFromPoolOrNew(items[i]);
+                }
+                card.PositionX = i * Step;
+                card.PositionY = 16;
+                card.SetShown(true);
+                activeCards[i] = card;
+            }
+            foreach (Card leftover in old.Values)
+            {
+                ReturnToPool(leftover);
+            }
             slide = Widgets.Slide(strip, SlideX, StripY, slide);
         }
 
-        // Builds the (unfilled, cheap) cards up to index `last`.
-        private void EnsureCards(int last)
+        private Card TakeFromPoolOrNew(VideoItem item)
         {
-            last = Math.Min(last, items.Count - 1);
-            while (cards.Count <= last)
+            if (cardPool.Count > 0)
             {
-                var card = new Card(items[cards.Count], cardWidth) { Position = new Position(cards.Count * Step, 16) };
-                cards.Add(card);
-                strip.Add(card);
+                Card recycled = cardPool.Pop();
+                recycled.SetFocused(false);
+                recycled.Unload(force: true);
+                recycled.Rebind(item);
+                return recycled;
             }
+            var card = new Card(item, cardWidth) { PositionY = 16 };
+            strip.Add(card);
+            return card;
+        }
+
+        private void ReturnToPool(Card card)
+        {
+            card.SetFocused(false);
+            card.Unload(force: true);
+            card.SetShown(false);
+            if (cardPool.Count < MaxPoolSize)
+            {
+                cardPool.Push(card);
+            }
+            else
+            {
+                strip.Remove(card);
+                card.Dispose();
+            }
+        }
+
+        private Card AcquireCard(int index)
+        {
+            if (activeCards.TryGetValue(index, out Card existing))
+            {
+                return existing;
+            }
+            Card card = TakeFromPoolOrNew(items[index]);
+            card.PositionX = index * Step;
+            card.PositionY = 16;
+            activeCards[index] = card;
+            return card;
         }
 
         public async Task Load()
@@ -186,8 +227,7 @@ namespace OmegaTube.Ui
             focused = value;
             if (items.Count > 0)
             {
-                EnsureCards(FocusIndex);
-                cards[FocusIndex].SetFocused(value);
+                AcquireCard(FocusIndex).SetFocused(value);
             }
         }
 
@@ -198,9 +238,9 @@ namespace OmegaTube.Ui
             {
                 return;
             }
-            if (FocusIndex < cards.Count)
+            if (activeCards.TryGetValue(FocusIndex, out Card prev))
             {
-                cards[FocusIndex].SetFocused(false);
+                prev.SetFocused(false);
             }
             FocusIndex = 0;
             slide = Widgets.Slide(strip, SlideX, StripY, slide);
@@ -215,10 +255,12 @@ namespace OmegaTube.Ui
             {
                 return false;
             }
-            EnsureCards(next);
-            cards[FocusIndex].SetFocused(false);
+            if (activeCards.TryGetValue(FocusIndex, out Card prev))
+            {
+                prev.SetFocused(false);
+            }
             FocusIndex = next;
-            cards[FocusIndex].SetFocused(true);
+            AcquireCard(FocusIndex).SetFocused(true);
             slide = Widgets.Slide(strip, SlideX, StripY, slide);
             UpdateVisible();
             MaybeLoadMore();
@@ -247,7 +289,7 @@ namespace OmegaTube.Ui
         // Progress bars may have changed after watching something.
         public void RefreshProgress()
         {
-            foreach (Card c in cards)
+            foreach (Card c in activeCards.Values)
             {
                 c.UpdateProgress();
             }
@@ -256,29 +298,47 @@ namespace OmegaTube.Ui
         public void UnloadAll()
         {
             UiWork.Cancel(pump);
-            foreach (Card c in cards)
+            foreach (Card c in activeCards.Values)
             {
                 c.Unload(force: true);
             }
         }
 
-        // Only cards near the focus are shown: far ones would sit at x coordinates the TV's GPU renders
-        // unreliably (and hidden actors cost the renderer nothing). Filling them is left to UiWork.
+        // True view-pool virtualization: only cards around FocusIndex exist in activeCards; far ones recycle.
         private void UpdateVisible()
         {
-            EnsureCards(FocusIndex + VisibleAhead + 1);
-            if (focused && cards.Count > FocusIndex)
+            int keepMin = Math.Max(0, FocusIndex - 3);
+            int keepMax = Math.Min(items.Count - 1, FocusIndex + VisibleAhead + 2);
+            recycleScratch.Clear();
+            foreach (int idx in activeCards.Keys)
             {
-                cards[FocusIndex].SetFocused(true);
-            }
-            for (int i = 0; i < cards.Count; i++)
-            {
-                bool show = i >= FocusIndex - 2 && i < FocusIndex + VisibleAhead + 2;
-                cards[i].SetShown(show);
-                if (i < FocusIndex - 4 || i > FocusIndex + VisibleAhead + 3)
+                if (idx < keepMin || idx > keepMax || idx >= items.Count)
                 {
-                    cards[i].Unload();
+                    recycleScratch.Add(idx);
                 }
+            }
+            foreach (int idx in recycleScratch)
+            {
+                Card c = activeCards[idx];
+                activeCards.Remove(idx);
+                ReturnToPool(c);
+            }
+            int showMin = Math.Max(0, FocusIndex - 2);
+            int showMax = Math.Min(items.Count - 1, FocusIndex + VisibleAhead + 1);
+            for (int i = showMin; i <= showMax; i++)
+            {
+                AcquireCard(i).SetShown(true);
+            }
+            foreach (KeyValuePair<int, Card> kv in activeCards)
+            {
+                if (kv.Key < showMin || kv.Key > showMax)
+                {
+                    kv.Value.SetShown(false);
+                }
+            }
+            if (focused && activeCards.TryGetValue(FocusIndex, out Card fc))
+            {
+                fc.SetFocused(true);
             }
             if (Shown)
             {
@@ -294,18 +354,18 @@ namespace OmegaTube.Ui
             {
                 return false;
             }
-            int last = Math.Min(cards.Count - 1, FocusIndex + VisibleAhead);
+            int last = Math.Min(items.Count - 1, FocusIndex + VisibleAhead);
             for (int i = FocusIndex; i <= last; i++)
             {
-                if (!cards[i].Filled)
+                if (activeCards.TryGetValue(i, out Card c) && !c.Filled)
                 {
-                    cards[i].Fill();
+                    c.Fill();
                     return true;
                 }
             }
-            if (FocusIndex > 0 && FocusIndex - 1 < cards.Count && !cards[FocusIndex - 1].Filled)
+            if (FocusIndex > 0 && activeCards.TryGetValue(FocusIndex - 1, out Card left) && !left.Filled)
             {
-                cards[FocusIndex - 1].Fill();
+                left.Fill();
                 return true;
             }
             return false;

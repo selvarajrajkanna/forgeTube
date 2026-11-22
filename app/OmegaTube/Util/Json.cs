@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -17,6 +18,13 @@ namespace OmegaTube.Util
         public static object Parse(string text)
         {
             using JsonDocument doc = JsonDocument.Parse(text);
+            return Convert(doc.RootElement);
+        }
+
+        public static object Parse(ReadOnlySpan<byte> utf8)
+        {
+            var reader = new Utf8JsonReader(utf8);
+            using JsonDocument doc = JsonDocument.ParseValue(ref reader);
             return Convert(doc.RootElement);
         }
 

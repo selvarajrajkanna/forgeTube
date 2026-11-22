@@ -27,6 +27,7 @@ namespace OmegaTube.Ui
         private Animation zoom;
         private bool focused;
         private bool thumbLoaded;
+        private string loadedThumbUrl;
 
         public Card(VideoItem item, int width = Theme.CardWidth)
         {
@@ -114,10 +115,16 @@ namespace OmegaTube.Ui
 
             if (!string.IsNullOrEmpty(Item.Thumbnail))
             {
-                thumbLoaded = true;
-                (int dw, int dh) = ThumbDecodeSize(Item.Thumbnail, width, (int)thumb.SizeHeight);
-                Widgets.RoundedImage(thumb, Item.Thumbnail, Theme.CardRadius, dw, dh);
+                LoadThumb(Item.Thumbnail);
             }
+        }
+
+        private void LoadThumb(string url)
+        {
+            thumbLoaded = true;
+            loadedThumbUrl = url;
+            (int dw, int dh) = ThumbDecodeSize(url, width, (int)thumb.SizeHeight);
+            Widgets.RoundedImage(thumb, url, Theme.CardRadius, dw, dh);
         }
 
         // Releases GPU thumbnail texture and rendered text surfaces while keeping the lightweight card frame.
@@ -131,6 +138,7 @@ namespace OmegaTube.Ui
             if (thumbLoaded)
             {
                 thumbLoaded = false;
+                loadedThumbUrl = null;
                 thumb.ResourceUrl = "";
             }
             if (duration != null)
@@ -153,19 +161,53 @@ namespace OmegaTube.Ui
             }
         }
 
-        // The same video in a fresher page (network after cache): keeps the card and its loaded thumbnail.
+        // The same video in a fresher page (or a recycled card bound to another video): keeps or updates texts & thumb.
         public void Rebind(VideoItem item)
         {
+            bool changed = Item?.Id != item?.Id || Item?.Thumbnail != item?.Thumbnail;
             Item = item;
             if (Filled)
             {
                 title.Text = item.Title;
                 meta.Text = MetaLine(item);
-                if (!thumbLoaded && !string.IsNullOrEmpty(item.Thumbnail))
+                string badge = item.Live ? T("LIVE") : item.Duration;
+                if (!string.IsNullOrEmpty(badge))
                 {
-                    thumbLoaded = true;
-                    (int dw, int dh) = ThumbDecodeSize(item.Thumbnail, width, (int)thumb.SizeHeight);
-                    Widgets.RoundedImage(thumb, item.Thumbnail, Theme.CardRadius, dw, dh);
+                    if (duration == null)
+                    {
+                        duration = Widgets.Label(" " + badge + " ", Theme.SmallSize - 2, Theme.Text);
+                        Widgets.Round(duration, 4);
+                        duration.ParentOrigin = Tizen.NUI.ParentOrigin.TopLeft;
+                        duration.PivotPoint = Tizen.NUI.PivotPoint.BottomRight;
+                        duration.PositionUsesPivotPoint = true;
+                        duration.Position = new Position(width - 8, thumbH - 10);
+                        thumb.Add(duration);
+                    }
+                    else
+                    {
+                        duration.Text = " " + badge + " ";
+                    }
+                    duration.BackgroundColor = item.Live ? Theme.Accent : new Color(0, 0, 0, 0.82f);
+                }
+                else if (duration != null)
+                {
+                    thumb.Remove(duration);
+                    duration.Dispose();
+                    duration = null;
+                }
+                if (changed || (!thumbLoaded && !string.IsNullOrEmpty(item.Thumbnail)))
+                {
+                    if (string.IsNullOrEmpty(item.Thumbnail))
+                    {
+                        thumbLoaded = false;
+                        loadedThumbUrl = null;
+                        thumb.ResourceUrl = "";
+                    }
+                    else if (loadedThumbUrl != item.Thumbnail)
+                    {
+                        thumb.ResourceUrl = "";
+                        LoadThumb(item.Thumbnail);
+                    }
                 }
             }
             UpdateProgress();
@@ -247,7 +289,7 @@ namespace OmegaTube.Ui
         }
 
         // Card-recycling helpers for FeedGrid and FeedRow: keep cards whose video is still in the new feed.
-        internal static Dictionary<string, Card> IndexById(List<Card> list)
+        internal static Dictionary<string, Card> IndexById(IEnumerable<Card> list)
         {
             var d = new Dictionary<string, Card>();
             foreach (Card c in list)

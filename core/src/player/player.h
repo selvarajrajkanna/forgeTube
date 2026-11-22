@@ -106,6 +106,7 @@ private:
         std::atomic<bool> active{true};  // cleared to stop this track's threads (seek)
         std::atomic<bool> reconnecting{false};
         std::vector<media::Segment> segments;
+        std::shared_ptr<media::SamplePool> pool;
         std::atomic<int64_t> submitted_ms{0};
         std::atomic<uint32_t> underruns{0};
         std::atomic<uint64_t> bytes{0};

@@ -2,11 +2,14 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace omega::media {
@@ -93,8 +96,125 @@ struct Segment {
     uint64_t start_dts;   // decode time of its first sample, in track timescale (MP4 only)
 };
 
+// Recycled fixed-size slab pool for demuxed frame payloads. Eliminates ~110 cross-thread
+// malloc/free calls per second during 4K60 playback and prevents glibc arena fragmentation.
+class SamplePool : public std::enable_shared_from_this<SamplePool> {
+public:
+    static constexpr size_t kDefaultSlabBytes = 512 * 1024;
+    static constexpr size_t kDefaultMaxCached = 16;
+
+    struct Slab {
+        std::unique_ptr<uint8_t[]> mem;
+        size_t cap = 0;
+        size_t used = 0;
+    };
+
+    explicit SamplePool(size_t slab_bytes = kDefaultSlabBytes, size_t max_cached = kDefaultMaxCached)
+        : slab_bytes_(slab_bytes), max_cached_(max_cached) {}
+
+    // Single-producer bump allocation (called from demux_thread); slabs recycle from any thread (feed_thread).
+    std::pair<std::shared_ptr<Slab>, size_t> alloc(size_t n) {
+        if (n == 0) return {{}, 0};
+        const size_t aligned = (n + 15u) & ~size_t{15};
+        if (aligned > slab_bytes_) {
+            auto slab = std::make_shared<Slab>();
+            slab->mem = std::make_unique<uint8_t[]>(n);
+            slab->cap = n;
+            slab->used = n;
+            return {std::move(slab), 0};
+        }
+        if (!cur_ || cur_->used + aligned > cur_->cap) {
+            cur_ = acquire_slab();
+        }
+        size_t off = cur_->used;
+        cur_->used += aligned;
+        return {cur_, off};
+    }
+
+    void reset_active() { cur_.reset(); }
+
+private:
+    std::shared_ptr<Slab> acquire_slab() {
+        Slab* raw = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (!free_slabs_.empty()) {
+                raw = free_slabs_.back().release();
+                free_slabs_.pop_back();
+            }
+        }
+        if (!raw) {
+            raw = new Slab();
+            raw->mem = std::make_unique<uint8_t[]>(slab_bytes_);
+            raw->cap = slab_bytes_;
+        }
+        raw->used = 0;
+        std::weak_ptr<SamplePool> weak = weak_from_this();
+        return std::shared_ptr<Slab>(raw, [weak](Slab* s) {
+            if (auto self = weak.lock()) {
+                self->recycle(s);
+            } else {
+                delete s;
+            }
+        });
+    }
+
+    void recycle(Slab* s) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (s->cap == slab_bytes_ && free_slabs_.size() < max_cached_) {
+            free_slabs_.emplace_back(s);
+            return;
+        }
+        delete s;
+    }
+
+    size_t slab_bytes_;
+    size_t max_cached_;
+    std::shared_ptr<Slab> cur_;
+    std::mutex mu_;
+    std::vector<std::unique_ptr<Slab>> free_slabs_;
+};
+
+// Contiguous slice of a recycled SamplePool slab (falls back to standalone buffer when no pool is attached).
+struct SampleBuffer {
+    std::shared_ptr<SamplePool::Slab> slab;
+    size_t offset = 0;
+    size_t len = 0;
+
+    uint8_t* data() { return slab ? slab->mem.get() + offset : nullptr; }
+    const uint8_t* data() const { return slab ? slab->mem.get() + offset : nullptr; }
+    size_t size() const { return len; }
+    bool empty() const { return len == 0; }
+
+    void allocate(size_t n, SamplePool* pool = nullptr) {
+        len = n;
+        if (n == 0) {
+            slab.reset();
+            offset = 0;
+            return;
+        }
+        if (pool) {
+            auto [s, off] = pool->alloc(n);
+            slab = std::move(s);
+            offset = off;
+        } else {
+            slab = std::make_shared<SamplePool::Slab>();
+            slab->mem = std::make_unique<uint8_t[]>(n);
+            slab->cap = n;
+            slab->used = n;
+            offset = 0;
+        }
+    }
+
+    void assign(const uint8_t* src, const uint8_t* end, SamplePool* pool = nullptr) {
+        size_t n = static_cast<size_t>(end - src);
+        allocate(n, pool);
+        if (n > 0) std::memcpy(data(), src, n);
+    }
+};
+
 struct Sample {
-    std::vector<uint8_t> data;
+    SampleBuffer data;
     int64_t pts_ms = 0;
     int64_t duration_ms = 0;
     bool key = false;
@@ -114,6 +234,8 @@ public:
     std::vector<Segment> take_segments() { return std::move(segments_); }
     // Optional: emit demuxed samples in small batches while streaming a fragment instead of waiting for EOF of the fragment.
     void set_batch_cb(BatchCb cb) { batch_cb_ = std::move(cb); }
+    // Optional: recycle frame payload memory from a slab pool instead of per-sample heap allocations.
+    void set_sample_pool(std::shared_ptr<SamplePool> pool) { pool_ = std::move(pool); }
     // Appends the samples of the next fragment. Returns false on EOF or error.
     virtual bool read_fragment(std::deque<Sample>& out) = 0;
 
@@ -125,6 +247,7 @@ protected:
     std::string error_;
     std::vector<Segment> segments_;
     BatchCb batch_cb_;
+    std::shared_ptr<SamplePool> pool_;
 };
 
 // Sniffs the container (MP4 or WebM) from the first bytes and returns the matching reader.

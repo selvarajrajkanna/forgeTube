@@ -35,7 +35,10 @@ namespace OmegaTube.Ui
         private readonly TextLabel hlHeading, gridHeading;
         private readonly TextLabel status;
         private readonly List<VideoItem> items = new List<VideoItem>();
-        private readonly List<Card> cards = new List<Card>();   // cards of items[0 .. cards.Count)
+        private readonly Dictionary<int, Card> activeCards = new Dictionary<int, Card>();
+        private readonly Stack<Card> cardPool = new Stack<Card>();
+        private readonly List<int> recycleScratch = new List<int>();
+        private const int MaxPoolSize = 36;
         private readonly List<Card> highlights = new List<Card>();
         private Func<string, Task<FeedPage>> loader;
         private string continuation = "";
@@ -139,7 +142,7 @@ namespace OmegaTube.Ui
         public void UnloadAll()
         {
             UiWork.Cancel(pump);
-            foreach (Card c in cards)
+            foreach (Card c in activeCards.Values)
             {
                 c.Unload(force: true);
             }
@@ -208,12 +211,18 @@ namespace OmegaTube.Ui
         {
             ClearPlaceholders();
             items.Clear();
-            foreach (Card c in cards)
+            foreach (Card c in activeCards.Values)
             {
                 content.Remove(c);
                 c.Dispose();
             }
-            cards.Clear();
+            activeCards.Clear();
+            while (cardPool.Count > 0)
+            {
+                Card c = cardPool.Pop();
+                content.Remove(c);
+                c.Dispose();
+            }
             if (highlights.Count > 0)
             {
                 SetHighlights(new List<VideoItem>());
@@ -246,40 +255,93 @@ namespace OmegaTube.Ui
             hlStrip.PositionX = 0;
         }
 
-        // New items in place of the current ones, keeping the cards of videos still there (and their thumbnail).
+        // New items in place of the current ones, keeping active cards of videos still in the visible window.
         private void ReplaceItems(List<VideoItem> newItems)
         {
-            Dictionary<string, Card> old = Card.IndexById(cards);
-            int built = cards.Count;
-            cards.Clear();
+            Dictionary<string, Card> old = Card.IndexById(activeCards.Values);
+            activeCards.Clear();
             items.Clear();
             items.AddRange(newItems);
-            for (int i = 0; i < Math.Min(built, items.Count); i++)
+            focus = Math.Min(focus, Math.Max(0, items.Count - 1));
+            int focusRow = inHighlights ? 0 : focus / Columns;
+            int minIdx = Math.Max(0, (focusRow - RowsBefore) * Columns);
+            int maxIdx = Math.Min(items.Count - 1, (focusRow + RowsAfter + 1) * Columns - 1);
+            for (int i = minIdx; i <= maxIdx; i++)
             {
-                Card card = Card.Take(old, items[i]) ?? new Card(items[i], cardW);
-                card.Position = CardPosition(i);
-                if (card.GetParent() == null)
-                {
-                    content.Add(card);
-                }
-                cards.Add(card);
+                Card card = Card.Take(old, items[i]) ?? TakeFromPoolOrNew(items[i]);
+                PlaceCard(card, i);
+                card.SetShown(NearFocus(i / Columns));
+                activeCards[i] = card;
             }
-            Card.Drop(old);
+            foreach (Card leftover in old.Values)
+            {
+                ReturnToPool(leftover);
+            }
         }
 
-        private Position CardPosition(int i) => new Position(Pad + (i % Columns) * (cardW + GapX), gridTop + (i / Columns) * rowStep);
+        private void PlaceCard(Card card, int i)
+        {
+            card.PositionX = Pad + (i % Columns) * (cardW + GapX);
+            card.PositionY = gridTop + (i / Columns) * rowStep;
+        }
 
-        // Builds the (unfilled, cheap) cards up to the last row kept around the focus.
+        private Card TakeFromPoolOrNew(VideoItem item)
+        {
+            if (cardPool.Count > 0)
+            {
+                Card recycled = cardPool.Pop();
+                recycled.SetFocused(false);
+                recycled.Unload(force: true);
+                recycled.Rebind(item);
+                return recycled;
+            }
+            var card = new Card(item, cardW);
+            card.SetShown(false);
+            content.Add(card);
+            return card;
+        }
+
+        private void ReturnToPool(Card card)
+        {
+            card.SetFocused(false);
+            card.Unload(force: true);
+            card.SetShown(false);
+            if (cardPool.Count < MaxPoolSize)
+            {
+                cardPool.Push(card);
+            }
+            else
+            {
+                content.Remove(card);
+                card.Dispose();
+            }
+        }
+
+        private Card AcquireCard(int i)
+        {
+            if (activeCards.TryGetValue(i, out Card existing))
+            {
+                return existing;
+            }
+            Card card = TakeFromPoolOrNew(items[i]);
+            PlaceCard(card, i);
+            activeCards[i] = card;
+            return card;
+        }
+
+        // Ensures active cards exist for the visible window around the focus.
         private void EnsureCards()
         {
-            int focusRow = inHighlights ? 0 : focus / Columns;
-            int last = Math.Min(items.Count - 1, (focusRow + RowsAfter + 1) * Columns - 1);
-            while (cards.Count <= last)
+            if (items.Count == 0)
             {
-                var card = new Card(items[cards.Count], cardW) { Position = CardPosition(cards.Count) };
-                card.SetShown(false);   // (not Hide(): the card's managed flag must match)
-                cards.Add(card);
-                content.Add(card);
+                return;
+            }
+            int focusRow = inHighlights ? 0 : focus / Columns;
+            int minIdx = Math.Max(0, (focusRow - RowsBefore) * Columns);
+            int maxIdx = Math.Min(items.Count - 1, (focusRow + RowsAfter + 1) * Columns - 1);
+            for (int i = minIdx; i <= maxIdx; i++)
+            {
+                AcquireCard(i);
             }
         }
 
@@ -358,9 +420,9 @@ namespace OmegaTube.Ui
         {
             inHighlights = highlights.Count > 0 && (inHighlights || items.Count == 0);
             EnsureCards();
-            for (int i = 0; i < cards.Count; i++)
+            foreach (KeyValuePair<int, Card> kv in activeCards)
             {
-                cards[i].SetFocused(focused && !inHighlights && i == focus);
+                kv.Value.SetFocused(focused && !inHighlights && kv.Key == focus);
             }
             for (int i = 0; i < highlights.Count; i++)
             {
@@ -385,7 +447,7 @@ namespace OmegaTube.Ui
             {
                 return highlights.Count > 0 ? highlights[hlFocus] : null;
             }
-            return focus < cards.Count ? cards[focus] : null;
+            return items.Count > 0 && focus >= 0 && focus < items.Count ? AcquireCard(focus) : null;
         }
 
         public void RefreshProgress()
@@ -394,7 +456,7 @@ namespace OmegaTube.Ui
             {
                 c.UpdateProgress();
             }
-            foreach (Card c in cards)
+            foreach (Card c in activeCards.Values)
             {
                 c.UpdateProgress();
             }
@@ -443,10 +505,12 @@ namespace OmegaTube.Ui
             }
             if (next != focus)
             {
-                cards[focus].SetFocused(false);
+                if (activeCards.TryGetValue(focus, out Card prev))
+                {
+                    prev.SetFocused(false);
+                }
                 focus = next;
-                EnsureCards();
-                cards[focus].SetFocused(true);
+                AcquireCard(focus).SetFocused(true);
                 ScrollToFocus();
                 MaybePrefetch();
             }
@@ -516,19 +580,31 @@ namespace OmegaTube.Ui
             UpdateVisibleRows();
         }
 
-        // Shows the rows around the focus, hides the others; unloads far rows/highlights with 1-row hysteresis.
+        // True view-pool virtualization: recycles far off-screen cards back to cardPool and keeps activeCards O(1).
         private void UpdateVisibleRows()
         {
-            EnsureCards();
             int focusRow = inHighlights ? 0 : focus / Columns;
-            for (int i = 0; i < cards.Count; i++)
+            int keepMinRow = Math.Max(0, focusRow - RowsBefore - 1);
+            int keepMaxRow = focusRow + RowsAfter + 1;
+            recycleScratch.Clear();
+            foreach (int idx in activeCards.Keys)
             {
-                int row = i / Columns;
-                cards[i].SetShown(NearFocus(row));
-                if (row < focusRow - RowsBefore - 1 || row > focusRow + RowsAfter + 1)
+                int row = idx / Columns;
+                if (idx >= items.Count || row < keepMinRow || row > keepMaxRow)
                 {
-                    cards[i].Unload();
+                    recycleScratch.Add(idx);
                 }
+            }
+            foreach (int idx in recycleScratch)
+            {
+                Card c = activeCards[idx];
+                activeCards.Remove(idx);
+                ReturnToPool(c);
+            }
+            EnsureCards();
+            foreach (KeyValuePair<int, Card> kv in activeCards)
+            {
+                kv.Value.SetShown(NearFocus(kv.Key / Columns));
             }
             if (highlights.Count > 0)
             {
@@ -563,11 +639,11 @@ namespace OmegaTube.Ui
             foreach (int d in FillOrder)
             {
                 int row = focusRow + d;
-                for (int i = Math.Max(0, row * Columns); row >= 0 && i < Math.Min(cards.Count, (row + 1) * Columns); i++)
+                for (int i = Math.Max(0, row * Columns); row >= 0 && i < Math.Min(items.Count, (row + 1) * Columns); i++)
                 {
-                    if (!cards[i].Filled)
+                    if (activeCards.TryGetValue(i, out Card c) && !c.Filled)
                     {
-                        cards[i].Fill();
+                        c.Fill();
                         return true;
                     }
                 }

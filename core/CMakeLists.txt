@@ -54,6 +54,13 @@ set_target_properties(omega_zlib PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hi
 target_compile_options(omega_zlib PRIVATE -O3 -w)
 target_include_directories(omega_zlib PUBLIC ${OMEGA_ZLIB})
 
+# yyjson (static, PIC): fast arena-allocated JSON parser for InnerTube responses.
+set(OMEGA_YYJSON ${OMEGA_DEPS}/yyjson-0.11.1/src)
+add_library(omega_yyjson STATIC ${OMEGA_YYJSON}/yyjson.c)
+set_target_properties(omega_yyjson PROPERTIES C_STANDARD 11 C_VISIBILITY_PRESET hidden)
+target_compile_options(omega_yyjson PRIVATE -O3 -w)
+target_include_directories(omega_yyjson PUBLIC ${OMEGA_YYJSON})
+
 # Opus 1.6.1 (floating-point) & FAAD2 2.11.4 (floating-point, DRC off): clean software decode for PCM DSP.
 set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
 set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
@@ -141,11 +148,11 @@ set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
 set_source_files_properties(src/audio/dsp.cpp PROPERTIES COMPILE_OPTIONS "-fno-math-errno;-ffp-contract=fast")
 
 find_package(Threads REQUIRED)
-target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib opus faad Threads::Threads m ${CMAKE_DL_LIBS})
+target_link_libraries(omegacore PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib omega_yyjson opus faad Threads::Threads m ${CMAKE_DL_LIBS})
 
 # The TV ships its own libstdc++; link ours statically so we never depend on its version.
 target_link_libraries(omegacore PRIVATE -static-libstdc++ -static-libgcc -Wl,--no-undefined -Wl,--gc-sections)
-foreach(_gc omegacore mbedcrypto mbedx509 mbedtls omega_quickjs omega_zlib opus faad)
+foreach(_gc omegacore mbedcrypto mbedx509 mbedtls omega_quickjs omega_zlib omega_yyjson opus faad)
     if(TARGET ${_gc})
         target_compile_options(${_gc} PRIVATE -ffunction-sections -fdata-sections)
     endif()
@@ -160,14 +167,14 @@ if(OMEGA_HOST_TOOLS)
                    src/util/remote_config.cpp ${CMAKE_CURRENT_BINARY_DIR}/cacert.cpp
                    ${CMAKE_CURRENT_BINARY_DIR}/remote_config_default.cpp)
     target_include_directories(ytcheck PRIVATE src ${OMEGA_DEPS})
-    target_link_libraries(ytcheck PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib Threads::Threads)
+    target_link_libraries(ytcheck PRIVATE mbedtls mbedx509 mbedcrypto omega_quickjs omega_zlib omega_yyjson Threads::Threads)
 endif()
 
 # Link-Time Optimization (Release builds only, verified against the active cross/host toolchain).
 include(CheckIPOSupported)
 check_ipo_supported(RESULT OMEGA_IPO_SUPPORTED LANGUAGES C CXX)
 if(OMEGA_IPO_SUPPORTED)
-    foreach(_tgt omegacore opus faad omega_zlib ytcheck)
+    foreach(_tgt omegacore opus faad omega_zlib omega_yyjson ytcheck)
         if(TARGET ${_tgt})
             set_property(TARGET ${_tgt} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         endif()

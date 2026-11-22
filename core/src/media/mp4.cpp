@@ -607,7 +607,7 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
                         Sample s;
                         const size_t sz = run.sizes[i];
                         if (sz > 0) {
-                            s.data.resize(sz);
+                            s.data.allocate(sz, pool_.get());
                             size_t got = read_(s.data.data(), sz);
                             offset_ += got;
                             if (got != sz) {
@@ -657,7 +657,7 @@ bool Fmp4Reader::read_fragment(std::deque<Sample>& out) {
                     }
                     Sample s;
                     const uint8_t* src = buf.data() + (at - payload_start);
-                    s.data.assign(src, src + run.sizes[i]);
+                    s.data.assign(src, src + run.sizes[i], pool_.get());
                     int64_t pts = static_cast<int64_t>(next_dts_) + run.ctos[i] - track_.media_time;
                     s.pts_ms = static_cast<int64_t>(std::max<int64_t>(pts, 0) * to_ms + 0.5);
                     s.duration_ms = static_cast<int64_t>(run.durations[i] * to_ms + 0.5);

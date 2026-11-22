@@ -91,6 +91,8 @@ Player::~Player() {
     for (Track* t : {&video_, &audio_}) {
         if (t->feed_thread.joinable()) t->feed_thread.join();
         if (t->demux_thread.joinable()) t->demux_thread.join();
+        t->queue.clear();
+        t->pool.reset();
     }
     teardown_esp();
 #if defined(__GLIBC__)
@@ -690,6 +692,7 @@ void Player::stop_track(Track& t) {
         t.queued_bytes = 0;
         t.demux_done = false;
     }
+    if (t.pool) t.pool->reset_active();
 #if defined(__GLIBC__)
     if (freed_bytes >= (4u << 20)) malloc_trim(0);
 #else
@@ -775,6 +778,11 @@ void Player::push_samples(Track& t, std::deque<media::Sample>& samples) {
 void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource* source_raw) {
     std::unique_ptr<media::Demuxer> reader(reader_raw);
     std::unique_ptr<net::StreamSource> source(source_raw);
+    if (!t.pool) {
+        const bool is_video = (t.type == esp::STREAM_VIDEO);
+        t.pool = std::make_shared<media::SamplePool>(is_video ? (512u << 10) : (64u << 10), is_video ? 16 : 8);
+    }
+    reader->set_sample_pool(t.pool);
     const std::string initial_url = source->url();
     reader->set_batch_cb([this, &t](std::deque<media::Sample>& batch) {
         if (!running_ || !t.active) return false;

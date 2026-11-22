@@ -364,7 +364,7 @@ bool WebmReader::parse_block(const uint8_t* p, size_t n, bool simple, bool has_r
         return false;
     }
     Sample s;
-    s.data.assign(c.p, c.end);
+    s.data.assign(c.p, c.end, pool_.get());
     int64_t ns = std::max<int64_t>(0, (cluster_time_ + rel) * static_cast<int64_t>(timecode_scale_));
     s.pts_ms = (ns + 500000) / 1000000;
     s.key = simple ? (flags & 0x80) != 0 : !has_reference;
@@ -484,7 +484,7 @@ bool WebmReader::read_fragment(std::deque<Sample>& out) {
             }
             Sample s;
             if (payload_len > 0) {
-                s.data.resize(static_cast<size_t>(payload_len));
+                s.data.allocate(static_cast<size_t>(payload_len), pool_.get());
                 size_t pgot = read_(s.data.data(), s.data.size());
                 offset_ += pgot;
                 if (pgot != s.data.size()) {

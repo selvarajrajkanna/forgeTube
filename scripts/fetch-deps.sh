@@ -8,6 +8,7 @@ JSON_VERSION=3.12.0
 QUICKJS_VERSION=0.18.0
 EJS_VERSION=0.8.0
 ZLIB_VERSION=1.4
+YYJSON_VERSION=0.11.1
 OPUS_VERSION=1.6.1
 FAAD2_VERSION=2.11.4
 DEPS=build/deps
@@ -28,6 +29,11 @@ fi
 # zlib (zlib license): gzip decompression for InnerTube / config HTTP responses.
 if [ ! -d "$DEPS/zlib-$ZLIB_VERSION" ]; then
   curl -sfL "https://github.com/madler/zlib/releases/download/v$ZLIB_VERSION/zlib-$ZLIB_VERSION.tar.gz" \
+    | tar -xz -C "$DEPS"
+fi
+# yyjson (MIT): single-arena JSON parser for large InnerTube responses.
+if [ ! -d "$DEPS/yyjson-$YYJSON_VERSION" ]; then
+  curl -sfL "https://github.com/ibireme/yyjson/archive/refs/tags/$YYJSON_VERSION.tar.gz" \
     | tar -xz -C "$DEPS"
 fi
 # Opus 1.5.2 (BSD-3) & FAAD2 2.11.4 (GPLv2+): floating-point audio decoders for max-fidelity PCM DSP.
