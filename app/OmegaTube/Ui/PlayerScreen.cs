@@ -176,6 +176,8 @@ namespace OmegaTube.Ui
 
         private CaptionChoice captions;    // null: off
         private List<CaptionCue> cues;
+        private int cueCursor;
+        private long lastCuePosMs = -1;
         private int captionGeneration;
         private string captionShown = "";
         private CaptionCue shownCue0, shownCue1;
@@ -1648,6 +1650,8 @@ namespace OmegaTube.Ui
         {
             captions = choice;
             cues = null;
+            cueCursor = 0;
+            lastCuePosMs = -1;
             captionShown = "";
             shownCue0 = null;
             shownCue1 = null;
@@ -1700,6 +1704,8 @@ namespace OmegaTube.Ui
                 return;
             }
             cues = list;
+            cueCursor = 0;
+            lastCuePosMs = -1;
             captionTick?.Start();
         }
 
@@ -1733,9 +1739,19 @@ namespace OmegaTube.Ui
             }
             NativeCore.PlayerGetStats(player, out NativeCore.PlayerStats now);
             long pos = now.PositionMs;
-            CaptionCue active0 = null, active1 = null;
-            foreach (CaptionCue c in cues)
+            if (pos < lastCuePosMs)
             {
+                cueCursor = 0;
+            }
+            lastCuePosMs = pos;
+            while (cueCursor < cues.Count && cues[cueCursor].EndMs <= pos)
+            {
+                cueCursor++;
+            }
+            CaptionCue active0 = null, active1 = null;
+            for (int i = cueCursor; i < cues.Count; i++)
+            {
+                CaptionCue c = cues[i];
                 if (c.StartMs > pos)
                 {
                     break;
