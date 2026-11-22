@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -193,6 +194,9 @@ private:
     std::mutex mutex_;  // guards the lazily fetched session data below
     std::string visitor_data_;
     std::string web_client_version_;
+    std::string cached_comments_video_id_;
+    std::string cached_comments_token_;
+    std::chrono::steady_clock::time_point cached_comments_at_{};
 };
 
 // Playable video formats at or below max_height, best first: highest resolution, then fps, then the codec

@@ -858,8 +858,13 @@ Response fetch(const Request& req, size_t max_body) {
     return res;
 }
 
-RangeReader::RangeReader(std::string url, Headers headers, uint64_t chunk_size, uint64_t start, bool large_rcvbuf)
-    : url_(std::move(url)), headers_(std::move(headers)), chunk_size_(chunk_size), pos_(start) {
+RangeReader::RangeReader(std::string url, Headers headers, uint64_t chunk_size, uint64_t start, bool large_rcvbuf,
+                         uint64_t first_chunk_size)
+    : url_(std::move(url)),
+      headers_(std::move(headers)),
+      chunk_size_(chunk_size),
+      first_chunk_size_(first_chunk_size),
+      pos_(start) {
     if (large_rcvbuf) conn_.set_large_rcvbuf(true);
 }
 
@@ -872,10 +877,15 @@ bool RangeReader::open_next() {
     req.url = url_;
     req.headers = headers_;
     // Adaptive chunk sizing: the body is streamed as it arrives, so the first range's size does not delay the
-    // first frame; after two clean ranges, 8 MB halves range round-trips on high-bitrate (4K60) streams.
+    // first frame; when resuming mid-video (first_chunk_size_ > 0) a small initial probe avoids downloading and
+    // discarding a 4 MB range at offset 0; after two clean ranges, 8 MB halves range round-trips on 4K60 streams.
     // Retries fall back to the base size.
     uint64_t req_chunk = chunk_size_;
-    if (chunks_opened_ >= 2 && failures_ == 0) req_chunk = std::max<uint64_t>(chunk_size_, 8 * 1024 * 1024);
+    if (chunks_opened_ == 0 && first_chunk_size_ > 0 && failures_ == 0) {
+        req_chunk = first_chunk_size_;
+    } else if (chunks_opened_ >= 2 && failures_ == 0) {
+        req_chunk = std::max<uint64_t>(chunk_size_, 8 * 1024 * 1024);
+    }
     uint64_t end = pos_ + req_chunk - 1;
     if (total_ >= 0) end = std::min<uint64_t>(end, static_cast<uint64_t>(total_) - 1);
     req.headers.emplace_back("Range", "bytes=" + std::to_string(pos_) + "-" + std::to_string(end));
@@ -987,6 +997,40 @@ size_t RangeReader::read(void* dst, size_t n) {
         pos_ += got;
     }
     return total;
+}
+
+void RangeReader::seek_to(uint64_t offset) {
+    eof_ = false;
+    error_.clear();
+    failures_ = 0;
+    refusals_ = 0;
+    if (offset == pos_) return;
+    if (open_ && !sequential_) {
+        const int64_t rem = conn_.remaining();
+        // If target offset lies within the next 256 KiB of the active range, skip forward in-place.
+        if (offset > pos_ && rem >= 0 && (offset - pos_) <= static_cast<uint64_t>(rem) &&
+            (offset - pos_) <= 256 * 1024) {
+            uint8_t sink[16384];
+            uint64_t to_skip = offset - pos_;
+            while (to_skip > 0) {
+                size_t step = static_cast<size_t>(std::min<uint64_t>(to_skip, sizeof(sink)));
+                size_t got = conn_.read_some(sink, step);
+                if (got == 0) break;
+                pos_ += got;
+                to_skip -= got;
+            }
+            if (pos_ == offset && !conn_.body_done() && conn_.error().empty()) return;
+        } else if (rem >= 0 && rem <= 256 * 1024) {
+            // Drain small remaining probe tail so body_done() becomes true and the warm TLS socket is reused.
+            uint8_t sink[16384];
+            while (!conn_.body_done()) {
+                if (conn_.read_some(sink, sizeof(sink)) == 0) break;
+            }
+        }
+    }
+    open_ = false;
+    if (!conn_.is_reusable()) conn_.close();
+    pos_ = offset;
 }
 
 LiveReader::LiveReader(std::string url, Headers headers, int64_t first_sequence)

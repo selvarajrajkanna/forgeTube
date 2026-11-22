@@ -1027,6 +1027,41 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
     return true;
 }
 
+namespace {
+
+// First continuationCommand token under j.
+std::string continuation_token(yyjson_val* j) {
+    if (yyjson_val* cmd = yfind(j, "continuationCommand"); yyjson_is_obj(cmd))
+        return ystr(cmd, "token");
+    return "";
+}
+
+// Extracts the initial comments section continuation token from a WEB "next" watch-page response.
+std::string find_comments_token(yyjson_val* j) {
+    if (!j) return "";
+    if (yyjson_is_obj(j)) {
+        if (yyjson_val* isr = yobj(j, "itemSectionRenderer");
+            isr && ysv(yyjson_obj_get(isr, "sectionIdentifier")) == "comment-item-section") {
+            return continuation_token(isr);
+        }
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            if (is_ignored_branch(ysv(k))) continue;
+            std::string tok = find_comments_token(yyjson_obj_iter_get_val(k));
+            if (!tok.empty()) return tok;
+        }
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* v = yyjson_arr_iter_next(&it)) {
+            std::string tok = find_comments_token(v);
+            if (!tok.empty()) return tok;
+        }
+    }
+    return "";
+}
+
+}  // namespace
+
 bool Client::details(const std::string& video_id, const std::string& access_token, VideoDetails& out,
                      std::string& error) {
     if (!ensure_visitor(error)) return false;
@@ -1090,6 +1125,14 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
             out.like_count = ytext(yobj(yobj(lb, "toggleButtonRenderer"), "defaultText"));
     }
     if (out.like_count.find_first_of("0123456789") == std::string::npos) out.like_count.clear();
+    // Cache the comments section continuation token from this WEB "next" response so opening Comments
+    // skips a redundant ~1.5 MB watch-page fetch and parse.
+    if (std::string comments_tok = find_comments_token(r); !comments_tok.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cached_comments_video_id_ = video_id;
+        cached_comments_token_ = std::move(comments_tok);
+        cached_comments_at_ = std::chrono::steady_clock::now();
+    }
     doc.reset();  // release the WEB arena before parsing the TV account-state arena
 
     // Parse the account's like/subscribe state fetched above.
@@ -1177,13 +1220,6 @@ std::string ypath_str(yyjson_val* j, std::initializer_list<const char*> path) {
         if (!at) return "";
     }
     return yyjson_is_str(at) ? std::string(yyjson_get_str(at), yyjson_get_len(at)) : "";
-}
-
-// First continuationCommand token under j.
-std::string continuation_token(yyjson_val* j) {
-    if (yyjson_val* cmd = yfind(j, "continuationCommand"); yyjson_is_obj(cmd))
-        return ystr(cmd, "token");
-    return "";
 }
 
 // New layout: the thread only holds keys, the texts are commentEntityPayload mutations of frameworkUpdates.
@@ -1433,30 +1469,26 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
     };
     out = CommentPage{};
     std::string token = continuation;
+    bool from_cache = false;
     if (token.empty()) {
-        // The watch page only holds the continuation of the comments section.
-        YDoc watch;
-        if (!next({{"videoId", video_id}}, watch)) return false;
-        std::function<void(yyjson_val*)> find_section = [&](yyjson_val* j) {
-            if (!token.empty() || !j) return;
-            if (yyjson_is_obj(j)) {
-                if (yyjson_val* isr = yobj(j, "itemSectionRenderer");
-                    isr && ysv(yyjson_obj_get(isr, "sectionIdentifier")) == "comment-item-section") {
-                    token = continuation_token(isr);
-                    return;
-                }
-                yyjson_obj_iter it = yyjson_obj_iter_with(j);
-                while (yyjson_val* k = yyjson_obj_iter_next(&it)) find_section(yyjson_obj_iter_get_val(k));
-            } else if (yyjson_is_arr(j)) {
-                yyjson_arr_iter it = yyjson_arr_iter_with(j);
-                while (yyjson_val* v = yyjson_arr_iter_next(&it)) find_section(v);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (cached_comments_video_id_ == video_id && !cached_comments_token_.empty() &&
+                std::chrono::steady_clock::now() - cached_comments_at_ < std::chrono::minutes(10)) {
+                token = cached_comments_token_;
+                from_cache = true;
             }
-        };
-        find_section(watch.root());
+        }
         if (token.empty()) {
-            out.disabled = true;  // turned off, or a live chat instead
-            OLOG("yt: comments %s: none (disabled)", video_id.c_str());
-            return true;
+            // The watch page only holds the continuation of the comments section.
+            YDoc watch;
+            if (!next({{"videoId", video_id}}, watch)) return false;
+            token = find_comments_token(watch.root());
+            if (token.empty()) {
+                out.disabled = true;  // turned off, or a live chat instead
+                OLOG("yt: comments %s: none (disabled)", video_id.c_str());
+                return true;
+            }
         }
     }
     // Fetch the account's votes (TV "next") concurrently with the WEB comments page when signed in.
@@ -1468,6 +1500,21 @@ bool Client::comments(const std::string& video_id, const std::string& continuati
     YDoc doc;
     bool ok = next({{"continuation", token}}, doc);
     if (votes_thread.joinable()) votes_thread.join();
+    if (!ok && from_cache) {
+        // Fallback if the cached continuation token expired or failed: fetch the watch page normally.
+        YDoc watch;
+        if (!next({{"videoId", video_id}}, watch)) return false;
+        token = find_comments_token(watch.root());
+        if (token.empty()) {
+            out.disabled = true;
+            return true;
+        }
+        if (!access_token.empty()) {
+            votes_thread = std::thread([&] { votes_res = post_as_account("next", {{"continuation", token}}, access_token); });
+        }
+        ok = next({{"continuation", token}}, doc);
+        if (votes_thread.joinable()) votes_thread.join();
+    }
     if (!ok) return false;
     parse_comments(doc.root(), out);
     doc.reset();  // release WEB comments arena before parsing TV votes arena

@@ -49,6 +49,7 @@ public:
 
     int status() const { return status_; }
     int64_t content_length() const { return content_length_; }
+    int64_t remaining() const { return remaining_; }
     std::string header(std::string_view name) const;  // case-insensitive, "" if absent
     std::string_view header_view(std::string_view name) const;
     bool body_done() const { return body_done_; }
@@ -126,9 +127,10 @@ protected:
 class RangeReader : public StreamSource {
 public:
     RangeReader(std::string url, Headers headers, uint64_t chunk_size = 4 * 1024 * 1024, uint64_t start = 0,
-                bool large_rcvbuf = true);
+                bool large_rcvbuf = true, uint64_t first_chunk_size = 0);
 
     size_t read(void* dst, size_t n) override;
+    void seek_to(uint64_t offset);
     uint64_t position() const override { return pos_; }
     int64_t total_size() const override { return total_; }
     const std::string& url() const override { return url_; }
@@ -142,6 +144,7 @@ private:
     std::string url_;
     Headers headers_;
     uint64_t chunk_size_;
+    uint64_t first_chunk_size_ = 0;
     Connection conn_;
     uint64_t pos_ = 0;
     int64_t total_ = -1;

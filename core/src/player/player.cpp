@@ -145,7 +145,8 @@ bool Player::start() {
         }
         if (cfg_.live) src.http = std::make_unique<net::LiveReader>(init_url, cfg_.stream_headers, live_seq);
         else src.http = std::make_unique<net::RangeReader>(init_url, cfg_.stream_headers, 4 * 1024 * 1024, 0,
-                                                           t.type == esp::STREAM_VIDEO);
+                                                           t.type == esp::STREAM_VIDEO,
+                                                           cfg_.start_ms > 0 ? (256 * 1024) : 0);
         if (!cfg_.live) {
             // Opening: fresh URLs on 403/410, but give up soon if the stream stays refused (the caller then
             // tries another player client); start_track() puts the playback hooks back.
@@ -532,7 +533,12 @@ bool Player::start() {
                 }
                 std::string url = src.http->url();
                 t.url = url;
-                src.http = std::make_unique<net::RangeReader>(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset);
+                if (!cfg_.live && src.http) {
+                    static_cast<net::RangeReader*>(src.http.get())->seek_to(seg.offset);
+                } else {
+                    src.http = std::make_unique<net::RangeReader>(url, cfg_.stream_headers, 4 * 1024 * 1024, seg.offset,
+                                                                  t.type == esp::STREAM_VIDEO);
+                }
                 net::StreamSource* http = src.http.get();
                 src.reader = media::resume_demuxer(
                     [http, &t](void* dst, size_t n) {
