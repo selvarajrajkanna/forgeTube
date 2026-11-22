@@ -1060,6 +1060,55 @@ std::string find_comments_token(yyjson_val* j) {
     return "";
 }
 
+bool is_like_action_branch(std::string_view k) {
+    return is_ignored_branch(k) || k == "defaultButtonViewModel" || k == "toggledButtonViewModel" ||
+           k == "onTap" || k == "command" || k == "commands" || k == "innertubeCommand" ||
+           k == "serviceEndpoint" || k == "defaultServiceEndpoint" || k == "toggledServiceEndpoint" ||
+           k == "serviceEndpoints" || k == "likeEndpoint" || k == "dislikeEndpoint" || k == "removeLikeEndpoint";
+}
+
+std::string find_non_action_like_status(yyjson_val* j) {
+    if (!j) return "";
+    if (yyjson_is_obj(j)) {
+        if (yyjson_val* ls = yyjson_obj_get(j, "likeStatus"); yyjson_is_str(ls)) {
+            return std::string(yyjson_get_str(ls), yyjson_get_len(ls));
+        }
+        yyjson_obj_iter it = yyjson_obj_iter_with(j);
+        while (yyjson_val* k = yyjson_obj_iter_next(&it)) {
+            if (is_like_action_branch(ysv(k))) continue;
+            std::string s = find_non_action_like_status(yyjson_obj_iter_get_val(k));
+            if (!s.empty()) return s;
+        }
+    } else if (yyjson_is_arr(j)) {
+        yyjson_arr_iter it = yyjson_arr_iter_with(j);
+        while (yyjson_val* v = yyjson_arr_iter_next(&it)) {
+            std::string s = find_non_action_like_status(v);
+            if (!s.empty()) return s;
+        }
+    }
+    return "";
+}
+
+// Extracts the account's current video like state ("LIKE" | "DISLIKE" | "INDIFFERENT") from a TV "next"
+// response without matching "likeStatus": "LIKE" inside button tap commands / service endpoints.
+std::string parse_like_status(yyjson_val* t) {
+    if (!t) return "";
+    if (yyjson_val* lse = yfind(t, "likeStatusEntity"); yyjson_is_obj(lse)) {
+        std::string s = ystr(lse, "likeStatus");
+        if (!s.empty()) return s;
+    }
+    if (yyjson_val* lbr = yfind(t, "likeButtonRenderer"); yyjson_is_obj(lbr)) {
+        std::string s = ystr(lbr, "likeStatus");
+        if (!s.empty()) return s;
+    }
+    if (yyjson_val* lb = yfind(t, "likeButton"); yyjson_is_obj(lb)) {
+        if (yyjson_val* tbr = yobj(lb, "toggleButtonRenderer")) {
+            if (yyjson_obj_get(tbr, "isToggled")) return ybool(tbr, "isToggled") ? "LIKE" : "INDIFFERENT";
+        }
+    }
+    return find_non_action_like_status(t);
+}
+
 }  // namespace
 
 bool Client::details(const std::string& video_id, const std::string& access_token, VideoDetails& out,
@@ -1140,11 +1189,15 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
         YDoc tdoc = tv.ok() ? yparse(tv.body) : YDoc();
         yyjson_val* t = tdoc.root();
         if (yyjson_is_obj(t)) {
-            if (yyjson_val* like = yfind(t, "likeStatus"); yyjson_is_str(like))
-                out.like_status.assign(yyjson_get_str(like), yyjson_get_len(like));
+            out.like_status = parse_like_status(t);
             if (yyjson_val* sub = yfind(t, "subscribeButtonRenderer"); yyjson_is_obj(sub)) {
                 if (yyjson_obj_get(sub, "subscribed")) out.subscribed = ybool(sub, "subscribed") ? 1 : 0;
                 if (out.channel_id.empty()) out.channel_id = ystr(sub, "channelId");
+            }
+            if (out.subscribed < 0) {
+                if (yyjson_val* sse = yfind(t, "subscriptionStateEntity"); yyjson_is_obj(sse)) {
+                    if (yyjson_obj_get(sse, "subscribed")) out.subscribed = ybool(sse, "subscribed") ? 1 : 0;
+                }
             }
         } else {
             OLOG("yt: details %s: account state %s", video_id.c_str(), http_error("tv next", tv).c_str());
