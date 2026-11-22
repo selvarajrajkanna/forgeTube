@@ -239,8 +239,18 @@ private:
                     const size_t adv1 = next_p / up_;
                     if (adv1 <= 1 && consumed + adv1 + static_cast<size_t>(kTaps) <= total_frames) {
                         const size_t phase_b = next_p % up_;
+                        const size_t next_p2 = phase_b + down_;
                         const float* __restrict ha = &coeffs_[phase_num_ * kTaps];
                         const float* __restrict hb = &coeffs_[phase_b * kTaps];
+#if defined(__GNUC__) || defined(__clang__)
+                        // Polyphase jumps (-13 rows = -8320 B for 44.1->48 kHz) exceed A72's L1D stride prefetcher;
+                        // stream the next pair's first 4 cache lines from L2 into L1D while this pass runs.
+                        const float* hc = &coeffs_[(next_p2 % up_) * kTaps];
+                        __builtin_prefetch(hc, 0, 1);
+                        __builtin_prefetch(hc + 16, 0, 1);
+                        __builtin_prefetch(hc + 32, 0, 1);
+                        __builtin_prefetch(hc + 48, 0, 1);
+#endif
                         float32x4_t al = vdupq_n_f32(0.0f);
                         float32x4_t ar = vdupq_n_f32(0.0f);
                         float32x4_t bl = vdupq_n_f32(0.0f);
@@ -283,7 +293,6 @@ private:
                         out[written++] = neon_hsum(ar);
                         out[written++] = neon_hsum(bl);
                         out[written++] = neon_hsum(br);
-                        const size_t next_p2 = phase_b + down_;
                         consumed += adv1 + next_p2 / up_;
                         phase_num_ = next_p2 % up_;
                         continue;
@@ -407,19 +416,25 @@ public:
     static constexpr int kHop = kFft / 4;       // 64 samples = 1.333 ms hop (75% COLA overlap)
     static constexpr int kDelay = kFft - kHop;  // 192 samples = 4.000 ms exact COLA alignment
     static constexpr int kNumSub = 4;
-    static constexpr int kStageTwSize = kFft - 4;  // 4 + 8 + 16 + 32 + 64 + 128 = 252 contiguous twiddles
+    static constexpr int kStageTwSize = kFft - 4;    // 4 + 8 + 16 + 32 + 64 + 128 = 252 contiguous twiddles
+    static constexpr int kNumBitRevSwaps = 120;      // (256 - 16 palindromes) / 2 disjoint swap pairs
 
     HfExtender() {
         for (int i = 0; i < kFft; ++i) {
             hann_[i] =
                 static_cast<float>(0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(i) / static_cast<double>(kFft))));
         }
+        int n_swaps = 0;
         for (int i = 0; i < kFft; ++i) {
             int rev = 0;
             for (int b = 0; b < kLog2Fft; ++b) {
                 if ((i >> b) & 1) rev |= (1 << (kLog2Fft - 1 - b));
             }
-            bitrev_[i] = rev;
+            if (i < rev) {
+                swap_a_[n_swaps] = static_cast<uint8_t>(i);
+                swap_b_[n_swaps] = static_cast<uint8_t>(rev);
+                ++n_swaps;
+            }
         }
         for (int half = 4; half <= kFft / 2; half <<= 1) {
             const int offset = half - 4;
@@ -526,15 +541,67 @@ private:
     static constexpr float kLog2ToDb = 3.010299956639812f;   // 10 * log10(2)
     static constexpr float kDbToLog2 = 0.3321928094887362f;  // 1 / (10 * log10(2))
 
-    // Planar (SoA) radix-2 FFT operating directly on fft_re_ / fft_im_ with 1-uop NEON vld1q/vst1q.
+    // Planar (SoA) radix-2/4 FFT operating directly on fft_re_ / fft_im_ with NEON.
     void fft_inplace(bool inverse) {
-        for (int i = 0; i < kFft; ++i) {
-            const int j = bitrev_[i];
-            if (i < j) {
-                std::swap(fft_re_[i], fft_re_[j]);
-                std::swap(fft_im_[i], fft_im_[j]);
+        // Branchless 120-pair bit-reversal permutation.
+        for (int p = 0; p < kNumBitRevSwaps; ++p) {
+            const int a = swap_a_[p];
+            const int b = swap_b_[p];
+            std::swap(fft_re_[a], fft_re_[b]);
+            std::swap(fft_im_[a], fft_im_[b]);
+        }
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+        // Fused multiply-free radix-4 pass (Stages 1 & 2, len=2 + len=4) across 4 blocks (16 pts) per iter.
+        if (!inverse) {
+            for (int s = 0; s < kFft; s += 16) {
+                const float32x4x4_t x = vld4q_f32(fft_re_.data() + s);
+                const float32x4x4_t y = vld4q_f32(fft_im_.data() + s);
+                const float32x4_t a0r = vaddq_f32(x.val[0], x.val[1]);
+                const float32x4_t a1r = vsubq_f32(x.val[0], x.val[1]);
+                const float32x4_t a2r = vaddq_f32(x.val[2], x.val[3]);
+                const float32x4_t a3r = vsubq_f32(x.val[2], x.val[3]);
+                const float32x4_t a0i = vaddq_f32(y.val[0], y.val[1]);
+                const float32x4_t a1i = vsubq_f32(y.val[0], y.val[1]);
+                const float32x4_t a2i = vaddq_f32(y.val[2], y.val[3]);
+                const float32x4_t a3i = vsubq_f32(y.val[2], y.val[3]);
+                float32x4x4_t or4, oi4;
+                or4.val[0] = vaddq_f32(a0r, a2r);
+                or4.val[1] = vaddq_f32(a1r, a3i);
+                or4.val[2] = vsubq_f32(a0r, a2r);
+                or4.val[3] = vsubq_f32(a1r, a3i);
+                oi4.val[0] = vaddq_f32(a0i, a2i);
+                oi4.val[1] = vsubq_f32(a1i, a3r);
+                oi4.val[2] = vsubq_f32(a0i, a2i);
+                oi4.val[3] = vaddq_f32(a1i, a3r);
+                vst4q_f32(fft_re_.data() + s, or4);
+                vst4q_f32(fft_im_.data() + s, oi4);
+            }
+        } else {
+            for (int s = 0; s < kFft; s += 16) {
+                const float32x4x4_t x = vld4q_f32(fft_re_.data() + s);
+                const float32x4x4_t y = vld4q_f32(fft_im_.data() + s);
+                const float32x4_t a0r = vaddq_f32(x.val[0], x.val[1]);
+                const float32x4_t a1r = vsubq_f32(x.val[0], x.val[1]);
+                const float32x4_t a2r = vaddq_f32(x.val[2], x.val[3]);
+                const float32x4_t a3r = vsubq_f32(x.val[2], x.val[3]);
+                const float32x4_t a0i = vaddq_f32(y.val[0], y.val[1]);
+                const float32x4_t a1i = vsubq_f32(y.val[0], y.val[1]);
+                const float32x4_t a2i = vaddq_f32(y.val[2], y.val[3]);
+                const float32x4_t a3i = vsubq_f32(y.val[2], y.val[3]);
+                float32x4x4_t or4, oi4;
+                or4.val[0] = vaddq_f32(a0r, a2r);
+                or4.val[1] = vsubq_f32(a1r, a3i);
+                or4.val[2] = vsubq_f32(a0r, a2r);
+                or4.val[3] = vaddq_f32(a1r, a3i);
+                oi4.val[0] = vaddq_f32(a0i, a2i);
+                oi4.val[1] = vaddq_f32(a1i, a3r);
+                oi4.val[2] = vsubq_f32(a0i, a2i);
+                oi4.val[3] = vsubq_f32(a1i, a3r);
+                vst4q_f32(fft_re_.data() + s, or4);
+                vst4q_f32(fft_im_.data() + s, oi4);
             }
         }
+#else
         // Stage 1 (len = 2, half = 1): w = (1, 0) -> multiply-free.
         for (int s = 0; s < kFft; s += 2) {
             const float ur = fft_re_[s], ui = fft_im_[s];
@@ -580,6 +647,7 @@ private:
                 fft_im_[s + 3] = ui1 - ti1;
             }
         }
+#endif
         // Stages 3..8 (len = 8..256, half = 4..128): 4-wide NEON butterflies with contiguous twiddles.
         const float* const tw_im_base = inverse ? stage_tw_im_inv_.data() : stage_tw_im_.data();
         for (int len = 8; len <= kFft; len <<= 1) {
@@ -1064,7 +1132,8 @@ private:
     }
 
     alignas(64) std::array<float, kFft> hann_{};
-    std::array<int, kFft> bitrev_{};
+    alignas(64) std::array<uint8_t, kNumBitRevSwaps> swap_a_{};
+    alignas(64) std::array<uint8_t, kNumBitRevSwaps> swap_b_{};
     alignas(64) std::array<float, kStageTwSize> stage_tw_re_{};
     alignas(64) std::array<float, kStageTwSize> stage_tw_im_{};
     alignas(64) std::array<float, kStageTwSize> stage_tw_im_inv_{};
