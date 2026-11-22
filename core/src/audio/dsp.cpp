@@ -1046,7 +1046,14 @@ struct Pipeline::Impl {
     std::vector<float> work_in;
     std::vector<float> resampled_buf;
     std::vector<float> out_fifo;
+    size_t out_fifo_pos = 0;
     std::vector<std::vector<uint8_t>> free_bufs;
+
+    size_t out_fifo_frames() const { return (out_fifo.size() - out_fifo_pos) / kTargetChannels; }
+    void clear_out_fifo() {
+        out_fifo.clear();
+        out_fifo_pos = 0;
+    }
 
     void reclaim_frames(std::vector<PcmFrame>& out) {
         for (auto& f : out) {
@@ -1097,6 +1104,7 @@ struct Pipeline::Impl {
 
         if (pcm_bits == 32) {
             const size_t total = frames * kTargetChannels;
+            uint8_t* const dst_base = dst;
             size_t i = 0;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
             const float32x4_t gain_v = vdupq_n_f32(static_cast<float>(gain));
@@ -1105,31 +1113,49 @@ struct Pipeline::Impl {
             const float32x4_t zero_v = vdupq_n_f32(0.0f);
             const float32x4_t pos_half_v = vdupq_n_f32(0.5f);
             const float32x4_t neg_half_v = vdupq_n_f32(-0.5f);
+            uint32x4_t over_any = vdupq_n_u32(0u);
+            // Branchless 8-wide NEON loop: zero NEON->ARM cross-domain transfers inside the hot loop.
+            for (; i + 8 <= total; i += 8) {
+                const float32x4_t v0 = vmulq_f32(vld1q_f32(stereo + i), gain_v);
+                const float32x4_t v1 = vmulq_f32(vld1q_f32(stereo + i + 4), gain_v);
+                over_any = vorrq_u32(over_any, vcgtq_f32(vabsq_f32(v0), limit_v));
+                over_any = vorrq_u32(over_any, vcgtq_f32(vabsq_f32(v1), limit_v));
+                const float32x4_t s0 = vmulq_f32(v0, scale32_v);
+                const float32x4_t s1 = vmulq_f32(v1, scale32_v);
+                const float32x4_t b0 = vbslq_f32(vcltq_f32(s0, zero_v), neg_half_v, pos_half_v);
+                const float32x4_t b1 = vbslq_f32(vcltq_f32(s1, zero_v), neg_half_v, pos_half_v);
+                vst1q_u8(dst, vreinterpretq_u8_s32(vcvtq_s32_f32(vaddq_f32(s0, b0))));
+                vst1q_u8(dst + 16, vreinterpretq_u8_s32(vcvtq_s32_f32(vaddq_f32(s1, b1))));
+                dst += 32;
+            }
             for (; i + 4 <= total; i += 4) {
                 const float32x4_t v = vmulq_f32(vld1q_f32(stereo + i), gain_v);
-                const uint32x4_t over = vcgtq_f32(vabsq_f32(v), limit_v);
-                const uint32x2_t any2 = vorr_u32(vget_low_u32(over), vget_high_u32(over));
-                if (vget_lane_u32(vpmax_u32(any2, any2), 0) == 0u) {
-                    const float32x4_t scaled = vmulq_f32(v, scale32_v);
-                    const float32x4_t bias = vbslq_f32(vcltq_f32(scaled, zero_v), neg_half_v, pos_half_v);
-                    const int32x4_t q = vcvtq_s32_f32(vaddq_f32(scaled, bias));
-                    vst1q_u8(dst, vreinterpretq_u8_s32(q));
-                    dst += 16;
-                } else {
-                    for (size_t k = 0; k < 4; ++k) {
-                        const double sv = guard_peak(static_cast<double>(stereo[i + k]) * gain);
+                over_any = vorrq_u32(over_any, vcgtq_f32(vabsq_f32(v), limit_v));
+                const float32x4_t s = vmulq_f32(v, scale32_v);
+                const float32x4_t b = vbslq_f32(vcltq_f32(s, zero_v), neg_half_v, pos_half_v);
+                vst1q_u8(dst, vreinterpretq_u8_s32(vcvtq_s32_f32(vaddq_f32(s, b))));
+                dst += 16;
+            }
+            const uint32x2_t any2 = vorr_u32(vget_low_u32(over_any), vget_high_u32(over_any));
+            if (vget_lane_u32(vpmax_u32(any2, any2), 0) != 0u) {
+                // Rare (<0.1%): fix up only samples exceeding 0.995 with exact soft-peak guard.
+                for (size_t k = 0; k < i; ++k) {
+                    const double raw = static_cast<double>(stereo[k]) * gain;
+                    if (std::abs(raw) > 0.995) {
+                        const double sv = guard_peak(raw);
                         const long long sq = std::llrint(sv * 2147483647.0);
                         const uint32_t u = static_cast<uint32_t>(
                             static_cast<int32_t>(std::clamp<long long>(sq, INT32_MIN, INT32_MAX)));
-                        dst[0] = static_cast<uint8_t>(u & 0xffu);
-                        dst[1] = static_cast<uint8_t>((u >> 8) & 0xffu);
-                        dst[2] = static_cast<uint8_t>((u >> 16) & 0xffu);
-                        dst[3] = static_cast<uint8_t>((u >> 24) & 0xffu);
-                        dst += 4;
+                        uint8_t* p = dst_base + 4 * k;
+                        p[0] = static_cast<uint8_t>(u & 0xffu);
+                        p[1] = static_cast<uint8_t>((u >> 8) & 0xffu);
+                        p[2] = static_cast<uint8_t>((u >> 16) & 0xffu);
+                        p[3] = static_cast<uint8_t>((u >> 24) & 0xffu);
                     }
                 }
             }
 #endif
+            (void)dst_base;
             for (; i < total; ++i) {
                 const double v = guard_peak(static_cast<double>(stereo[i]) * gain);
                 const long long q = std::llrint(v * 2147483647.0);
@@ -1175,7 +1201,7 @@ struct Pipeline::Impl {
     void drain_chunks(std::vector<PcmFrame>& out, bool flush_tail) {
         const size_t min_frames = flush_tail ? 1 : static_cast<size_t>(kFrameSamples);
         size_t offset_frames = 0;
-        const size_t avail_frames = out_fifo.size() / kTargetChannels;
+        const size_t avail_frames = out_fifo_frames();
         while (avail_frames - offset_frames >= min_frames) {
             const size_t take = std::min<size_t>(kFrameSamples, avail_frames - offset_frames);
             if (!flush_tail && take < static_cast<size_t>(kFrameSamples)) break;
@@ -1186,14 +1212,19 @@ struct Pipeline::Impl {
             }
             pkt.pts_ms = base_pts_ms + (emitted_frames * 1000LL + kTargetRate / 2) / kTargetRate;
             pkt.duration_ms = std::max<int64_t>(1, (static_cast<int64_t>(take) * 1000LL + kTargetRate / 2) / kTargetRate);
-            pack_samples(&out_fifo[offset_frames * kTargetChannels], take, pkt.data);
+            pack_samples(out_fifo.data() + out_fifo_pos + offset_frames * kTargetChannels, take, pkt.data);
             out.push_back(std::move(pkt));
             offset_frames += take;
             emitted_frames += static_cast<int64_t>(take);
         }
         if (offset_frames > 0) {
-            out_fifo.erase(out_fifo.begin(),
-                           out_fifo.begin() + static_cast<std::ptrdiff_t>(offset_frames * kTargetChannels));
+            out_fifo_pos += offset_frames * kTargetChannels;
+            if (out_fifo_pos >= out_fifo.size()) {
+                clear_out_fifo();
+            } else if (out_fifo_pos >= static_cast<size_t>(kFrameSamples) * 4 * kTargetChannels) {
+                out_fifo.erase(out_fifo.begin(), out_fifo.begin() + static_cast<std::ptrdiff_t>(out_fifo_pos));
+                out_fifo_pos = 0;
+            }
         }
     }
 };
@@ -1300,7 +1331,7 @@ void Pipeline::reset() {
     impl_->resampler.reset();
     impl_->hf_extender.reset_buffers();
     impl_->resampled_buf.clear();
-    impl_->out_fifo.clear();
+    impl_->clear_out_fifo();
     impl_->pts_anchored = false;
     impl_->emitted_frames = 0;
     impl_->ns_err_l = 0.0;
@@ -1356,15 +1387,15 @@ bool Pipeline::process(const uint8_t* data, size_t size, int64_t pts_ms, bool em
     if (!emit_output) {
         // Warm up decoder MDCT + resampler FIR + WOLA state cleanly before post-seek start point.
         impl_->pts_anchored = false;
-        impl_->out_fifo.clear();
+        impl_->clear_out_fifo();
     } else {
         const int64_t expected_pts =
             impl_->base_pts_ms +
-            ((impl_->emitted_frames + static_cast<int64_t>(impl_->out_fifo.size() / kTargetChannels)) * 1000LL +
+            ((impl_->emitted_frames + static_cast<int64_t>(impl_->out_fifo_frames())) * 1000LL +
              kTargetRate / 2) /
                 kTargetRate;
         if (!impl_->pts_anchored || std::abs(pts_ms - expected_pts) > 80) {
-            if (impl_->pts_anchored && !impl_->out_fifo.empty()) {
+            if (impl_->pts_anchored && impl_->out_fifo_frames() > 0) {
                 impl_->drain_chunks(out, true);
             }
             impl_->pts_anchored = true;

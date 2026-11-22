@@ -19,9 +19,13 @@ foreach(_mb mbedcrypto mbedx509 mbedtls)
     if(TARGET ${_mb})
         # Thread-safe shared DRBG/entropy/PSA crypto across parallel HTTPS threads (consistent ABI via PUBLIC).
         # Client outbound requests are small (<4 KiB), saving 12 KiB per active/pooled TLS socket.
+        set_target_properties(${_mb} PROPERTIES C_VISIBILITY_PRESET hidden)
         target_compile_definitions(${_mb} PUBLIC MBEDTLS_THREADING_C MBEDTLS_THREADING_PTHREAD MBEDTLS_SSL_OUT_CONTENT_LEN=4096)
     endif()
 endforeach()
+if(TARGET mbedtls)
+    target_compile_options(mbedtls PRIVATE -O3)
+endif()
 if(TARGET mbedcrypto)
     target_compile_options(mbedcrypto PRIVATE -O3)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")

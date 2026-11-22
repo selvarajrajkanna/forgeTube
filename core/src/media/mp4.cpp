@@ -22,15 +22,17 @@ struct Cursor {
     uint8_t u8() { return has(1) ? *p++ : 0; }
     uint16_t u16() {
         if (!has(2)) return static_cast<uint16_t>(u8() << 8);
-        uint16_t v = static_cast<uint16_t>((uint16_t(p[0]) << 8) | p[1]);
+        uint16_t raw;
+        std::memcpy(&raw, p, 2);
         p += 2;
-        return v;
+        return __builtin_bswap16(raw);
     }
     uint32_t u32() {
         if (!has(4)) { uint32_t v = 0; while (has(1)) v = (v << 8) | *p++; return v; }
-        uint32_t v = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+        uint32_t raw;
+        std::memcpy(&raw, p, 4);
         p += 4;
-        return v;
+        return __builtin_bswap32(raw);
     }
     uint64_t u64() { uint64_t hi = u32(); return hi << 32 | u32(); }
 };
