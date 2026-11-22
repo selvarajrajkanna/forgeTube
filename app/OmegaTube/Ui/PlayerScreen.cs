@@ -696,18 +696,21 @@ namespace OmegaTube.Ui
             return views.Length > 0 && date.Length > 0 ? views + "  •  " + date : views + date;
         }
 
-        // Where to start: the furthest of our own saved position and the account's progress as YouTube reports
-        // it on the card (watched on another device); nearly finished or barely started videos start over.
+        // Where to start: prefer our own exact saved position when this video has been played here
+        // (so rewinding or replaying a finished video isn't overridden by a stale/higher YouTube WatchedPercent);
+        // fall back to YouTube's card progress for videos watched on another device.
         internal static long ResumePoint(VideoItem v)
         {
-            long local = LocalStore.ResumePosition(v.Id);
-            if (LocalStore.Progress(v.Id) >= 0.99)
-            {
-                local = 0;
-            }
             long duration = ParseDuration(v.Duration);
-            long remote = v.WatchedPercent > 0 && v.WatchedPercent < 95 && duration > 0 ? duration * v.WatchedPercent / 100 : 0;
-            long start = Math.Max(local, remote);
+            long start;
+            if (LocalStore.HasPosition(v.Id))
+            {
+                start = LocalStore.Progress(v.Id) >= 0.99 ? 0 : LocalStore.ResumePosition(v.Id);
+            }
+            else
+            {
+                start = v.WatchedPercent > 0 && v.WatchedPercent < 95 && duration > 0 ? duration * v.WatchedPercent / 100 : 0;
+            }
             return start > 30000 && (duration <= 0 || start < duration - 30000) ? start : 0;
         }
 

@@ -73,6 +73,18 @@ namespace OmegaTube.Data
             return dur > 0 ? Math.Min(1, Json.Num(e, "pos") / dur) : 0;
         }
 
+        public static bool HasPosition(string videoId)
+        {
+            if (string.IsNullOrEmpty(videoId))
+            {
+                return false;
+            }
+            lock (posLock)
+            {
+                return positions != null && positions.ContainsKey(videoId);
+            }
+        }
+
         public static long ResumePosition(string videoId)
         {
             object e;

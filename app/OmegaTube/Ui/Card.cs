@@ -229,8 +229,8 @@ namespace OmegaTube.Ui
 
         public void UpdateProgress()
         {
-            // Local position (watched here) or YouTube's (watched on another device), whichever is further.
-            double p = Math.Max(LocalStore.Progress(Item.Id), Item.WatchedPercent / 100.0);
+            // Prefer our local position when played here (reflects rewinds accurately); fall back to YouTube's.
+            double p = LocalStore.HasPosition(Item.Id) ? LocalStore.Progress(Item.Id) : Item.WatchedPercent / 100.0;
             progress.SizeWidth = (float)(width * p);
             Widgets.SetVisible(progress, p > 0.01);
         }
