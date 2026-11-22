@@ -94,39 +94,40 @@ OMEGA_API void omega_player_get_stats(omega_player* player, omega_player_stats* 
 OMEGA_API void omega_player_destroy(omega_player* player);
 
 // ---- YouTube data (blocking network calls: use from a worker thread) ----
-// Results are malloc'ed UTF-8 JSON strings to release with omega_free():
-//   search:  {"items":[{"id","title","channel","duration","views","published","thumbnail","live"}],
-//             "continuation":"..."}  or {"error":"..."}
-//   suggest: {"suggestions":["..."]} or {"error":"..."}
-OMEGA_API char* omega_yt_search(const char* query, const char* continuation);
+// Bulk responses (feeds, comments, captions) return a malloc'ed little-endian binary buffer whose byte length is
+// written to *out_len (release with omega_free()):
+//   Header byte 0: 0 = error followed by u32 len + UTF-8 error string; 1 = ok followed by payload fields.
+//   Strings are u32 byte_len + raw UTF-8 bytes (no NUL terminator).
+//   Feed payload:    continuation, title, avatar, subscribers, u32 items_n + FeedItem[], u32 highlights_n + FeedItem[],
+//                    u32 shelves_n + {title, continuation, u32 items_n + FeedItem[]}[].
+//     FeedItem:      video_id, title, channel, duration, views, published, thumbnail, playlist_id, kind, u8 is_live,
+//                    i32 watched_percent.
+//   Comment payload: continuation, count, sort_top, sort_newest, create_params, u8 disabled, u32 items_n + Comment[].
+//     Comment:       id, author, avatar, text, published, likes, replies, reply_token,
+//                    u8 flags (bit0=pinned, bit1=creator, bit2=liked, bit3=disliked).
+//   Caption payload: u32 cues_n + {i64 start_ms, i64 end_ms, text}[].
+// Smaller endpoints return malloc'ed UTF-8 JSON strings (release with omega_free()).
+OMEGA_API uint8_t* omega_yt_search(const char* query, const char* continuation, uint32_t* out_len);
 OMEGA_API char* omega_yt_suggest(const char* query);
-// Signed-in feed (TV client): browse_id FEwhat_to_watch | FEsubscriptions | FEhistory. Same JSON as search
-// (FEsubscriptions first page adds "highlights": YouTube's "most relevant" shelf, same item format);
-// FEwhat_to_watch (home) gives rows instead of items: "shelves":[{"title","items":[...],"continuation"}] (a row's
-// continuation, passed back with browse_id "" , returns more items of that row).
-// {"error":"signed out"} when no account is connected.
-OMEGA_API char* omega_yt_browse(const char* browse_id, const char* continuation);
-// Items: also "playlistId" and "kind" ("video" | "playlist" | "mix": a playlist card plays "id" within it).
-// The (up to 25) videos after video_id in playlist_id (playlist or mix): same JSON as search plus "title".
-OMEGA_API char* omega_yt_playlist(const char* video_id, const char* playlist_id);
-// A whole playlist in order (paged): same JSON as search plus "title" (first page); items carry "playlistId".
-OMEGA_API char* omega_yt_playlist_page(const char* playlist_id, const char* continuation);
-// Related videos of video_id (player suggestions). Same JSON as search.
-OMEGA_API char* omega_yt_related(const char* video_id, const char* continuation);
+// Signed-in feed (TV client): browse_id FEwhat_to_watch | FEsubscriptions | FEhistory (binary Feed payload).
+OMEGA_API uint8_t* omega_yt_browse(const char* browse_id, const char* continuation, uint32_t* out_len);
+// The (up to 25) videos after video_id in playlist_id (playlist or mix): binary Feed payload (with title).
+OMEGA_API uint8_t* omega_yt_playlist(const char* video_id, const char* playlist_id, uint32_t* out_len);
+// A whole playlist in order (paged): binary Feed payload (with title on the first page).
+OMEGA_API uint8_t* omega_yt_playlist_page(const char* playlist_id, const char* continuation, uint32_t* out_len);
+// Related videos of video_id (player suggestions): binary Feed payload.
+OMEGA_API uint8_t* omega_yt_related(const char* video_id, const char* continuation, uint32_t* out_len);
 // Watch-page details: {"channelId","channel","channelAvatar","subscribers","date",
 // "likeStatus":"LIKE|DISLIKE|INDIFFERENT|" (empty: signed out),"subscribed":1|0|-1} or {"error"}.
 OMEGA_API char* omega_yt_details(const char* video_id);
 // As the signed-in account: rating "like" | "dislike" | "none"; (un)subscribe. {"ok":true} or {"error"}.
 OMEGA_API char* omega_yt_rate(const char* video_id, const char* rating);
 OMEGA_API char* omega_yt_subscribe(const char* channel_id, int subscribe);
-// A channel's videos (newest first): same JSON as search plus "title","avatar","subscribers" (first page).
-OMEGA_API char* omega_yt_channel(const char* channel_id, const char* continuation);
+// A channel's videos (newest first): binary Feed payload (with title, avatar, subscribers on the first page).
+OMEGA_API uint8_t* omega_yt_channel(const char* channel_id, const char* continuation, uint32_t* out_len);
 // Comments of a video, continuation NULL/empty = first page (top comments), or an item's replyToken for its replies:
-// {"items":[{"id","author","avatar","text","published","likes","replies","pinned","creator","hearted","replyToken",
-//  "liked","disliked" (the signed-in account's vote)}],
-//  "continuation","count" (display text, first page),"sortTop","sortNewest" (continuations reloading the list
-//  in that order),"createParams" (for omega_yt_post_comment),"disabled":bool} or {"error"}.
-OMEGA_API char* omega_yt_comments(const char* video_id, const char* continuation);
+// binary Comment payload.
+OMEGA_API uint8_t* omega_yt_comments(const char* video_id, const char* continuation, uint32_t* out_len);
 // As the signed-in account: {"ok":true,"comment":{...} or null} or {"error"}.
 OMEGA_API char* omega_yt_post_comment(const char* create_params, const char* text);
 // A reply in the thread of comment_id (a top-level comment): as omega_yt_post_comment.
@@ -134,8 +135,8 @@ OMEGA_API char* omega_yt_post_reply(const char* video_id, const char* comment_id
 // action: like, unlike, dislike, undislike. {"ok":true} or {"error"}.
 OMEGA_API char* omega_yt_comment_action(const char* video_id, const char* comment_id, const char* action);
 // Subtitles: a caption track URL (from omega_player_formats), machine-translated to translate_to when not
-// NULL/empty: {"cues":[{"start","end","text"}]} (ms) or {"error"}.
-OMEGA_API char* omega_yt_captions(const char* url, const char* translate_to);
+// NULL/empty: binary Caption payload.
+OMEGA_API uint8_t* omega_yt_captions(const char* url, const char* translate_to, uint32_t* out_len);
 // SponsorBlock: {"segments":[{"category","start","end"}]} (seconds) or {"error"}.
 OMEGA_API char* omega_sb_segments(const char* video_id);
 OMEGA_API void omega_free(void* p);

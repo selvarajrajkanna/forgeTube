@@ -1,6 +1,8 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using OmegaTube.Util;
@@ -145,73 +147,72 @@ namespace OmegaTube.Data
     {
         public static Task<FeedPage> Search(string query, string continuation = "")
         {
-            return Task.Run(() => ParsePage(NativeCore.YtSearch(query, continuation ?? "")));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtSearch(query, continuation ?? "", out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         // The videos after videoId in a playlist / mix (page.Title: the list's name).
         public static Task<FeedPage> Playlist(string videoId, string playlistId)
         {
-            return Task.Run(() => ParsePage(NativeCore.YtPlaylist(videoId, playlistId)));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtPlaylist(videoId, playlistId, out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         // A whole playlist, in order and paged (page.Title on the first page).
         public static Task<FeedPage> PlaylistPage(string playlistId, string continuation = "")
         {
-            return Task.Run(() => ParsePage(NativeCore.YtPlaylistPage(playlistId, continuation ?? "")));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtPlaylistPage(playlistId, continuation ?? "", out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         public static Task<FeedPage> Channel(string channelId, string continuation = "")
         {
-            return Task.Run(() => ParsePage(NativeCore.YtChannel(channelId, continuation ?? "")));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtChannel(channelId, continuation ?? "", out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         public static Task<VideoDetails> Details(string videoId)
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.YtDetails(videoId));
-                return new VideoDetails
+            return Task.Run(() => ParseNative(
+                NativeCore.YtDetails(videoId),
+                root => new VideoDetails
                 {
                     ChannelId = Json.Str(root, "channelId"), Channel = Json.Str(root, "channel"),
                     ChannelAvatar = Json.Str(root, "channelAvatar"), Subscribers = Json.Str(root, "subscribers"),
                     Date = Json.Str(root, "date"), LikeStatus = Json.Str(root, "likeStatus"),
                     LikeCount = Json.Str(root, "likeCount"),
-                    Subscribed = (int)Json.Num(root, "subscribed", -1), Error = Json.Str(root, "error", null),
-                };
-            });
+                    Subscribed = (int)Json.Long(root, "subscribed", -1), Error = Json.Str(root, "error", null),
+                },
+                err => new VideoDetails { Error = err }));
         }
 
         // "like" | "dislike" | "none". Returns the error, or null.
         public static Task<string> Rate(string videoId, string rating) =>
-            Task.Run(() => Json.Str(Call(NativeCore.YtRate(videoId, rating)), "error", null));
+            Task.Run(() => ParseNative(NativeCore.YtRate(videoId, rating), root => Json.Str(root, "error", null), err => err));
 
         public static Task<string> Subscribe(string channelId, bool subscribe) =>
-            Task.Run(() => Json.Str(Call(NativeCore.YtSubscribe(channelId, subscribe)), "error", null));
+            Task.Run(() => ParseNative(NativeCore.YtSubscribe(channelId, subscribe), root => Json.Str(root, "error", null), err => err));
 
         // continuation: "" = first page, else a page / sort continuation.
         public static Task<CommentPage> Comments(string videoId, string continuation = "")
         {
-            return Task.Run(() => ParseNative(
-                NativeCore.YtComments(videoId, continuation ?? ""),
-                root =>
-                {
-                    var page = new CommentPage
-                    {
-                        Continuation = Json.Str(root, "continuation"), Count = Json.Str(root, "count"),
-                        SortTop = Json.Str(root, "sortTop"), SortNewest = Json.Str(root, "sortNewest"),
-                        CreateParams = Json.Str(root, "createParams"), Disabled = Json.Bool(root, "disabled"),
-                        Error = Json.Str(root, "error", null),
-                    };
-                    if (Json.TryArr(root, "items", out JsonElement items))
-                    {
-                        foreach (JsonElement o in items.EnumerateArray())
-                        {
-                            page.Items.Add(ToComment(o));
-                        }
-                    }
-                    return page;
-                },
-                err => new CommentPage { Error = err }));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtComments(videoId, continuation ?? "", out uint len);
+                return ParseCommentsBin(ptr, len);
+            });
         }
 
         // Returns (the created comment or null, error or null).
@@ -242,7 +243,7 @@ namespace OmegaTube.Data
 
         // action: like, unlike, dislike, undislike. Returns the error or null.
         public static Task<string> CommentAction(string videoId, string commentId, string action) =>
-            Task.Run(() => Json.Str(Call(NativeCore.YtCommentAction(videoId, commentId, action)), "error", null));
+            Task.Run(() => ParseNative(NativeCore.YtCommentAction(videoId, commentId, action), root => Json.Str(root, "error", null), err => err));
 
         private static Comment ToComment(JsonElement o)
         {
@@ -258,111 +259,45 @@ namespace OmegaTube.Data
 
         public static Task<FeedPage> Related(string videoId, string continuation = "")
         {
-            return Task.Run(() => ParsePage(NativeCore.YtRelated(videoId, continuation ?? "")));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtRelated(videoId, continuation ?? "", out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         // Signed-in feeds: FEwhat_to_watch (recommended), FEsubscriptions, FEhistory.
         public static Task<FeedPage> Browse(string browseId, string continuation = "")
         {
-            return Task.Run(() => ParsePage(NativeCore.YtBrowse(browseId, continuation ?? "")));
-        }
-
-        private static FeedPage ParsePage(IntPtr json) =>
-            ParseNative(json, ToPage, err => new FeedPage { Error = err });
-
-        private static FeedPage ToPage(JsonElement root)
-        {
-            var page = new FeedPage
+            return Task.Run(() =>
             {
-                Error = Json.Str(root, "error", null),
-                Items = ToItems(root, "items"),
-                Highlights = ToItems(root, "highlights"),
-                Continuation = Json.Str(root, "continuation"),
-                Title = Json.Str(root, "title"),
-                Avatar = Json.Str(root, "avatar"),
-                Subscribers = Json.Str(root, "subscribers"),
-            };
-            if (Json.TryArr(root, "shelves", out JsonElement shelves))
-            {
-                foreach (JsonElement s in shelves.EnumerateArray())
-                {
-                    page.Shelves.Add(new Shelf
-                    {
-                        Title = Json.Str(s, "title"),
-                        Items = ToItems(s, "items"),
-                        Continuation = Json.Str(s, "continuation"),
-                    });
-                }
-            }
-            return page;
-        }
-
-        private static List<VideoItem> ToItems(JsonElement root, string key)
-        {
-            var items = new List<VideoItem>();
-            if (!Json.TryArr(root, key, out JsonElement arr))
-            {
-                return items;
-            }
-            items.Capacity = arr.GetArrayLength();
-            foreach (JsonElement o in arr.EnumerateArray())
-            {
-                items.Add(new VideoItem
-                {
-                    Id = Json.Str(o, "id"),
-                    Title = Json.Str(o, "title"),
-                    Channel = Json.Str(o, "channel"),
-                    Duration = Json.Str(o, "duration"),
-                    Views = Json.Str(o, "views"),
-                    Published = Json.Str(o, "published"),
-                    Thumbnail = Json.Str(o, "thumbnail"),
-                    Live = Json.Bool(o, "live"),
-                    WatchedPercent = (int)Json.Long(o, "watched"),
-                    PlaylistId = Json.Str(o, "playlistId"),
-                    Kind = Json.Str(o, "kind", "video"),
-                });
-            }
-            return items;
-        }
-
-        // Feed items as the core's JSON (and the feed cache) writes them.
-        public static List<VideoItem> ToItems(object root, string key)
-        {
-            var items = new List<VideoItem>();
-            foreach (object o in Json.Arr(root, key) ?? new List<object>())
-            {
-                items.Add(new VideoItem
-                {
-                    Id = Json.Str(o, "id"),
-                    Title = Json.Str(o, "title"),
-                    Channel = Json.Str(o, "channel"),
-                    Duration = Json.Str(o, "duration"),
-                    Views = Json.Str(o, "views"),
-                    Published = Json.Str(o, "published"),
-                    Thumbnail = Json.Str(o, "thumbnail"),
-                    Live = Json.Bool(o, "live"),
-                    WatchedPercent = (int)Json.Num(o, "watched"),
-                    PlaylistId = Json.Str(o, "playlistId"),
-                    Kind = Json.Str(o, "kind", "video"),
-                });
-            }
-            return items;
+                IntPtr ptr = NativeCore.YtBrowse(browseId, continuation ?? "", out uint len);
+                return ParsePageBin(ptr, len);
+            });
         }
 
         public static Task<List<string>> Suggest(string query)
         {
-            return Task.Run(() =>
-            {
-                var list = new List<string>();
-                foreach (object o in Json.Arr(Call(NativeCore.YtSuggest(query)), "suggestions") ?? new List<object>())
+            return Task.Run(() => ParseNative(
+                NativeCore.YtSuggest(query),
+                root =>
                 {
-                    if (o is string s)
+                    var list = new List<string>();
+                    if (Json.TryArr(root, "suggestions", out JsonElement arr))
                     {
-                        list.Add(s);
+                        list.Capacity = arr.GetArrayLength();
+                        foreach (JsonElement o in arr.EnumerateArray())
+                        {
+                            if (o.ValueKind == JsonValueKind.String)
+                            {
+                                string s = o.GetString();
+                                if (s != null) list.Add(s);
+                            }
+                        }
                     }
-                }
-                return list;
-            });
+                    return list;
+                },
+                _ => new List<string>()));
         }
 
         public static Task<List<SkipSegment>> SponsorSegments(string videoId)
@@ -390,26 +325,29 @@ namespace OmegaTube.Data
                 _ => new List<SkipSegment>()));
         }
 
-        public static bool SignedIn() => Json.Bool(Call(NativeCore.AuthStatus()), "signedIn");
+        public static bool SignedIn() =>
+            ParseNative(NativeCore.AuthStatus(), root => Json.Bool(root, "signedIn"), _ => false);
 
         // {deviceCode, userCode, verificationUrl, qrUrl, interval, expiresIn} or {error}
         public static Task<object> BeginSignIn() => Task.Run(() => Call(NativeCore.AuthBegin()));
 
         // "pending" | "slow_down" | "done" | "denied" | "expired" | "failed"
         public static Task<string> PollSignIn(string deviceCode) =>
-            Task.Run(() => Json.Str(Call(NativeCore.AuthPoll(deviceCode)), "status", "failed"));
+            Task.Run(() => ParseNative(NativeCore.AuthPoll(deviceCode), root => Json.Str(root, "status", "failed"), _ => "failed"));
 
         public static void SignOut() => NativeCore.AuthSignOut();
 
         // Why the last PlayerCreateYouTube failed. No network call.
         public static PlayError LastPlayError()
         {
-            object root = Call(NativeCore.PlayerLastError());
-            return new PlayError
-            {
-                Kind = Json.Str(root, "kind", "other"), Status = Json.Str(root, "status"), Reason = Json.Str(root, "reason"),
-                Detail = Json.Str(root, "detail"), SignedIn = Json.Bool(root, "signedIn"),
-            };
+            return ParseNative(
+                NativeCore.PlayerLastError(),
+                root => new PlayError
+                {
+                    Kind = Json.Str(root, "kind", "other"), Status = Json.Str(root, "status"), Reason = Json.Str(root, "reason"),
+                    Detail = Json.Str(root, "detail"), SignedIn = Json.Bool(root, "signedIn"),
+                },
+                err => new PlayError { Detail = err });
         }
 
         // What the player resolved (qualities, audio tracks, captions...). No network call.
@@ -485,64 +423,53 @@ namespace OmegaTube.Data
         // Timed subtitle lines of a caption track, machine-translated when translateTo is set. Null on error.
         public static Task<List<CaptionCue>> Captions(string url, string translateTo = "")
         {
-            return Task.Run(() => ParseNative(
-                NativeCore.YtCaptions(url, translateTo ?? ""),
-                root =>
-                {
-                    if (Json.Str(root, "error", null) != null)
-                    {
-                        return null;
-                    }
-                    var list = new List<CaptionCue>();
-                    if (Json.TryArr(root, "cues", out JsonElement cues))
-                    {
-                        list.Capacity = cues.GetArrayLength();
-                        foreach (JsonElement o in cues.EnumerateArray())
-                        {
-                            list.Add(new CaptionCue
-                            {
-                                StartMs = Json.Long(o, "start"),
-                                EndMs = Json.Long(o, "end"),
-                                Text = Json.Str(o, "text"),
-                            });
-                        }
-                    }
-                    list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
-                    return list;
-                },
-                _ => (List<CaptionCue>)null));
+            return Task.Run(() =>
+            {
+                IntPtr ptr = NativeCore.YtCaptions(url, translateTo ?? "", out uint len);
+                return ParseCaptionsBin(ptr, len);
+            });
         }
 
         public static Task<AccountInfo> Account()
         {
-            return Task.Run(() =>
-            {
-                object root = Call(NativeCore.AuthAccount());
-                return new AccountInfo
+            return Task.Run(() => ParseNative(
+                NativeCore.AuthAccount(),
+                root => new AccountInfo
                 {
                     Name = Json.Str(root, "name"), Handle = Json.Str(root, "handle"), Photo = Json.Str(root, "photo"),
                     Error = Json.Str(root, "error", null),
-                };
-            });
+                },
+                err => new AccountInfo { Error = err }));
         }
 
         // All signed-in accounts (cached profiles; no network call). The active one has Active == true.
         public static List<ProfileAccount> Accounts()
         {
-            var list = new List<ProfileAccount>();
-            foreach (object o in Json.Arr(Call(NativeCore.AuthAccounts()), "accounts") ?? new List<object>())
-            {
-                list.Add(new ProfileAccount
+            return ParseNative(
+                NativeCore.AuthAccounts(),
+                root =>
                 {
-                    Id = Json.Str(o, "id"), Name = Json.Str(o, "name"), Handle = Json.Str(o, "handle"),
-                    Photo = Json.Str(o, "photo"), Active = Json.Bool(o, "active"),
-                });
-            }
-            return list;
+                    var list = new List<ProfileAccount>();
+                    if (Json.TryArr(root, "accounts", out JsonElement arr))
+                    {
+                        list.Capacity = arr.GetArrayLength();
+                        foreach (JsonElement o in arr.EnumerateArray())
+                        {
+                            list.Add(new ProfileAccount
+                            {
+                                Id = Json.Str(o, "id"), Name = Json.Str(o, "name"), Handle = Json.Str(o, "handle"),
+                                Photo = Json.Str(o, "photo"), Active = Json.Bool(o, "active"),
+                            });
+                        }
+                    }
+                    return list;
+                },
+                _ => new List<ProfileAccount>());
         }
 
         // Makes the account with this id active. True on success.
-        public static bool SwitchAccount(string id) => Json.Str(Call(NativeCore.AuthSwitch(id)), "error", null) == null;
+        public static bool SwitchAccount(string id) =>
+            ParseNative(NativeCore.AuthSwitch(id), root => Json.Str(root, "error", null) == null, _ => false);
 
         public static string ActiveAccountId() => Accounts().Find(a => a.Active)?.Id ?? "";
 
@@ -560,6 +487,252 @@ namespace OmegaTube.Data
                 Hdr = Json.Bool(o, "hdr"),
                 HdrMode = Json.Str(o, "hdr_mode")
             };
+        }
+
+        // Zero-copy little-endian binary reader matching BinWriter in core/src/core.cpp.
+        private ref struct BinReader
+        {
+            private readonly ReadOnlySpan<byte> buf;
+            private int pos;
+
+            public BinReader(ReadOnlySpan<byte> data)
+            {
+                buf = data;
+                pos = 0;
+            }
+
+            public byte U8()
+            {
+                if (pos >= buf.Length) throw new InvalidOperationException("truncated binary payload");
+                return buf[pos++];
+            }
+
+            public uint U32()
+            {
+                if (buf.Length - pos < 4) throw new InvalidOperationException("truncated binary payload");
+                uint v = BinaryPrimitives.ReadUInt32LittleEndian(buf.Slice(pos, 4));
+                pos += 4;
+                return v;
+            }
+
+            public int I32()
+            {
+                if (buf.Length - pos < 4) throw new InvalidOperationException("truncated binary payload");
+                int v = BinaryPrimitives.ReadInt32LittleEndian(buf.Slice(pos, 4));
+                pos += 4;
+                return v;
+            }
+
+            public long I64()
+            {
+                if (buf.Length - pos < 8) throw new InvalidOperationException("truncated binary payload");
+                long v = BinaryPrimitives.ReadInt64LittleEndian(buf.Slice(pos, 8));
+                pos += 8;
+                return v;
+            }
+
+            public string Str()
+            {
+                int len = checked((int)U32());
+                if (len == 0) return "";
+                if (len < 0 || buf.Length - pos < len) throw new InvalidOperationException("truncated binary string");
+                string s = Encoding.UTF8.GetString(buf.Slice(pos, len));
+                pos += len;
+                return s;
+            }
+
+            public string KindStr()
+            {
+                int len = checked((int)U32());
+                if (len == 0) return "video";
+                if (len < 0 || buf.Length - pos < len) throw new InvalidOperationException("truncated binary string");
+                ReadOnlySpan<byte> slice = buf.Slice(pos, len);
+                pos += len;
+                if (slice.SequenceEqual("video"u8)) return "video";
+                if (slice.SequenceEqual("playlist"u8)) return "playlist";
+                if (slice.SequenceEqual("mix"u8)) return "mix";
+                return Encoding.UTF8.GetString(slice);
+            }
+        }
+
+        private static List<VideoItem> ReadFeedItems(ref BinReader r)
+        {
+            int count = checked((int)r.U32());
+            var items = new List<VideoItem>(count);
+            for (int i = 0; i < count; i++)
+            {
+                items.Add(new VideoItem
+                {
+                    Id = r.Str(),
+                    Title = r.Str(),
+                    Channel = r.Str(),
+                    Duration = r.Str(),
+                    Views = r.Str(),
+                    Published = r.Str(),
+                    Thumbnail = r.Str(),
+                    PlaylistId = r.Str(),
+                    Kind = r.KindStr(),
+                    Live = r.U8() != 0,
+                    WatchedPercent = r.I32(),
+                });
+            }
+            return items;
+        }
+
+        private static unsafe FeedPage ParsePageBin(IntPtr ptr, uint len)
+        {
+            if (ptr == IntPtr.Zero)
+            {
+                return new FeedPage { Error = "null response" };
+            }
+            try
+            {
+                if (len == 0)
+                {
+                    return new FeedPage { Error = "empty response" };
+                }
+                var r = new BinReader(new ReadOnlySpan<byte>((void*)ptr, checked((int)len)));
+                if (r.U8() == 0)
+                {
+                    return new FeedPage { Error = r.Str() };
+                }
+                var page = new FeedPage
+                {
+                    Continuation = r.Str(),
+                    Title = r.Str(),
+                    Avatar = r.Str(),
+                    Subscribers = r.Str(),
+                    Items = ReadFeedItems(ref r),
+                    Highlights = ReadFeedItems(ref r),
+                };
+                int shelfCount = checked((int)r.U32());
+                if (shelfCount > 0)
+                {
+                    page.Shelves.Capacity = shelfCount;
+                    for (int i = 0; i < shelfCount; i++)
+                    {
+                        page.Shelves.Add(new Shelf
+                        {
+                            Title = r.Str(),
+                            Continuation = r.Str(),
+                            Items = ReadFeedItems(ref r),
+                        });
+                    }
+                }
+                return page;
+            }
+            catch (Exception e)
+            {
+                return new FeedPage { Error = e.Message };
+            }
+            finally
+            {
+                NativeCore.Free(ptr);
+            }
+        }
+
+        private static unsafe CommentPage ParseCommentsBin(IntPtr ptr, uint len)
+        {
+            if (ptr == IntPtr.Zero)
+            {
+                return new CommentPage { Error = "null response" };
+            }
+            try
+            {
+                if (len == 0)
+                {
+                    return new CommentPage { Error = "empty response" };
+                }
+                var r = new BinReader(new ReadOnlySpan<byte>((void*)ptr, checked((int)len)));
+                if (r.U8() == 0)
+                {
+                    return new CommentPage { Error = r.Str() };
+                }
+                var page = new CommentPage
+                {
+                    Continuation = r.Str(),
+                    Count = r.Str(),
+                    SortTop = r.Str(),
+                    SortNewest = r.Str(),
+                    CreateParams = r.Str(),
+                    Disabled = r.U8() != 0,
+                };
+                int count = checked((int)r.U32());
+                if (count > 0)
+                {
+                    page.Items.Capacity = count;
+                    for (int i = 0; i < count; i++)
+                    {
+                        var c = new Comment
+                        {
+                            Id = r.Str(),
+                            Author = r.Str(),
+                            Avatar = r.Str(),
+                            Text = r.Str(),
+                            Published = r.Str(),
+                            Likes = r.Str(),
+                            Replies = r.Str(),
+                            ReplyToken = r.Str(),
+                        };
+                        byte flags = r.U8();
+                        c.Pinned = (flags & 1) != 0;
+                        c.Creator = (flags & 2) != 0;
+                        c.Liked = (flags & 4) != 0;
+                        c.Disliked = (flags & 8) != 0;
+                        page.Items.Add(c);
+                    }
+                }
+                return page;
+            }
+            catch (Exception e)
+            {
+                return new CommentPage { Error = e.Message };
+            }
+            finally
+            {
+                NativeCore.Free(ptr);
+            }
+        }
+
+        private static unsafe List<CaptionCue> ParseCaptionsBin(IntPtr ptr, uint len)
+        {
+            if (ptr == IntPtr.Zero)
+            {
+                return null;
+            }
+            try
+            {
+                if (len == 0)
+                {
+                    return null;
+                }
+                var r = new BinReader(new ReadOnlySpan<byte>((void*)ptr, checked((int)len)));
+                if (r.U8() == 0)
+                {
+                    return null;
+                }
+                int count = checked((int)r.U32());
+                var list = new List<CaptionCue>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    list.Add(new CaptionCue
+                    {
+                        StartMs = r.I64(),
+                        EndMs = r.I64(),
+                        Text = r.Str(),
+                    });
+                }
+                list.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
+                return list;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                NativeCore.Free(ptr);
+            }
         }
 
         private static unsafe T ParseNative<T>(IntPtr json, Func<JsonElement, T> read, Func<string, T> onError)

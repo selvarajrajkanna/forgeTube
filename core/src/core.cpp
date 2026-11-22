@@ -5,11 +5,14 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -432,30 +435,6 @@ char* to_c_string(const std::string& s) {
     memcpy(out, s.c_str(), s.size() + 1);
     return out;
 }
-void append_json_escaped(std::string& dst, std::string_view src) {
-    dst.push_back('"');
-    for (unsigned char c : src) {
-        switch (c) {
-            case '"': dst.append("\\\""); break;
-            case '\\': dst.append("\\\\"); break;
-            case '\b': dst.append("\\b"); break;
-            case '\f': dst.append("\\f"); break;
-            case '\n': dst.append("\\n"); break;
-            case '\r': dst.append("\\r"); break;
-            case '\t': dst.append("\\t"); break;
-            default:
-                if (c < 0x20) {
-                    char buf[7];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
-                    dst.append(buf, 6);
-                } else {
-                    dst.push_back(static_cast<char>(c));
-                }
-                break;
-        }
-    }
-    dst.push_back('"');
-}
 }
 
 char* omega_player_last_error(void) {
@@ -490,44 +469,156 @@ char* c_api_json_guard(const char* name, Fn fn) {
     }
 }
 
-nlohmann::json items_json(const std::vector<omega::yt::FeedItem>& list) {
-    nlohmann::json items = nlohmann::json::array();
-    for (const auto& it : list)
-        items.push_back({{"id", it.video_id},
-                         {"title", it.title},
-                         {"channel", it.channel},
-                         {"duration", it.duration},
-                         {"views", it.views},
-                         {"published", it.published},
-                         {"thumbnail", it.thumbnail},
-                         {"live", it.is_live},
-                         {"watched", it.watched_percent},
-                         {"playlistId", it.playlist_id},
-                         {"kind", it.kind}});
-    return items;
+// Single-allocation little-endian binary writer backed directly by malloc/realloc so
+// release() hands ownership to the caller (released via omega_free) with zero extra copies.
+class BinWriter {
+public:
+    BinWriter() = default;
+    ~BinWriter() { std::free(buf_); }
+    BinWriter(const BinWriter&) = delete;
+    BinWriter& operator=(const BinWriter&) = delete;
+
+    void reserve(size_t extra) {
+        if (extra > std::numeric_limits<size_t>::max() - len_) throw std::bad_alloc();
+        size_t need = len_ + extra;
+        if (need <= cap_) return;
+        size_t next = cap_ ? cap_ : 256;
+        while (next < need) {
+            if (next > std::numeric_limits<size_t>::max() / 2) {
+                next = need;
+                break;
+            }
+            next *= 2;
+        }
+        auto* p = static_cast<uint8_t*>(std::realloc(buf_, next));
+        if (!p) throw std::bad_alloc();
+        buf_ = p;
+        cap_ = next;
+    }
+
+    void u8(uint8_t v) {
+        reserve(1);
+        buf_[len_++] = v;
+    }
+
+    void u32(uint32_t v) {
+        reserve(4);
+        buf_[len_++] = static_cast<uint8_t>(v & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+    }
+
+    void i32(int32_t v) { u32(static_cast<uint32_t>(v)); }
+
+    void i64(int64_t v) {
+        uint64_t u = static_cast<uint64_t>(v);
+        reserve(8);
+        for (int i = 0; i < 8; ++i) buf_[len_++] = static_cast<uint8_t>((u >> (i * 8)) & 0xFFu);
+    }
+
+    void str(std::string_view s) {
+        uint32_t n = static_cast<uint32_t>(s.size());
+        reserve(4 + static_cast<size_t>(n));
+        buf_[len_++] = static_cast<uint8_t>(n & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((n >> 8) & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((n >> 16) & 0xFFu);
+        buf_[len_++] = static_cast<uint8_t>((n >> 24) & 0xFFu);
+        if (n > 0) {
+            std::memcpy(buf_ + len_, s.data(), n);
+            len_ += n;
+        }
+    }
+
+    uint8_t* release(uint32_t* out_len) {
+        if (out_len) *out_len = static_cast<uint32_t>(len_);
+        uint8_t* out = buf_;
+        buf_ = nullptr;
+        len_ = cap_ = 0;
+        return out;
+    }
+
+private:
+    uint8_t* buf_ = nullptr;
+    size_t len_ = 0;
+    size_t cap_ = 0;
+};
+
+uint8_t* bin_error(std::string_view msg, uint32_t* out_len) noexcept {
+    try {
+        BinWriter w;
+        w.reserve(5 + msg.size());
+        w.u8(0);
+        w.str(msg);
+        return w.release(out_len);
+    } catch (...) {
+        if (out_len) *out_len = 0;
+        return nullptr;
+    }
 }
 
-nlohmann::json feed_json(const omega::yt::Feed& feed) {
-    nlohmann::json j = {{"items", items_json(feed.items)}, {"continuation", feed.continuation}};
-    if (!feed.highlights.empty()) j["highlights"] = items_json(feed.highlights);
-    if (!feed.shelves.empty()) {
-        nlohmann::json shelves = nlohmann::json::array();
-        for (const auto& s : feed.shelves)
-            shelves.push_back({{"title", s.title}, {"items", items_json(s.items)}, {"continuation", s.continuation}});
-        j["shelves"] = shelves;
+template <typename Fn>
+uint8_t* c_api_bin_guard(const char* name, uint32_t* out_len, Fn fn) noexcept {
+    if (out_len) *out_len = 0;
+    try {
+        return fn();
+    } catch (const std::exception& e) {
+        OLOG("%s: exception: %s", name, e.what());
+        return bin_error(e.what(), out_len);
+    } catch (...) {
+        OLOG("%s: unknown exception", name);
+        return bin_error("internal error", out_len);
     }
-    return j;
+}
+
+void write_feed_items(BinWriter& w, const std::vector<omega::yt::FeedItem>& list) {
+    w.u32(static_cast<uint32_t>(list.size()));
+    for (const auto& it : list) {
+        w.str(it.video_id);
+        w.str(it.title);
+        w.str(it.channel);
+        w.str(it.duration);
+        w.str(it.views);
+        w.str(it.published);
+        w.str(it.thumbnail);
+        w.str(it.playlist_id);
+        w.str(it.kind);
+        w.u8(it.is_live ? 1 : 0);
+        w.i32(it.watched_percent);
+    }
+}
+
+uint8_t* feed_to_bin(const omega::yt::Feed& feed, std::string_view title, std::string_view avatar,
+                     std::string_view subscribers, uint32_t* out_len) {
+    size_t total_items = feed.items.size() + feed.highlights.size();
+    for (const auto& s : feed.shelves) total_items += s.items.size();
+    BinWriter w;
+    w.reserve(256 + total_items * 240 + feed.shelves.size() * 64);
+    w.u8(1);
+    w.str(feed.continuation);
+    w.str(title);
+    w.str(avatar);
+    w.str(subscribers);
+    write_feed_items(w, feed.items);
+    write_feed_items(w, feed.highlights);
+    w.u32(static_cast<uint32_t>(feed.shelves.size()));
+    for (const auto& s : feed.shelves) {
+        w.str(s.title);
+        w.str(s.continuation);
+        write_feed_items(w, s.items);
+    }
+    return w.release(out_len);
 }
 
 }  // namespace
 
-char* omega_yt_search(const char* query, const char* continuation) {
-    return c_api_json_guard("omega_yt_search", [&] {
+uint8_t* omega_yt_search(const char* query, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_search", out_len, [&] {
         omega::yt::Feed feed;
         std::string error;
         if (!omega::yt::shared_client().search(query ? query : "", continuation ? continuation : "", feed, error))
-            return to_c_json({{"error", error}});
-        return to_c_json(feed_json(feed));
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, "", "", "", out_len);
     });
 }
 
@@ -538,54 +629,50 @@ omega::yt::DeviceCode g_device_code;  // last code from omega_auth_begin (poll o
 
 }  // namespace
 
-char* omega_yt_browse(const char* browse_id, const char* continuation) {
-    return c_api_json_guard("omega_yt_browse", [&] {
+uint8_t* omega_yt_browse(const char* browse_id, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_browse", out_len, [&] {
         std::string error;
         std::string token = omega::yt::shared_auth().access_token(error);
-        if (token.empty()) return to_c_json({{"error", error.empty() ? "signed out" : error}});
+        if (token.empty()) return bin_error(error.empty() ? "signed out" : error, out_len);
         omega::yt::Feed feed;
         if (!omega::yt::shared_client().browse(browse_id ? browse_id : "", continuation ? continuation : "", token, feed,
                                                error))
-            return to_c_json({{"error", error}});
-        return to_c_json(feed_json(feed));
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, "", "", "", out_len);
     });
 }
 
-char* omega_yt_playlist(const char* video_id, const char* playlist_id) {
-    return c_api_json_guard("omega_yt_playlist", [&] {
+uint8_t* omega_yt_playlist(const char* video_id, const char* playlist_id, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_playlist", out_len, [&] {
         omega::yt::Feed feed;
         std::string title, error;
         if (!omega::yt::shared_client().playlist(video_id ? video_id : "", playlist_id ? playlist_id : "", feed, title,
                                                  error))
-            return to_c_json({{"error", error}});
-        nlohmann::json j = feed_json(feed);
-        j["title"] = title;
-        return to_c_json(j);
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, title, "", "", out_len);
     });
 }
 
-char* omega_yt_playlist_page(const char* playlist_id, const char* continuation) {
-    return c_api_json_guard("omega_yt_playlist_page", [&] {
+uint8_t* omega_yt_playlist_page(const char* playlist_id, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_playlist_page", out_len, [&] {
         omega::yt::Feed feed;
         std::string title, error;
         if (!omega::yt::shared_client().playlist_page(playlist_id ? playlist_id : "", continuation ? continuation : "",
                                                       feed, title, error))
-            return to_c_json({{"error", error}});
-        nlohmann::json j = feed_json(feed);
-        j["title"] = title;
-        return to_c_json(j);
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, title, "", "", out_len);
     });
 }
 
-char* omega_yt_related(const char* video_id, const char* continuation) {
-    return c_api_json_guard("omega_yt_related", [&] {
+uint8_t* omega_yt_related(const char* video_id, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_related", out_len, [&] {
         omega::yt::Feed feed;
         std::string error;
         std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
         error.clear();
         if (!omega::yt::shared_client().related(video_id ? video_id : "", continuation ? continuation : "", token, feed, error))
-            return to_c_json({{"error", error}});
-        return to_c_json(feed_json(feed));
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, "", "", "", out_len);
     });
 }
 
@@ -636,19 +723,15 @@ char* omega_yt_subscribe(const char* channel_id, int subscribe) {
     });
 }
 
-char* omega_yt_channel(const char* channel_id, const char* continuation) {
-    return c_api_json_guard("omega_yt_channel", [&] {
+uint8_t* omega_yt_channel(const char* channel_id, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_channel", out_len, [&] {
         omega::yt::Feed feed;
         omega::yt::ChannelInfo header;
         std::string error;
         if (!omega::yt::shared_client().channel(channel_id ? channel_id : "", continuation ? continuation : "", feed, header,
                                                 error))
-            return to_c_json({{"error", error}});
-        nlohmann::json j = feed_json(feed);
-        j["title"] = header.title;
-        j["avatar"] = header.avatar;
-        j["subscribers"] = header.subscribers;
-        return to_c_json(j);
+            return bin_error(error, out_len);
+        return feed_to_bin(feed, header.title, header.avatar, header.subscribers, out_len);
     });
 }
 
@@ -663,23 +746,38 @@ nlohmann::json comment_json(const omega::yt::Comment& c) {
 
 }  // namespace
 
-char* omega_yt_comments(const char* video_id, const char* continuation) {
-    return c_api_json_guard("omega_yt_comments", [&] {
+uint8_t* omega_yt_comments(const char* video_id, const char* continuation, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_comments", out_len, [&] {
         omega::yt::CommentPage page;
         std::string error;
         std::string token = omega::yt::shared_auth().signed_in() ? omega::yt::shared_auth().access_token(error) : "";
         error.clear();  // no token: the comments still load, without the account's votes
         if (!omega::yt::shared_client().comments(video_id ? video_id : "", continuation ? continuation : "", token, page, error))
-            return to_c_json({{"error", error}});
-        nlohmann::json items = nlohmann::json::array();
-        for (const auto& c : page.items) items.push_back(comment_json(c));
-        return to_c_json({{"items", items},
-                          {"continuation", page.continuation},
-                          {"count", page.count},
-                          {"sortTop", page.sort_top},
-                          {"sortNewest", page.sort_newest},
-                          {"createParams", page.create_params},
-                          {"disabled", page.disabled}});
+            return bin_error(error, out_len);
+        BinWriter w;
+        w.reserve(256 + page.items.size() * 256);
+        w.u8(1);
+        w.str(page.continuation);
+        w.str(page.count);
+        w.str(page.sort_top);
+        w.str(page.sort_newest);
+        w.str(page.create_params);
+        w.u8(page.disabled ? 1 : 0);
+        w.u32(static_cast<uint32_t>(page.items.size()));
+        for (const auto& c : page.items) {
+            w.str(c.id);
+            w.str(c.author);
+            w.str(c.avatar);
+            w.str(c.text);
+            w.str(c.published);
+            w.str(c.likes);
+            w.str(c.replies);
+            w.str(c.reply_token);
+            uint8_t flags = static_cast<uint8_t>((c.pinned ? 1u : 0u) | (c.creator ? 2u : 0u) |
+                                                 (c.liked ? 4u : 0u) | (c.disliked ? 8u : 0u));
+            w.u8(flags);
+        }
+        return w.release(out_len);
     });
 }
 
@@ -720,27 +818,22 @@ char* omega_yt_comment_action(const char* video_id, const char* comment_id, cons
     });
 }
 
-char* omega_yt_captions(const char* url, const char* translate_to) {
-    return c_api_json_guard("omega_yt_captions", [&] {
+uint8_t* omega_yt_captions(const char* url, const char* translate_to, uint32_t* out_len) {
+    return c_api_bin_guard("omega_yt_captions", out_len, [&] {
         std::vector<omega::yt::CaptionCue> cues;
         std::string error;
         if (!omega::yt::fetch_captions(url ? url : "", translate_to ? translate_to : "", cues, error))
-            return to_c_json({{"error", error}});
-        std::string out;
-        out.reserve(16 + cues.size() * 64);
-        out.append("{\"cues\":[");
-        for (size_t i = 0; i < cues.size(); ++i) {
-            if (i > 0) out.push_back(',');
-            out.append("{\"start\":");
-            out.append(std::to_string(cues[i].start_ms));
-            out.append(",\"end\":");
-            out.append(std::to_string(cues[i].end_ms));
-            out.append(",\"text\":");
-            append_json_escaped(out, cues[i].text);
-            out.push_back('}');
+            return bin_error(error, out_len);
+        BinWriter w;
+        w.reserve(16 + cues.size() * 48);
+        w.u8(1);
+        w.u32(static_cast<uint32_t>(cues.size()));
+        for (const auto& c : cues) {
+            w.i64(c.start_ms);
+            w.i64(c.end_ms);
+            w.str(c.text);
         }
-        out.append("]}");
-        return to_c_string(out);
+        return w.release(out_len);
     });
 }
 
