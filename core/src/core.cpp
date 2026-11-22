@@ -32,6 +32,8 @@
 
 namespace {
 constexpr const char* kVersion = OMEGA_VERSION;  // from the repo's VERSION file
+// Samsung S85H: 4K OLED with a 4K-class decoder (NQ4 AI Gen2): never offer or pick 8K (4320p) formats.
+constexpr int kPanelMaxHeight = 2160;
 std::atomic<int> g_default_audio_delay_ms{0};
 }
 
@@ -278,7 +280,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
     std::vector<std::string> skipped_clients;
     for (;;) {
         std::vector<const omega::yt::Format*> videos =
-            omega::yt::rank_videos(info, max_height > 0 ? max_height : 1080, prefs);
+            omega::yt::rank_videos(info, std::min(max_height > 0 ? max_height : 1080, kPanelMaxHeight), prefs);
         std::vector<const omega::yt::Format*> audios = omega::yt::rank_audios(info, audio_track ? audio_track : "");
         if (videos.empty() || audios.empty()) {
             OLOG("youtube %s: no playable video (%s) / audio format", video_id, codecs ? codecs : "-");
@@ -324,7 +326,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                 };
                 nlohmann::json available = nlohmann::json::array();
                 int last_height = -1;
-                for (const omega::yt::Format* f : omega::yt::rank_videos(info, INT32_MAX, prefs)) {
+                for (const omega::yt::Format* f : omega::yt::rank_videos(info, kPanelMaxHeight, prefs)) {
                     if (f->height == last_height ||
                         std::find(refused.begin(), refused.end(), f->video_codec()) != refused.end())
                         continue;
