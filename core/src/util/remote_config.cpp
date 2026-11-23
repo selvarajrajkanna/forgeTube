@@ -4,7 +4,6 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
-#include <vector>
 
 #include "net/http.h"
 #include "util/log.h"

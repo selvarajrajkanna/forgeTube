@@ -145,7 +145,6 @@ add_library(omegacore SHARED
     src/player/player.cpp
 )
 target_include_directories(omegacore PUBLIC include PRIVATE src ${OMEGA_DEPS})
-# qrcodegen is included as <qrcodegen/qrcodegen.hpp>
 target_compile_options(omegacore PRIVATE -Wall -Wextra -O3 $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>)
 set_target_properties(omegacore PROPERTIES CXX_VISIBILITY_PRESET hidden)
 # Safe hardware math flags & 16B A72 fetch-block alignment for audio DSP (ARMv8 vfma & vsqrt without -ffast-math hazards).

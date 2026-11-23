@@ -1,14 +1,12 @@
 #include "util/log.h"
 
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
-#include <cstring>
 #include <deque>
 #include <mutex>
 

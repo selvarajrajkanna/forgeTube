@@ -19,7 +19,7 @@ namespace OmegaTube.Ui
 
         private readonly View signInView, profileView;
         // Signed out
-        private readonly TextLabel urlLabel, codeLabel, statusLabel, expiryLabel, qrCaption;
+        private readonly TextLabel urlLabel, codeLabel, statusLabel, expiryLabel;
         private readonly View qrHost, statusSpinner;
         private readonly Animation statusSpin;
         private readonly Widgets.PillButton retryButton;
@@ -105,7 +105,7 @@ namespace OmegaTube.Ui
             qrHost.Position = new Position((SideW - QrSize) / 2, 40);
             qrHost.Hide();
             qrCard.Add(qrHost);
-            qrCaption = Widgets.Label(T("Or scan this QR code:\nthe code is already filled in"), Theme.BodySize, Theme.TextDim, SideW - 80, 90);
+            var qrCaption = Widgets.Label(T("Or scan this QR code:\nthe code is already filled in"), Theme.BodySize, Theme.TextDim, SideW - 80, 90);
             qrCaption.MultiLine = true;
             qrCaption.HorizontalAlignment = HorizontalAlignment.Center;
             qrCaption.Position = new Position(40, 530);

@@ -69,16 +69,11 @@ namespace OmegaTube
             public long AudioQueuedMs;
             public long VideoSubmittedMs;
             public long AudioSubmittedMs;
-            public long LongestStallMs;
-            public uint VideoUnderruns;
-            public uint AudioUnderruns;
             public uint Stalls;
             public uint Errors;
             public long DurationMs;
             public int Reconnecting;
             public uint DroppedFrames;
-            public int ScalerId;
-            public int ScalerRc;
             public int DspBits;
             public int DspHf;
             public uint VideoBitrateKbps;
@@ -402,9 +397,6 @@ namespace OmegaTube
         public static IntPtr AuthSwitch(string id) => CallPtrS(_authSwitch, id);
         public static IntPtr SbSegments(string videoId) => CallPtrS(_sbSegments, videoId);
         public static void Free(IntPtr p) => _free(p);
-
-        // Native UTF-8 C string -> managed string.
-        public static string Utf8(IntPtr p) => p == IntPtr.Zero ? "" : (Marshal.PtrToStringUTF8(p) ?? "");
 
         public static string Version => Marshal.PtrToStringUTF8((IntPtr)_version()) ?? "";
 

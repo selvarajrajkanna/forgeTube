@@ -53,8 +53,6 @@ namespace OmegaTube.Ui
             public int Indent;
             public bool RepliesOpen, RepliesLoading, Voting;
             public View View, Highlight;
-            public ImageView Avatar;
-            public bool AvatarLoaded;
             public TextLabel Text, More;
             public View Toolbar;
             public bool Expanded, Truncated;
@@ -66,7 +64,7 @@ namespace OmegaTube.Ui
 
         private readonly string videoId;
         private readonly View overlayHost;
-        private readonly View header, sortButton, clip, content;
+        private readonly View sortButton, content;
         private readonly TextLabel countLabel, sortLabel, status;
         private readonly ImageView sortIcon;
         private readonly View form, formLine;
@@ -79,10 +77,9 @@ namespace OmegaTube.Ui
 
         private Mode mode = Mode.Comments;
         private string commentsTitle = T("Comments");
-        private float descHeight;
         private float scrollY;
         private Animation scrollAnim;
-        private float formTop, statusTop, listTop, total;
+        private float formTop, listTop, total;
         private int focusIndex;   // 0 sort, 1 form, 2.. comments
         private bool started, loading, newest, disabled;
         private int generation;
@@ -126,7 +123,7 @@ namespace OmegaTube.Ui
                 Position = new Position(0, 0),
             });
 
-            header = new View { Size = new Size(PanelWidth, HeaderH), Position = new Position(0, 0) };
+            var header = new View { Size = new Size(PanelWidth, HeaderH), Position = new Position(0, 0) };
             Add(header);
             countLabel = Widgets.Bold(Widgets.Label(T("Comments"), Theme.BodySize + 2, Theme.Text, 320, HeaderH));
             countLabel.VerticalAlignment = VerticalAlignment.Center;
@@ -151,7 +148,7 @@ namespace OmegaTube.Ui
                 Position = new Position(Pad, HeaderH + 4),
             });
 
-            clip = new View
+            var clip = new View
             {
                 Position = new Position(0, ViewportTop),
                 Size = new Size(PanelWidth, ViewportHeight),
@@ -268,7 +265,7 @@ namespace OmegaTube.Ui
             descBodyLabel.SizeHeight = bodyH;
             descBodyLabel.PositionY = y;
 
-            descHeight = y + bodyH + 24;
+            float descHeight = y + bodyH + 24;
             descView.SizeHeight = descHeight;
             total = descHeight + 24;
             content.SizeHeight = Math.Max(ViewportHeight, total);
@@ -578,7 +575,6 @@ namespace OmegaTube.Ui
 
             e.View = view;
             e.Highlight = highlight;
-            e.Avatar = avatar;
             e.Text = body;
             e.More = more;
             e.Toolbar = toolbar;
@@ -587,7 +583,6 @@ namespace OmegaTube.Ui
             FillEntry(e);
             if (!string.IsNullOrEmpty(c.Avatar))
             {
-                e.AvatarLoaded = true;
                 Widgets.RoundedImage(avatar, c.Avatar, AvatarSize / 2, AvatarSize, AvatarSize);
             }
             list.Add(view);
@@ -607,8 +602,6 @@ namespace OmegaTube.Ui
             e.View.Dispose();
             e.View = null;
             e.Highlight = null;
-            e.Avatar = null;
-            e.AvatarLoaded = false;
             e.Text = null;
             e.More = null;
             e.Toolbar = null;
@@ -733,7 +726,6 @@ namespace OmegaTube.Ui
             {
                 y += 66;
             }
-            statusTop = y;
             status.PositionY = y;
             if (status.Visibility)
             {

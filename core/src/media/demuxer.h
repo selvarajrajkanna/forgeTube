@@ -186,7 +186,6 @@ struct SampleBuffer {
     uint8_t* data() { return slab ? slab->mem.get() + offset : nullptr; }
     const uint8_t* data() const { return slab ? slab->mem.get() + offset : nullptr; }
     size_t size() const { return len; }
-    bool empty() const { return len == 0; }
 
     void allocate(size_t n, SamplePool* pool = nullptr) {
         len = n;

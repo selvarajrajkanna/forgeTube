@@ -52,16 +52,12 @@ struct PlayerStats {
     int64_t position_ms;
     int64_t video_queued_ms, audio_queued_ms;
     int64_t video_submitted_ms, audio_submitted_ms;
-    uint32_t video_underruns, audio_underruns;
     uint32_t stalls;             // playback clock stopped advancing while PLAYING
-    int64_t longest_stall_ms;
     uint32_t errors;
     int eos;
     int64_t duration_ms;
     int reconnecting;  // a stream is retrying after a network error
     uint32_t dropped_frames;
-    int32_t scaler_id;
-    int32_t scaler_rc;
     int32_t dsp_bits;            // 32/24/16 PCM output, or 0 for TV HW passthrough
     int32_t dsp_hf;              // 0 off/bypass, 1 16 kHz->20 kHz, 2 12 kHz SWB->20 kHz
     uint32_t video_bitrate_kbps; // rolling 1-second encoded video bitrate (kb/s)
@@ -82,9 +78,6 @@ public:
     void set_audio_delay_ms(int64_t ms) { audio_delay_ms_ = ms; }
     PlayerStats stats();
     const media::TrackInfo& video_info() const { return video_.info; }
-    bool progressive_scan() const { return progressive_scan_; }
-    int tier_width() const { return cfg_.max_width; }
-    int tier_height() const { return cfg_.max_height; }
     const std::string& error() const { return error_; }
     // start() failed because YouTube kept refusing a stream (403/410), not a network or codec issue.
     bool stream_refused() const { return stream_refused_; }
@@ -109,7 +102,6 @@ private:
         std::vector<media::Segment> segments;
         std::shared_ptr<media::SamplePool> pool;
         std::atomic<int64_t> submitted_ms{0};
-        std::atomic<uint32_t> underruns{0};
         std::thread demux_thread, feed_thread;
     };
 
@@ -144,7 +136,6 @@ private:
     void* sound_stream_info_ = nullptr;
     std::string error_;
     bool stream_refused_ = false;
-    bool progressive_scan_ = false;
 
     bool has_color_info_ = false;
     esp::ESMatroskaColor color_info_{};
@@ -156,9 +147,6 @@ private:
     std::mutex state_mutex_;
     std::condition_variable state_cv_;
     std::atomic<uint32_t> errors_{0}, stalls_{0}, dropped_frames_{0}, video_bitrate_kbps_{0};
-    std::atomic<int32_t> scaler_id_{-2};    // -2: unqueried, -1: unavailable, >=0: RM virtual id
-    std::atomic<int32_t> scaler_rc_{-999};  // esplusplayer_get_virtual_rsc_id return code
-    std::atomic<int64_t> longest_stall_ms_{0};
     alignas(64) std::atomic<int64_t> position_ms_{0};
     std::thread control_thread_;
     std::mutex seek_mutex_;

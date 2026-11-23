@@ -11,7 +11,6 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -1180,7 +1179,6 @@ private:
 }  // namespace
 
 struct Pipeline::Impl {
-    media::Codec codec = media::Codec::Unknown;
     int pcm_bits = 32;
     double gain = 1.0;
     double atten_db = 1.0;
@@ -1189,7 +1187,6 @@ struct Pipeline::Impl {
     // Decoders (at most one active)
     OpusDecoder* opus = nullptr;
     int opus_channels = 2;
-    int opus_pre_skip_init = 0;
     int opus_pre_skip_left = 0;
     bool opus_is_swb = false;
     std::vector<float> opus_buf;
@@ -1391,7 +1388,6 @@ Pipeline::~Pipeline() = default;
 
 bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double loudness_db, int pcm_bits) {
     if (pcm_bits != 32 && pcm_bits != 24 && pcm_bits != 16) return false;
-    impl_->codec = track.codec;
     impl_->pcm_bits = pcm_bits;
 
     // Linear-only normalization: honor YouTube loudnessDb attenuation (never boost into limiting),
@@ -1407,17 +1403,17 @@ bool Pipeline::init(const media::TrackInfo& track, bool has_loudness_db, double 
     if (track.codec == media::Codec::Opus) {
         int ch = track.channels > 0 ? static_cast<int>(track.channels) : 2;
         int gain_q8 = 0;
-        impl_->opus_pre_skip_init = 0;
+        int opus_pre_skip = 0;
         if (track.codec_data.size() >= 19 && std::memcmp(track.codec_data.data(), "OpusHead", 8) == 0) {
             ch = static_cast<int>(track.codec_data[9]);
-            impl_->opus_pre_skip_init = static_cast<int>(le16(track.codec_data.data() + 10));
+            opus_pre_skip = static_cast<int>(le16(track.codec_data.data() + 10));
             gain_q8 = static_cast<int>(sle16(track.codec_data.data() + 16));
         }
         if (ch < 1 || ch > 2) {
             OLOG("audio dsp: unsupported Opus channel count (%d)", ch);
             return false;
         }
-        impl_->opus_pre_skip_left = impl_->opus_pre_skip_init;
+        impl_->opus_pre_skip_left = opus_pre_skip;
         impl_->opus_channels = ch;
         int err = OPUS_OK;
         impl_->opus = opus_decoder_create(kTargetRate, ch, &err);

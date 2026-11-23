@@ -282,9 +282,6 @@ namespace OmegaTube.Ui
         // Manual word-wrapping for NUI labels whose height is sized from the line count up front.
         public static string Wrap(string text, int max) => string.Join("\n", WrapLines(text, max));
 
-        public static float EstimateTextHeight(string text, int width, float pixelSize) =>
-            WrapLines(text, CharsPerLine(width, pixelSize)).Count * pixelSize * 1.35f;
-
         private static int qrSerial;
 
         // QR code on a white `host` of size x size (which gives the quiet zone and the rounded corners);

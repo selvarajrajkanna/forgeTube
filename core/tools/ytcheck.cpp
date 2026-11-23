@@ -6,7 +6,7 @@
 //   ytcheck --captions <videoId> [lang] [tlang]  caption tracks, then the first cues of the `lang` track
 //                                (default: the first one), machine-translated to tlang if given
 //   ytcheck --account            name / handle / photo of the account of a previous --signin
-//   ytcheck --details <videoId>  date, channel, like / subscription state (with a --signin token), RYD votes
+//   ytcheck --details <videoId>  date, channel, like count, and subscription state (with a --signin token)
 //   ytcheck --channel <channelId>  channel header + first videos
 //   ytcheck --comments <videoId> [new]  comments header + first two pages (new: newest first)
 //   ytcheck --post-comment <videoId> <text>  posts a comment as the --signin account

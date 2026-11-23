@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <cstring>
 #include <functional>
 #include <mutex>
 #include <string_view>
@@ -1073,7 +1072,7 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
     req.headers = client_headers(def, visitor_data_);
     req.body = body.dump();
 
-    // Fetch the account's like/subscribe state (TV "next") concurrently with the WEB "next" page.
+    // Fetch the account's subscription state (TV "next") concurrently with the WEB "next" page.
     net::Response tv;
     std::thread tv_thread;
     if (!access_token.empty()) {
@@ -1244,7 +1243,6 @@ Comment comment_from_entity(yyjson_val* p) {
     if (c.likes == "0") c.likes.clear();
     c.replies = trimmed(ystr(toolbar, "replyCount"));
     if (c.replies == "0") c.replies.clear();
-    c.hearted = ysv(toolbar ? yyjson_obj_get(toolbar, "heartState") : nullptr) == "TOOLBAR_HEART_STATE_HEARTED";
     return c;
 }
 
@@ -1605,8 +1603,6 @@ void Client::record_response(const std::string& body) {
 
 Client& shared_client() {
     static Client client;
-    static std::once_flag init_once;
-    std::call_once(init_once, [] { client.set_capture_response(false); });
     return client;
 }
 

@@ -31,7 +31,7 @@ private:
     bool parse_info(std::span<const uint8_t> info);
     bool parse_tracks(std::span<const uint8_t> tracks);
     void parse_cues(std::span<const uint8_t> cues);
-    bool parse_block(const uint8_t* p, size_t n, bool simple, bool has_reference, std::deque<Sample>& out);
+    bool parse_block(const uint8_t* p, size_t n, bool has_reference, std::deque<Sample>& out);
     void finish_cluster(std::deque<Sample>& out, size_t first);
 
     ReadFn read_;

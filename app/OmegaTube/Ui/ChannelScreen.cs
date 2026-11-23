@@ -1,4 +1,3 @@
-using System;
 using System.Threading.Tasks;
 using OmegaTube.Data;
 using Tizen.NUI;

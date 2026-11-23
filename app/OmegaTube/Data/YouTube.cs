@@ -61,9 +61,8 @@ namespace OmegaTube.Data
         public List<VideoQuality> Qualities = new List<VideoQuality>();   // highest first
         public VideoQuality Current;
         public bool Live;
-        public string Client = "", Container = "", EspKnobs = "";
-        public int MaxWidth, MaxHeight;
-        public bool Progressive, ContainerHdr;
+        public string Client = "", Container = "";
+        public bool ContainerHdr;
         public int ColorPrimaries, ColorTransfer, ColorBits, ColorRange;
         public string Title = "", Description = "", Views = "", ChannelId = "";
         public List<AudioTrack> AudioTracks = new List<AudioTrack>();     // empty: single-language video
@@ -356,10 +355,6 @@ namespace OmegaTube.Data
                         Live = Json.Bool(root, "live", false),
                         Client = Json.Str(root, "client"),
                         Container = Json.Str(root, "container"),
-                        EspKnobs = Json.Str(root, "espKnobs"),
-                        MaxWidth = (int)Json.Long(root, "maxWidth"),
-                        MaxHeight = (int)Json.Long(root, "maxHeight"),
-                        Progressive = Json.Bool(root, "progressive", false),
                         ColorPrimaries = (int)Json.Long(root, "colorPrimaries"),
                         ColorTransfer = (int)Json.Long(root, "colorTransfer"),
                         ColorBits = (int)Json.Long(root, "colorBits"),

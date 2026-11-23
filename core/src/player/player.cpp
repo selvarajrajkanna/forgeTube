@@ -2,8 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <climits>
-#include <cstring>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -322,9 +320,6 @@ bool Player::start() {
         const bool has_fallback = (pcm_bits > 0 && attempt + 1 < audio_candidates.size());
 
         has_color_info_ = false;
-        progressive_scan_ = false;
-        scaler_id_ = -2;
-        scaler_rc_ = -999;
 
         if (sources_consumed) {
             if (!rewind_sources()) {
@@ -430,7 +425,6 @@ bool Player::start() {
         if (cfg_.use_video) {
             if (api_->set_video_scan_type) {
                 rc = api_->set_video_scan_type(handle_, esp::VIDEO_SCAN_PROGRESSIVE);
-                progressive_scan_ = (rc == 0);
                 OLOG("esp set_video_scan_type(progressive) -> %d", rc);
             }
             esp::VideoStreamInfo vi{};
@@ -537,8 +531,6 @@ bool Player::start() {
         position_ms_ = 0;
         video_.submitted_ms = 0;
         audio_.submitted_ms = 0;
-        video_.underruns = 0;
-        audio_.underruns = 0;
         running_ = true;
 
         if (cfg_.start_ms > 0 && !video_.segments.empty()) {
@@ -1034,7 +1026,6 @@ void Player::control_loop() {
         if (pos != last_pos) {
             if (in_stall) {
                 int64_t dur = ms_since(last_advance);
-                if (dur > longest_stall_ms_) longest_stall_ms_ = dur;
                 OLOG("stall ended after %lld ms at %llu ms", static_cast<long long>(dur),
                      static_cast<unsigned long long>(pos));
                 in_stall = false;
@@ -1074,38 +1065,22 @@ PlayerStats Player::stats() {
     s.audio_queued_ms = audio_.queued_ms.load(std::memory_order_relaxed);
     s.video_submitted_ms = video_.submitted_ms.load(std::memory_order_relaxed);
     s.audio_submitted_ms = audio_.submitted_ms.load(std::memory_order_relaxed);
-    s.video_underruns = video_.underruns;
-    s.audio_underruns = audio_.underruns;
     s.stalls = stalls_;
-    s.longest_stall_ms = longest_stall_ms_;
     s.errors = errors_;
     s.eos = eos_ ? 1 : 0;
     s.duration_ms = duration_ms_;
     s.reconnecting = (video_.reconnecting || audio_.reconnecting) ? 1 : 0;
     s.dropped_frames = dropped_frames_;
-    s.scaler_id = scaler_id_;
-    s.scaler_rc = scaler_rc_;
     s.dsp_bits = audio_dsp_ ? audio_dsp_->pcm_bits() : 0;
     s.dsp_hf = audio_dsp_ ? audio_dsp_->hf_mode() : 0;
     s.video_bitrate_kbps = video_bitrate_kbps_.load(std::memory_order_relaxed);
     if (handle_ && prepared_ && s.state >= esp::STATE_READY) {
-        if (api_->get_virtual_rsc_id && scaler_id_ == -2) {
-            int rid = -1;
-            int rsc_rc = api_->get_virtual_rsc_id(handle_, esp::RSC_VIDEO_RENDERER, &rid);
-            scaler_rc_ = rsc_rc;
-            s.scaler_rc = rsc_rc;
-            int32_t resolved = (rsc_rc == 0 && rid >= 0) ? rid : -1;
-            scaler_id_ = resolved;
-            s.scaler_id = resolved;
-            OLOG("esp virtual_rsc_id(video_renderer) -> %d (rc=%d)", resolved, rsc_rc);
-        }
         uint64_t adaptive_drops = 0;
         if (api_->get_adaptive_info &&
             api_->get_adaptive_info(handle_, &adaptive_drops, esp::ADAPT_DROPPED_FRAMES) == 0) {
             s.dropped_frames = static_cast<uint32_t>(std::min<uint64_t>(adaptive_drops, UINT32_MAX));
         }
     }
-    if (s.scaler_id == -2) s.scaler_id = -1;
     return s;
 }
 
@@ -1120,7 +1095,6 @@ void Player::on_buffer_status(esp::StreamType type, esp::BufferStatus status, vo
     // Underruns are expected while filling up before prepare; only count them during playback.
     if (status == esp::BUFFER_UNDERRUN && p->prepared_) {
         Track& t = type == esp::STREAM_VIDEO ? p->video_ : p->audio_;
-        ++t.underruns;
         int64_t queued;
         {
             std::lock_guard<std::mutex> lock(t.mutex);

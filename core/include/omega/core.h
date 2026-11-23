@@ -43,16 +43,11 @@ typedef struct {
     int64_t audio_queued_ms;
     int64_t video_submitted_ms;
     int64_t audio_submitted_ms;
-    int64_t longest_stall_ms;
-    uint32_t video_underruns;
-    uint32_t audio_underruns;
     uint32_t stalls;
     uint32_t errors;
     int64_t duration_ms;
     int32_t reconnecting;    // a stream is retrying after a network error
     uint32_t dropped_frames; // video frames dropped by the TV decoder/renderer
-    int32_t scaler_id;       // RM virtual video renderer id (>= 0), or -1 if unavailable
-    int32_t scaler_rc;       // esplusplayer_get_virtual_rsc_id return code (-999 if unqueried)
     int32_t dsp_bits;        // active PCM DSP depth (32/24/16), or 0 for TV HW passthrough
     int32_t dsp_hf;          // HF band extension: 0 off/bypass, 1 16kHz->20kHz, 2 12kHz SWB->20kHz
     uint32_t video_bitrate_kbps; // rolling 1-second encoded video bitrate (kb/s)
@@ -76,7 +71,7 @@ OMEGA_API void omega_yt_preload(const char* video_id);
 // (in the request language), may be empty; detail: technical error. Release with omega_free().
 OMEGA_API char* omega_player_last_error(void);
 // Video qualities of a YouTube player (best variant per height, same codec preference as at creation):
-// {"current":{"width","height","fps","codec"},"available":[{...}, ...],"live":bool,"title","author"} (highest first),
+// {"current":{"width","height","fps","codec"},"available":[{...}, ...],"live":bool,"title"} (highest first),
 // codec = "avc1" | "vp9" | "av01". Also "description", "views" (raw count), "channelId",
 // "audioTracks":[{"id","name","default"}] (empty for single-track videos), "audioTrack": the playing id,
 // "captions":[{"url","lang","name","auto","translatable"}], "translations":[{"code","name"}].

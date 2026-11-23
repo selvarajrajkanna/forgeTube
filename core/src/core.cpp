@@ -9,11 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -342,16 +342,12 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                 nlohmann::json formats = {{"current", current_entry},  {"available", available}, {"live", info.is_live},
                                           {"client", info.client},
                                           {"container", vi.container == omega::media::Container::WebM ? "webm" : "mp4"},
-                                          {"maxWidth", p->impl.tier_width()},
-                                          {"maxHeight", p->impl.tier_height()},
-                                          {"progressive", p->impl.progressive_scan()},
-                                          {"espKnobs", omega::esp::extra_knobs_summary()},
                                           {"colorPrimaries", vi.color_primaries},
                                           {"colorTransfer", vi.transfer_characteristics},
                                           {"colorBits", vi.bits_per_channel},
                                           {"colorRange", vi.color_range},
                                           {"containerHdr", vi.has_hdr},
-                                          {"title", info.title}, {"author", info.author}, {"description", info.description},
+                                          {"title", info.title}, {"description", info.description},
                                           {"views", info.views}, {"channelId", info.channel_id}, {"audioTrack", audio->audio_track_id},
                                           {"audioCodec", audio ? audio->codecs : ""},
                                           {"audioBitrate", audio ? audio->bitrate : 0}};
@@ -422,16 +418,11 @@ void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     out->audio_queued_ms = s.audio_queued_ms;
     out->video_submitted_ms = s.video_submitted_ms;
     out->audio_submitted_ms = s.audio_submitted_ms;
-    out->longest_stall_ms = s.longest_stall_ms;
-    out->video_underruns = s.video_underruns;
-    out->audio_underruns = s.audio_underruns;
     out->stalls = s.stalls;
     out->errors = s.errors;
     out->duration_ms = s.duration_ms;
     out->reconnecting = s.reconnecting;
     out->dropped_frames = s.dropped_frames;
-    out->scaler_id = s.scaler_id;
-    out->scaler_rc = s.scaler_rc;
     out->dsp_bits = s.dsp_bits;
     out->dsp_hf = s.dsp_hf;
     out->video_bitrate_kbps = s.video_bitrate_kbps;
@@ -632,13 +623,6 @@ uint8_t* omega_yt_search(const char* query, const char* continuation, uint32_t* 
         return feed_to_bin(feed, "", "", "", out_len);
     });
 }
-
-namespace {
-
-std::mutex g_device_code_mutex;
-omega::yt::DeviceCode g_device_code;  // last code from omega_auth_begin (poll only receives its id)
-
-}  // namespace
 
 uint8_t* omega_yt_browse(const char* browse_id, const char* continuation, uint32_t* out_len) {
     return c_api_bin_guard("omega_yt_browse", out_len, [&] {
@@ -935,10 +919,6 @@ char* omega_auth_begin(void) {
         omega::yt::DeviceCode code;
         std::string error;
         if (!omega::yt::shared_auth().begin(code, error)) return to_c_json({{"error", error}});
-        {
-            std::lock_guard<std::mutex> lock(g_device_code_mutex);
-            g_device_code = code;
-        }
         return to_c_json({{"deviceCode", code.device_code},
                           {"userCode", code.user_code},
                           {"verificationUrl", code.verification_url},
@@ -951,11 +931,7 @@ char* omega_auth_begin(void) {
 char* omega_auth_poll(const char* device_code) {
     return c_api_json_guard("omega_auth_poll", [&] {
         omega::yt::DeviceCode code;
-        {
-            std::lock_guard<std::mutex> lock(g_device_code_mutex);
-            code = g_device_code;
-        }
-        if (device_code) code.device_code = device_code;
+        code.device_code = device_code ? device_code : "";
         std::string error;
         static const char* names[] = {"pending", "slow_down", "done", "denied", "expired", "failed"};
         omega::yt::PollResult r = omega::yt::shared_auth().poll(code, error);

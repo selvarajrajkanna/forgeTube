@@ -111,7 +111,7 @@ struct Comment {
     std::string id, author, avatar, text, published;  // author: "@handle"; published: "il y a 17 heures"
     std::string likes;     // display count ("8", "1,2 k"), empty when none
     std::string replies;   // reply count ("3"), empty when none
-    bool pinned = false, creator = false, hearted = false;
+    bool pinned = false, creator = false;
     std::string reply_token;              // continuation of the thread's replies, empty when none
     bool liked = false, disliked = false;  // the account's vote (only when read with an access token)
 };
@@ -151,7 +151,7 @@ public:
     // personalized TV "next" (organic autoplay pick first, then ordered watch-next shelves), else WEB "next".
     bool related(const std::string& video_id, const std::string& continuation, const std::string& access_token,
                  Feed& out, std::string& error);
-    // Watch-page details (WEB "next"): date, channel; plus, with an access token, the account's like and
+    // Watch-page details (WEB "next"): date, channel; plus, with an access token, the account's
     // subscription state (TV "next").
     bool details(const std::string& video_id, const std::string& access_token, struct VideoDetails& out,
                  std::string& error);

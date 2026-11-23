@@ -18,18 +18,18 @@ namespace {
 
 Api g_api{};
 const Api* g_loaded = nullptr;
-std::string g_extra_knobs = "esp probe: not loaded";
 
 void probe_sync_apis(void* lib, void* snd) {
     auto has = [](void* h, const char* sym) -> const char* {
         return (h && dlsym(h, sym) != nullptr) ? "ok" : "no";
     };
-    g_extra_knobs = std::string("esp probe: get_audio_latency=") + has(lib, "esplusplayer_get_audio_latency") +
-                    " get_off=" + has(lib, "esplusplayer_get_render_time_offset") +
-                    " set_off=" + has(lib, "esplusplayer_set_render_time_offset") +
-                    " ll=" + has(lib, "esplusplayer_set_low_latency_mode") +
-                    " ars=" + has(snd, "sound_manager_set_avoid_resampling");
-    OLOG("%s", g_extra_knobs.c_str());
+    const std::string extra_knobs =
+        std::string("esp probe: get_audio_latency=") + has(lib, "esplusplayer_get_audio_latency") +
+        " get_off=" + has(lib, "esplusplayer_get_render_time_offset") +
+        " set_off=" + has(lib, "esplusplayer_set_render_time_offset") +
+        " ll=" + has(lib, "esplusplayer_set_low_latency_mode") +
+        " ars=" + has(snd, "sound_manager_set_avoid_resampling");
+    OLOG("%s", extra_knobs.c_str());
 }
 
 template <typename T>
@@ -75,7 +75,6 @@ void load() {
     ok &= bind(lib, g_api.submit_eos_packet, "esplusplayer_submit_eos_packet");
     ok &= bind(lib, g_api.get_playing_time, "esplusplayer_get_playing_time");
     bind_optional(lib, g_api.get_adaptive_info, "esplusplayer_get_adaptive_info");
-    bind_optional(lib, g_api.get_virtual_rsc_id, "esplusplayer_get_virtual_rsc_id");
     ok &= bind(lib, g_api.set_error_cb, "esplusplayer_set_error_cb");
     ok &= bind(lib, g_api.set_buffer_status_cb, "esplusplayer_set_buffer_status_cb");
     ok &= bind(lib, g_api.set_eos_cb, "esplusplayer_set_eos_cb");
@@ -144,11 +143,6 @@ const Api* api() {
     static std::once_flag once;
     std::call_once(once, load);
     return g_loaded;
-}
-
-const std::string& extra_knobs_summary() {
-    api();
-    return g_extra_knobs;
 }
 
 int query_bt_audio_delay_ms() {

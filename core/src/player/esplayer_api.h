@@ -4,7 +4,6 @@
 // from the TV's /usr/lib/libesplusplayer.so (we do not ship or link against Samsung headers/libs).
 
 #include <cstdint>
-#include <string>
 
 namespace omega::esp {
 
@@ -29,7 +28,6 @@ enum AdaptiveInfoType : int {
     ADAPT_DROPPED_VIDEO_FOR_CATCHUP = 2,
     ADAPT_DROPPED_AUDIO_FOR_CATCHUP = 3,
 };
-enum RscType : int { RSC_VIDEO_RENDERER = 0 };
 enum BufferStatus : int { BUFFER_UNDERRUN = 0, BUFFER_OVERRUN = 1 };
 enum State : int { STATE_NONE, STATE_IDLE, STATE_READY, STATE_PLAYING, STATE_PAUSED };
 enum SubmitStatus : int {
@@ -159,7 +157,6 @@ struct Api {
     int (*submit_eos_packet)(Handle, StreamType);
     int (*get_playing_time)(Handle, uint64_t* ms);
     int (*get_adaptive_info)(Handle, void* info, AdaptiveInfoType);
-    int (*get_virtual_rsc_id)(Handle, RscType, int* virtual_id);
     int (*set_error_cb)(Handle, ErrorCb, void*);
     int (*set_buffer_status_cb)(Handle, BufferStatusCb, void*);
     int (*set_eos_cb)(Handle, EosCb, void*);
@@ -174,9 +171,6 @@ struct Api {
 
 // Loads libesplusplayer.so once. Returns nullptr (and logs) if the library or a symbol is missing.
 const Api* api();
-
-// Compact summary of unknown exported symbols discovered in libesplusplayer.so (cached at first load).
-const std::string& extra_knobs_summary();
 
 // Queries BlueZ org.bluez.MediaTransport1 "Delay" (AVDTP DelayReport in 0.1 ms units) over system D-Bus.
 // Returns total estimated Bluetooth A2DP sink latency in ms, or 0 if unavailable.

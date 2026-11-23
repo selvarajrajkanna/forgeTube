@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 using OmegaTube.Config;
-using OmegaTube.Data;
-using OmegaTube.Util;
 using Tizen.NUI;
 using Tizen.NUI.BaseComponents;
 using static OmegaTube.I18n;
@@ -34,7 +31,7 @@ namespace OmegaTube.Ui
 
         private class Category
         {
-            public string Title, Icon, Description;
+            public string Title, Description;
             public Action<List<Row>> Build;
             public bool CaptionPreview;
             public View View;
@@ -55,7 +52,7 @@ namespace OmegaTube.Ui
         private readonly List<Category> categories = new List<Category>();
         private readonly List<Row> rows = new List<Row>();
         private readonly TextLabel paneTitle, paneDescription, help;
-        private readonly View list, listClip;
+        private readonly View list;
         private readonly View preview;
         private readonly TextLabel previewCaption;
         private int category, index;
@@ -85,8 +82,8 @@ namespace OmegaTube.Ui
             paneDescription.Position = new Position(ListX, 136);
             Root.Add(paneDescription);
 
-            listClip = new View { Position = new Position(ListX - 20, ListY - 20), Size = new Size(ListW + 40, ListH + 20),
-                                  ClippingMode = ClippingModeType.ClipToBoundingBox };
+            var listClip = new View { Position = new Position(ListX - 20, ListY - 20), Size = new Size(ListW + 40, ListH + 20),
+                                      ClippingMode = ClippingModeType.ClipToBoundingBox };
             Root.Add(listClip);
             list = new View { Position = new Position(20, 20), Size = new Size(ListW, 4000) };
             listClip.Add(list);
@@ -147,7 +144,7 @@ namespace OmegaTube.Ui
             label.Position = new Position(90, 0);
             view.Add(label);
             Root.Add(view);
-            categories.Add(new Category { Title = title, Icon = icon, Description = description, Build = build,
+            categories.Add(new Category { Title = title, Description = description, Build = build,
                                           CaptionPreview = captionPreview, View = view, IconView = img, Label = label });
         }
 

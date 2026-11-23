@@ -174,7 +174,7 @@ namespace OmegaTube.Ui
         }
 
         // `reuse`: rows shown from the cache, recycled when the shelf at the same place has the same title.
-        private void AddShelves(List<Shelf> shelves, bool seedContinuations, List<FeedRow> reuse = null)
+        private void AddShelves(List<Shelf> shelves, List<FeedRow> reuse = null)
         {
             foreach (Shelf s in shelves)
             {
@@ -197,7 +197,7 @@ namespace OmegaTube.Ui
                     content.Add(row);
                 }
                 rows.Add(row);
-                row.Seed(s.Items, seedContinuations ? s.Continuation : "");
+                row.Seed(s.Items, s.Continuation);
             }
         }
 
@@ -253,7 +253,7 @@ namespace OmegaTube.Ui
                 rows.Clear();
             }
             continuation = page.Continuation;
-            AddShelves(page.Shelves, seedContinuations: true, reuse);
+            AddShelves(page.Shelves, reuse);
             foreach (FeedRow r in reuse ?? new List<FeedRow>())
             {
                 if (r != null)

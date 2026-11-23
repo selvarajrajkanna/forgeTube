@@ -15,8 +15,8 @@ namespace OmegaTube.Ui
     // Full-screen video (ESPlayer plane under a transparent UI) with SmartTube-style controls
     // (layout as in SmartTube / ytps5's player chrome):
     //  - hidden while playing; OK pauses and shows them, ◀ ▶ seek (focus on the seek bar), any other key shows them;
-    //  - title, views + date, a row of actions (channel, subscribe, like / dislike with Return YouTube Dislike
-    //    counts), a full-width seek bar with the SponsorBlock segments, and a row of round buttons:
+    //  - title, views + date, a row of actions (channel, subscribe, like count badge), a full-width seek bar
+    //    with the SponsorBlock segments, and a row of round buttons:
     //    restart, -N s, play/pause, +N s, next | skip segment, subtitles, audio track, speed, quality, loop,
     //    stats (the focused one is named in a tooltip above it);
     //  - focus rows, top to bottom: actions / seek bar (◀ ▶ seek) / buttons / suggestions / description and
@@ -812,10 +812,6 @@ namespace OmegaTube.Ui
                 c.View.BackgroundColor = f ? Theme.CardInfoFocused
                                        : c.Kind == Social.Subscribe && !c.Active ? Theme.Accent : M3Surface;
                 c.Label.TextColor = f ? Theme.CardTextFocused : Theme.Text;
-                if (c.Image != null && c.Kind != Social.Channel)
-                {
-                    c.Image.Color = f ? new Color(0.16f, 0.16f, 0.16f, 1f) : Color.White;
-                }
                 c.View.Scale = f ? new Vector3(1.06f, 1.06f, 1f) : Vector3.One;
             }
         }
@@ -1214,7 +1210,7 @@ namespace OmegaTube.Ui
                 }
                 if ((now - lastBtCheck).TotalSeconds >= 10)
                 {
-                    SyncBluetoothAudioDelay(now, force: false);
+                    SyncBluetoothAudioDelay(now);
                 }
             }
             if (pendingSeekMs >= 0 && (now - pendingSeekAt).TotalMilliseconds > 600)
@@ -3030,7 +3026,7 @@ namespace OmegaTube.Ui
             return (hasExt ? "ext" : "tv", hdmiDelayMs);
         }
 
-        private void SyncBluetoothAudioDelay(DateTime now, bool force)
+        private void SyncBluetoothAudioDelay(DateTime now)
         {
             lastBtCheck = now;
             if (player == IntPtr.Zero)
@@ -3038,17 +3034,6 @@ namespace OmegaTube.Ui
                 return;
             }
             int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
-            if (force)
-            {
-                var (route, delayMs) = ComputeAudioSyncTarget(hdmiDelay);
-                activeAudioRoute = route;
-                if (delayMs != appliedAudioDelayMs)
-                {
-                    appliedAudioDelayMs = delayMs;
-                    NativeCore.PlayerSetAudioDelay(player, delayMs);
-                }
-                return;
-            }
             if (System.Threading.Interlocked.CompareExchange(ref btCheckInFlight, 1, 0) != 0)
             {
                 return;
