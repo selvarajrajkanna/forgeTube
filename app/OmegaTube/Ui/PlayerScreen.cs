@@ -151,6 +151,7 @@ namespace OmegaTube.Ui
         private TimeSpan lastProcCpu;
         private long lastSysTotalCpu, lastSysIdleCpu;
         private string sysStatsLine = "";
+        private string runtimeStatsTag;
         private NativeCore.PlayerStats stats;
         private List<SkipSegment> segments = new List<SkipSegment>();
         private SkipSegment offered;       // manual segment currently offered with the skip button
@@ -1020,6 +1021,7 @@ namespace OmegaTube.Ui
                 return;
             }
             closing = true;
+            runtimeStatsTag = null;
             System.Threading.Volatile.Write(ref closingFlag, 1);
             System.Threading.Interlocked.Increment(ref startGen);
             commentsPanel.Close();
@@ -1244,12 +1246,13 @@ namespace OmegaTube.Ui
                     ? $" | {(activeAudioRoute.Length > 0 ? activeAudioRoute : "sync")} {(appliedAudioDelayMs > 0 ? "+" : "")}{appliedAudioDelayMs}ms"
                     : "";
                 string tlsTag = NativeCore.TlsInfo();
+                runtimeStatsTag ??= $"Tizen {BugReport.TizenVersion} · .NET {Environment.Version}";
                 statsLabel.Text =
                     "  " + (info.Current != null ? QualityLabel(info.Current) : $"{maxHeight}p") + vRate +
                     (info.AudioCodec.Length > 0 ? $" | {AudioCodecLabel(info.AudioCodec)}{aRate}{aDsp}" : "") +
                     (sessionSpeed != 1.0 ? $" · {sessionSpeed:0.##}x" : "") +
                     (info.AudioTrack.Length > 0 ? $" | {info.AudioTrack}" : "") + delayTag + "\n" +
-                    $"  {PipelineTag(info)} | v{BugReport.AppVersion}" + (tlsTag.Length > 0 ? $" | {tlsTag}" : "") + "\n" +
+                    $"  {PipelineTag(info)} | v{BugReport.AppVersion} | {runtimeStatsTag}" + (tlsTag.Length > 0 ? $" | {tlsTag}" : "") + "\n" +
                     $"  buf v{stats.VideoQueuedMs / 1000.0:F1}s a{stats.AudioQueuedMs / 1000.0:F1}s | drop {stats.DroppedFrames} | stalls {stats.Stalls} | err {stats.Errors}" +
                     (sysLine.Length > 0 ? "\n" + sysLine : "");
             }
@@ -2421,7 +2424,13 @@ namespace OmegaTube.Ui
                     UpdateIndicators();
                     break;
                 case Action.Stats:
-                    Widgets.SetVisible(statsLabel, !statsLabel.Visibility);
+                    bool showStats = !statsLabel.Visibility;
+                    Widgets.SetVisible(statsLabel, showStats);
+                    if (!showStats)
+                    {
+                        runtimeStatsTag = null;
+                        statsLabel.Text = "";
+                    }
                     lastStatsUiAt = default;
                     UpdateIndicators();
                     break;
