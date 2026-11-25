@@ -1,6 +1,7 @@
-# Runs on every pull request (and on pushes to main): quick checks, a native build of the core
-# with the PC tools, and the full .tpk build, attached to the run so reviewers can install the PR on a TV.
-# Uses `pull_request` (not `pull_request_target`): PRs from forks run with a read-only token and no secrets.
+# Unified CI & Release workflow:
+# - On PRs: runs checks, native host build, and builds the .tpk artifact without publishing a release.
+# - On pushes to main / workflow_dispatch: runs checks, builds the .tpk once, publishes a GitHub Release
+#   with the .tpk and installer scripts, and prunes older releases to keep only the latest 5.
 name: CI
 
 on:
@@ -75,10 +76,14 @@ jobs:
           cmake --build build/host -j"$(nproc)"
 
   tpk:
-    name: TV package (.tpk)
+    name: TV package (.tpk) & Release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -93,10 +98,45 @@ jobs:
       - name: Build core (TV toolchain) + app
         run: OMEGA_NO_SIGN=1 scripts/build-app.sh
 
-      # Unsigned for any TV (SDK test signature): re-sign it with your own profile before installing,
-      # (see "Testing a PR on a TV" in the README).
+      # Unsigned for any TV (SDK test signature): re-sign it with your own profile before installing.
       - uses: actions/upload-artifact@v7
         with:
           name: forgetube-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.sha }}
           path: app/ForgeTube/bin/Release/net8.0-tizen10.0/**/*.tpk
           retention-days: 14
+
+      # Stable names: install.sh downloads them from releases/latest/download/.
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          VERSION=$(head -n1 VERSION)
+          COMMIT_ID=$(git rev-parse --short HEAD)
+          TPK=$(find app/ForgeTube/bin/Release -name '*.tpk' | head -n1)
+          cp "$TPK" dist/forgetube.tpk
+          cp "$TPK" "dist/forgetube-${VERSION}-${COMMIT_ID}.tpk"
+          cp scripts/install-tv.sh dist/install.sh
+          cp scripts/install-tv.ps1 dist/install.ps1
+          cp tools/samsung-cert/SamsungCert.java dist/
+
+          RELEASE_ID="v${VERSION}-${COMMIT_ID}"
+          RELEASE_NAME="${VERSION} (${COMMIT_ID})"
+          COMMIT_MSG=$(git log -1 --pretty=format:"- %s (%h)")
+          gh release create "$RELEASE_ID" dist/* \
+            --title "$RELEASE_NAME" \
+            --target "$GITHUB_SHA" \
+            --notes "$COMMIT_MSG" \
+            || gh release upload "$RELEASE_ID" dist/* --clobber
+
+      - name: Prune older releases (keep latest 5)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OLD_RELEASES=$(gh release list --limit 100 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[5:] | .[].tagName')
+          for rel in $OLD_RELEASES; do
+            echo "Deleting old release: $rel"
+            gh release delete "$rel" --yes --cleanup-tag || true
+          done

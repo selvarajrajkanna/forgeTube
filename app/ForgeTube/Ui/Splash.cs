@@ -4,9 +4,9 @@ using Tizen.NUI.BaseComponents;
 
 namespace ForgeTube.Ui
 {
-    // Launch screen over the home screen: the Ω on black, the play triangle popping into it, then a fade once
-    // the home rows are on screen (or after MaxMs). It starts exactly like shared/res/splash.png, which the
-    // platform shows while the app process starts, so the hand-over is invisible.
+    // Launch screen over the home screen: the ForgeTube emblem on black, the play triangle popping into it,
+    // then a fade once the home rows are on screen (or after MaxMs). It starts exactly like shared/res/splash.png,
+    // which the platform shows while the app process starts, so the hand-over is invisible.
     public class Splash : View
     {
         private const int LogoSize = 280;
@@ -32,7 +32,7 @@ namespace ForgeTube.Ui
 
             var logo = new ImageView
             {
-                ResourceUrl = Theme.Image("splash_omega"),
+                ResourceUrl = Theme.Image("splash_logo"),
                 Size = new Size(LogoSize, LogoSize),
                 Position = new Position((1920 - LogoSize) / 2, (1080 - LogoSize) / 2),
             };
@@ -41,7 +41,7 @@ namespace ForgeTube.Ui
             {
                 ResourceUrl = Theme.Image("splash_play"),
                 Size = new Size(LogoSize, LogoSize),
-                PivotPoint = new Position(0.506f, 0.477f, 0.5f),   // the triangle's centre in the logo
+                PivotPoint = new Position(0.50f, 0.493f, 0.5f),   // the triangle's centre in the logo
                 PositionUsesPivotPoint = false,
                 Scale = new Vector3(0f, 0f, 1f),
             };
