@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renders the "glass" nine-patches of the Glorious theme into app/OmegaTube/res/images/.
+"""Renders the "glass" nine-patches of the Glorious theme into app/ForgeTube/res/images/.
 
 Tizen 5.5 has no CornerRadius, Borderline or BoxShadow and no backdrop blur, so the glass look is baked into a
 nine-patch: a very light translucent white fill, a thin (1 px), subtle rim for the edge reflection and a faint
@@ -19,7 +19,7 @@ from PIL import Image
 SS = 4               # supersampling for anti-aliasing
 RIM = 1.0            # rim width in px: a hairline
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "OmegaTube", "res", "images")
+OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "ForgeTube", "res", "images")
 
 WHITE = (255, 255, 255)
 SMOKE = (14, 16, 22)     # the dark tint of the readable-on-anything variant

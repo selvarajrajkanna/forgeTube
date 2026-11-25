@@ -3,17 +3,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PROFILE="${TIZEN_PROFILE:-omegatube-modern}"
+PROFILE="${TIZEN_PROFILE:-forgetube}"
 TIZEN="${TIZEN_STUDIO:-$HOME/tizen-studio}/tools/ide/bin/tizen"
 
 # Single version source: VERSION -> manifest (the core embeds it at compile time).
 VERSION=$(head -n1 VERSION)
 # (" version=" with a leading space, so api-version is left alone)
-sed -i -E "/<manifest /s/ version=\"[^\"]*\"/ version=\"$VERSION\"/" app/OmegaTube/tizen-manifest.xml
+sed -i -E "/<manifest /s/ version=\"[^\"]*\"/ version=\"$VERSION\"/" app/ForgeTube/tizen-manifest.xml
 
 # Dev builds: OMEGA_DEV_LOG=host:port mirrors the core log to scripts/serve-test-media.sh.
 # Never set it for a release build (res/dev.json is git-ignored).
-DEV_JSON=app/OmegaTube/res/dev.json
+DEV_JSON=app/ForgeTube/res/dev.json
 if [ -n "${OMEGA_DEV_LOG:-}" ]; then
   mkdir -p "$(dirname "$DEV_JSON")"
   printf '{"logHost": "%s", "logPort": %s}\n' "${OMEGA_DEV_LOG%:*}" "${OMEGA_DEV_LOG##*:}" > "$DEV_JSON"
@@ -23,10 +23,10 @@ else
 fi
 
 scripts/build-core.sh
-rm -rf app/OmegaTube/bin/Release
-dotnet build app/OmegaTube/OmegaTube.csproj -c Release
+rm -rf app/ForgeTube/bin/Release
+dotnet build app/ForgeTube/ForgeTube.csproj -c Release
 
-TPK=$(find app/OmegaTube/bin/Release -name '*.tpk' | head -n1)
+TPK=$(find app/ForgeTube/bin/Release -name '*.tpk' | head -n1)
 # OMEGA_NO_SIGN=1 (CI): keep the SDK's test signature, users re-sign for their TV (scripts/install-tv.sh).
 if [ -z "${OMEGA_NO_SIGN:-}" ]; then
   "$TIZEN" package -t tpk -s "$PROFILE" -- "$TPK"

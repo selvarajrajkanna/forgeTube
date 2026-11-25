@@ -120,10 +120,10 @@
     "api": "https://sponsor.ajay.app"
   },
   "updates": {
-    "repo": "selvarajrajkanna/omegatube-modern"
+    "repo": "selvarajrajkanna/forgeTube"
   },
   "reports": {
-    "_comment": "Bug reports: the QR code opens a pre-filled issue in updates.repo. When the user attaches the full log, it is posted to `paste` (OmegaTube's own Worker, see github.com/IIyn/omegatube-logs) as the raw text/plain body, or as a form with the text in `field` plus `params` when `field` is set; the service must answer with the report's https URL. Empty `paste`: no \"Attach the full log\" button.",
-    "paste": "https://omegatube-logs.omegatube.workers.dev/"
+    "_comment": "Bug reports: the QR code opens a pre-filled issue in updates.repo. When the user attaches the full log, it is posted to `paste` (ForgeTube's own Worker, see your own log paste Worker) as the raw text/plain body, or as a form with the text in `field` plus `params` when `field` is set; the service must answer with the report's https URL. Empty `paste`: no \"Attach the full log\" button.",
+    "paste": ""
   }
 }

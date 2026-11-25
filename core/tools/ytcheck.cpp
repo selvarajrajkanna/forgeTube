@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && strcmp(argv[1], "--next") == 0) {
         // With the token of a previous --signin: the account's suggestions (ANON=1 for the anonymous ones).
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.signed_in() && !getenv("ANON") ? auth.access_token(error) : "";
         error.clear();
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
         omega::yt::Client client;
         if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error, token = auth.access_token(error);
         omega::yt::Feed first, next, row;
         if (token.empty() || !client.browse("FEwhat_to_watch", "", token, first, error)) {
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     if (argc >= 4 && (strcmp(argv[1], "--dump-player") == 0 || strcmp(argv[1], "--dump-browse") == 0 ||
                       strcmp(argv[1], "--dump-search") == 0)) {
         // Saves the raw InnerTube response, to study a layout (live player response, feed shelves).
-        // --dump-browse needs the token of a previous --signin (./omegatube-auth.json).
+        // --dump-browse needs the token of a previous --signin (./forgetube-auth.json).
         omega::yt::Client client;
         client.set_capture_response(true);
         std::string error;
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
             ok = client.player(argv[2], info, error);
         } else {
             omega::yt::Auth& auth = omega::yt::shared_auth();
-            auth.init("omegatube-auth.json");
+            auth.init("forgetube-auth.json");
             std::string token = auth.access_token(error);
             omega::yt::Feed feed;
             ok = !token.empty() && client.browse(argv[2], "", token, feed, error);
@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 3 && strcmp(argv[1], "--details") == 0) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.signed_in() ? auth.access_token(error) : "";
         omega::yt::Client client;
@@ -295,7 +295,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 3 && (strcmp(argv[1], "--comments") == 0 || strcmp(argv[1], "--replies") == 0)) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         omega::yt::Client client;
         if (getenv("DUMP")) client.set_capture_response(true);
         omega::yt::CommentPage page;
@@ -360,7 +360,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 5 && strcmp(argv[1], "--reply") == 0) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.signed_in() ? auth.access_token(error) : "";
         if (token.empty()) {
@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 5 && strcmp(argv[1], "--comment-action") == 0) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.signed_in() ? auth.access_token(error) : "";
         if (token.empty()) {
@@ -395,7 +395,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 4 && strcmp(argv[1], "--post-comment") == 0) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.signed_in() ? auth.access_token(error) : "";
         if (token.empty()) {
@@ -437,7 +437,7 @@ int main(int argc, char** argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "--account") == 0) {
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         std::string token = auth.access_token(error);
         omega::yt::AccountInfo account;
@@ -449,9 +449,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc >= 2 && strcmp(argv[1], "--signin") == 0) {
-        // Device flow end to end, token kept in ./omegatube-auth.json; then lists the signed-in home feed.
+        // Device flow end to end, token kept in ./forgetube-auth.json; then lists the signed-in home feed.
         omega::yt::Auth& auth = omega::yt::shared_auth();
-        auth.init("omegatube-auth.json");
+        auth.init("forgetube-auth.json");
         std::string error;
         if (!auth.signed_in()) {
             omega::yt::DeviceCode code;
@@ -538,7 +538,7 @@ int main(int argc, char** argv) {
     std::string error;
     // CLIENT=<clientName>: only that player client (e.g. CLIENT=TVHTML5), to see which ones YouTube accepts.
     omega::yt::shared_decipher().set_cache_dir(".");
-    omega::yt::shared_auth().init("omegatube-auth.json");  // signed-in retry on LOGIN_REQUIRED, as on the TV
+    omega::yt::shared_auth().init("forgetube-auth.json");  // signed-in retry on LOGIN_REQUIRED, as on the TV
     const char* only = getenv("CLIENT");
     if (!client.player(argv[1], info, error, only ? only : "")) {
         printf("player failed: %s\n", error.c_str());

@@ -1,0 +1,459 @@
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using ForgeTube.Config;
+using Tizen.NUI;
+using Tizen.NUI.BaseComponents;
+using static ForgeTube.I18n;
+
+namespace ForgeTube.Ui
+{
+    // On-screen keyboard in the app language's layout (QWERTY, AZERTY, Spanish QWERTY with ñ), with a second
+    // page of accents and symbols, + live suggestions + one row of results.
+    public class SearchScreen : Screen
+    {
+        // Four rows of ten characters per layout; the action row comes below.
+        private enum KeyAction { Page, Space, Delete, Clear, Search }
+        private const int KeyW = 86, KeyH = 72, KeyGap = 8;
+        private const int KbX = 80, KbY = 190;
+
+        private enum Zone { Input, Keyboard, Suggestions, AddButton, Results }
+
+        private readonly View inputBox;
+        private readonly TextField queryField;
+        private readonly TextLabel addButton;
+        private readonly OnScreenKeyboard keyboard;
+        private readonly List<TextLabel> suggestionLabels = new List<TextLabel>();
+        private readonly View resultsHost;
+        private List<string> suggestions = new List<string>();
+        private FeedRow results;
+        private string query = "";
+        private bool syncingField;
+        private Zone zone = Zone.Input;
+        private bool focused;
+        private int suggestionIndex;
+        private int suggestGeneration;
+
+        public SearchScreen(App app) : base(app)
+        {
+            Root.BackgroundColor = Theme.Background;
+
+            inputBox = Widgets.Box(Theme.Surface, 900, 80);
+            inputBox.Position = new Position(KbX, 70);
+            Root.Add(inputBox);
+            queryField = new TextField
+            {
+                Size = new Size(860, 80),
+                Position = new Position(20, 0),
+                PixelSize = Theme.TitleSize,
+                TextColor = Theme.Text,
+                PlaceholderText = T("Search YouTube…"),
+                PlaceholderTextColor = Theme.TextDim,
+                VerticalAlignment = VerticalAlignment.Center,
+                Focusable = true,
+                EnableSelection = false,
+            };
+            queryField.TextChanged += (s, e) =>
+            {
+                if (syncingField)
+                {
+                    return;
+                }
+                query = queryField.Text ?? "";
+                UiGuard.Fire("SearchScreen.RefreshSuggestions", RefreshSuggestions);
+            };
+            queryField.KeyEvent += OnFieldKey;
+            inputBox.Add(queryField);
+
+            addButton = Widgets.Label("  + " + T("Add to menu") + "  ", Theme.BodySize, Theme.Text, 0, 0);
+            addButton.Position = new Position(KbX + 930, 86);
+            addButton.BackgroundColor = Theme.Surface;
+            addButton.Hide();
+            Root.Add(addButton);
+
+            keyboard = new OnScreenKeyboard(KeyW, KeyH, KeyGap, Theme.BodySize + 1, roundKeys: false,
+                                            T("Clear"), T("Search"));
+            keyboard.Position = new Position(KbX, KbY);
+            Root.Add(keyboard);
+
+            var sugTitle = Widgets.Label(T("Suggestions"), Theme.BodySize, Theme.TextDim, 700);
+            sugTitle.Position = new Position(1060, 190);
+            Root.Add(sugTitle);
+            for (int i = 0; i < 7; i++)
+            {
+                var s = Widgets.Label("", Theme.BodySize + 2, Theme.Text, 780, 50);
+                s.Position = new Position(1060, 240 + i * 54);
+                s.VerticalAlignment = VerticalAlignment.Center;
+                Root.Add(s);
+                suggestionLabels.Add(s);
+            }
+
+            resultsHost = new View { Position = new Position(KbX - Theme.FocusMargin, 610), Size = new Size(1920 - KbX + Theme.FocusMargin, 470),
+                                     ClippingMode = ClippingModeType.ClipToBoundingBox };
+            Root.Add(resultsHost);
+            UpdateFocus();
+        }
+
+        private int SuggestionCount => System.Math.Min(suggestions.Count, suggestionLabels.Count);
+
+        private void SyncField()
+        {
+            if ((queryField.Text ?? "") == query)
+            {
+                return;
+            }
+            syncingField = true;
+            queryField.Text = query;
+            syncingField = false;
+        }
+
+        private void UpdateFocus()
+        {
+            SyncField();
+            inputBox.BackgroundColor = focused && zone == Zone.Input ? Theme.SurfaceFocused : Theme.Surface;
+            if (focused && zone == Zone.Input)
+            {
+                FocusManager.Instance.SetCurrentFocusView(queryField);
+            }
+            else if (FocusManager.Instance.GetCurrentFocusView() == queryField)
+            {
+                FocusManager.Instance.ClearFocus();
+            }
+            keyboard.Paint(focused && zone == Zone.Keyboard);
+            for (int i = 0; i < suggestionLabels.Count; i++)
+            {
+                suggestionLabels[i].Text = i < suggestions.Count ? "  " + suggestions[i] : "";
+                suggestionLabels[i].BackgroundColor = focused && zone == Zone.Suggestions && i == suggestionIndex
+                    ? Theme.SurfaceFocused : Color.Transparent;
+            }
+            addButton.BackgroundColor = focused && zone == Zone.AddButton ? Theme.Accent : Theme.Surface;
+            results?.SetFocused(focused && zone == Zone.Results);
+        }
+
+        public override void OnShow()
+        {
+            if (focused)
+            {
+                UpdateFocus();
+            }
+            results?.RequestWork?.Invoke();
+        }
+
+        public override void SetFocused(bool focused)
+        {
+            if (this.focused == focused)
+            {
+                return;
+            }
+            this.focused = focused;
+            if (focused)
+            {
+                zone = Zone.Input;
+            }
+            UpdateFocus();
+        }
+
+        public override void OnHide()
+        {
+            if (FocusManager.Instance.GetCurrentFocusView() == queryField)
+            {
+                FocusManager.Instance.ClearFocus();
+            }
+            results?.UnloadAll();
+        }
+
+        private static bool IsSubmitKey(string key) =>
+            key == "Return" || key == "Enter" || key == "KP_Enter" || key == "KeypadEnter"
+            || key == "Select" || key == "Done" || key == "XF86Done";
+
+        private bool OnFieldKey(object sender, View.KeyEventArgs e)
+        {
+            if (zone != Zone.Input)
+            {
+                return false;
+            }
+            bool isDoneCode = e.Key.KeyCode == 65376;
+            if (e.Key.State != Key.StateType.Down && !(isDoneCode && e.Key.State == Key.StateType.Up))
+            {
+                return false;
+            }
+            if (!isDoneCode && !IsSubmitKey(e.Key.KeyPressedName))
+            {
+                return false;
+            }
+            UiGuard.Run("SearchScreen.FieldKey", () =>
+            {
+                SubmitInput();
+                UpdateFocus();
+            });
+            return true;
+        }
+
+        private void SubmitInput()
+        {
+            string fieldText = (queryField.Text ?? "").Trim();
+            if (fieldText.Length > 0)
+            {
+                query = fieldText;
+            }
+            if (query.Trim().Length > 0)
+            {
+                RunSearch();
+            }
+            else
+            {
+                FocusManager.Instance.ClearFocus();
+                FocusManager.Instance.SetCurrentFocusView(queryField);
+            }
+        }
+
+        public override bool OnKey(string key)
+        {
+            switch (zone)
+            {
+                case Zone.Input:
+                    if (key == "Down")
+                    {
+                        zone = Zone.Keyboard;
+                        keyboard.JumpToTopRow();
+                    }
+                    else if (key == "Right")
+                    {
+                        if (addButton.Visibility)
+                        {
+                            zone = Zone.AddButton;
+                        }
+                        else if (SuggestionCount > 0)
+                        {
+                            zone = Zone.Suggestions;
+                            suggestionIndex = 0;
+                        }
+                    }
+                    else if (key == "Left" || key == "XF86Back" || key == "Escape")
+                    {
+                        zone = Zone.Keyboard;
+                        UpdateFocus();
+                        return false;
+                    }
+                    else if (IsSubmitKey(key))
+                    {
+                        SubmitInput();
+                    }
+                    break;
+                case Zone.Keyboard:
+                    if (!KeyboardKey(key))
+                    {
+                        return false;
+                    }
+                    break;
+                case Zone.Suggestions:
+                    if (key == "Up")
+                    {
+                        suggestionIndex--;
+                        if (suggestionIndex < 0)
+                        {
+                            suggestionIndex = 0;
+                        }
+                    }
+                    else if (key == "Down")
+                    {
+                        suggestionIndex = System.Math.Min(SuggestionCount - 1, suggestionIndex + 1);
+                    }
+                    else if (key == "Left")
+                    {
+                        zone = Zone.Keyboard;
+                    }
+                    else if (key == "Return" && suggestionIndex < suggestions.Count)
+                    {
+                        query = suggestions[suggestionIndex];
+                        RunSearch();
+                    }
+                    else if (key == "XF86Back" || key == "Escape")
+                    {
+                        zone = Zone.Keyboard;
+                    }
+                    break;
+                case Zone.AddButton:
+                    if (key == "Down" || key == "XF86Back" || key == "Escape")
+                    {
+                        zone = Zone.Keyboard;
+                    }
+                    else if (key == "Left")
+                    {
+                        zone = Zone.Input;
+                    }
+                    else if (key == "Return")
+                    {
+                        AddToHome();
+                    }
+                    break;
+                case Zone.Results:
+                    if (key == "Up" || key == "XF86Back" || key == "Escape")
+                    {
+                        zone = Zone.Keyboard;
+                        keyboard.JumpToActionRow();
+                    }
+                    else if (key == "Left")
+                    {
+                        results.Move(-1);
+                    }
+                    else if (key == "Right")
+                    {
+                        results.Move(1);
+                    }
+                    else if (key == "Return" && results.FocusedItem != null)
+                    {
+                        App.Play(results.FocusedItem);
+                    }
+                    break;
+            }
+            UpdateFocus();
+            return true;
+        }
+
+        private bool KeyboardKey(string key)
+        {
+            switch (key)
+            {
+                case "Up":
+                    if (!keyboard.MoveUp())
+                    {
+                        zone = Zone.Input;
+                    }
+                    break;
+                case "Down":
+                    if (!keyboard.MoveDown() && results != null && results.Count > 0)
+                    {
+                        zone = Zone.Results;
+                    }
+                    break;
+                case "Left":
+                    if (!keyboard.MoveLeft())
+                    {
+                        return false;   // back to the home rail
+                    }
+                    break;
+                case "Right":
+                    if (!keyboard.MoveRight() && SuggestionCount > 0)
+                    {
+                        zone = Zone.Suggestions;
+                        suggestionIndex = 0;
+                    }
+                    break;
+                case "Return":
+                    if (keyboard.IsActionRow)
+                    {
+                        PressAction((KeyAction)keyboard.ActionIndex);
+                    }
+                    else
+                    {
+                        query += keyboard.CurrentChar();
+                        UiGuard.Fire("SearchScreen.RefreshSuggestions", RefreshSuggestions);
+                    }
+                    break;
+                case "XF86Back":
+                case "Escape":
+                    return false;
+            }
+            return true;
+        }
+
+        private void PressAction(KeyAction action)
+        {
+            switch (action)
+            {
+                case KeyAction.Page:
+                    keyboard.ToggleSymbols();
+                    return;
+                case KeyAction.Space:
+                    query += " ";
+                    break;
+                case KeyAction.Delete:
+                    if (query.Length > 0)
+                    {
+                        query = query.Substring(0, query.Length - 1);
+                    }
+                    break;
+                case KeyAction.Clear:
+                    query = "";
+                    break;
+                case KeyAction.Search:
+                    RunSearch();
+                    return;
+            }
+            UiGuard.Fire("SearchScreen.RefreshSuggestions", RefreshSuggestions);
+        }
+
+        // Debounced: only the latest keystroke's request updates the list.
+        private async Task RefreshSuggestions()
+        {
+            int generation = ++suggestGeneration;
+            await Task.Delay(250);
+            if (IsDisposed || generation != suggestGeneration)
+            {
+                return;
+            }
+            List<string> list = query.Trim().Length == 0 ? new List<string>() : await YouTubeSuggest(query);
+            if (IsDisposed || generation != suggestGeneration)
+            {
+                return;
+            }
+            suggestions = list;
+            suggestionIndex = SuggestionCount > 0 ? System.Math.Min(suggestionIndex, SuggestionCount - 1) : 0;
+            if (zone == Zone.Suggestions && SuggestionCount == 0)
+            {
+                zone = Zone.Keyboard;
+            }
+            UpdateFocus();
+        }
+
+        private static Task<List<string>> YouTubeSuggest(string q) => Data.YouTube.Suggest(q);
+
+        private void RunSearch()
+        {
+            string q = query.Trim();
+            if (q.Length == 0)
+            {
+                return;
+            }
+            if (results != null)
+            {
+                resultsHost.Remove(results);
+                results.Dispose();
+            }
+            results = new FeedRow(T("Results for “{0}”", q), q, 1920 - KbX);
+            resultsHost.Add(results);
+            bool exists = App.Config.HomeRows.Exists(r => string.Equals(r.Query, q, System.StringComparison.OrdinalIgnoreCase));
+            addButton.Text = exists ? "  ✓ " + T("Added to menu") + "  " : "  + " + T("Add to menu") + "  ";
+            addButton.Show();
+            zone = Zone.Keyboard;
+            UiGuard.Fire("SearchScreen.LoadResults", LoadResults);
+        }
+
+        private async Task LoadResults()
+        {
+            FeedRow row = results;
+            await row.Load();
+            if (!IsDisposed && row == results && row.Count > 0 && zone == Zone.Keyboard)
+            {
+                zone = Zone.Results;
+                UpdateFocus();
+            }
+        }
+
+        private void AddToHome()
+        {
+            string q = results?.Query;
+            if (string.IsNullOrEmpty(q))
+            {
+                return;
+            }
+            if (!App.Config.HomeRows.Exists(r => string.Equals(r.Query, q, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                App.Config.HomeRows.Add(new HomeRow { Title = q, Query = q, Icon = HomeRow.GuessIcon(q) });
+                App.Config.Save();
+                App.Home.InvalidateRows();
+            }
+            addButton.Text = "  ✓ " + T("Added to menu") + "  ";
+        }
+    }
+}

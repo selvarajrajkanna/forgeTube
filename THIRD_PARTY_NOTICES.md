@@ -1,12 +1,12 @@
 # Third-party notices
 
-OmegaTube reuses the following work. Thanks to their authors.
+ForgeTube reuses the following work. Thanks to their authors.
 
 | What | Where | License |
 | --- | --- | --- |
-| [ytps5-sponsorblock](https://github.com/animatian112/ytps5-sponsorblock) (C) 2026 BlackBearReloaded and contributors: approach for the TV sign-in (device flow, TV client id from the YouTube TV bundle), InnerTube client choices and the SmartTube-style UI layout | `core/src/yt/auth.cpp`, `core/src/yt/innertube.cpp`, `core/src/yt/watch.cpp` (watch-history pings, ported), `app/OmegaTube/Ui/` | GPL-3.0-or-later |
-| [SmartTube](https://github.com/yuliskov/SmartTube) (C) 2020-present yuliskov: interface the UI follows, and the icons | `app/OmegaTube/res/icons/` (see `LICENSE-SmartTube.txt` there) | MIT |
-| [Material Icons](https://github.com/google/material-design-icons) (C) Google: player and settings icons added for 1.0 (subtitles, audio_track, repeat, info, info_outline, check, logout, person, shield, view_list, language, thumb_up, thumb_down) | `app/OmegaTube/res/icons/` | Apache-2.0 |
+| [ytps5-sponsorblock](https://github.com/animatian112/ytps5-sponsorblock) (C) 2026 BlackBearReloaded and contributors: approach for the TV sign-in (device flow, TV client id from the YouTube TV bundle), InnerTube client choices and the SmartTube-style UI layout | `core/src/yt/auth.cpp`, `core/src/yt/innertube.cpp`, `core/src/yt/watch.cpp` (watch-history pings, ported), `app/ForgeTube/Ui/` | GPL-3.0-or-later |
+| [SmartTube](https://github.com/yuliskov/SmartTube) (C) 2020-present yuliskov: interface the UI follows, and the icons | `app/ForgeTube/res/icons/` (see `LICENSE-SmartTube.txt` there) | MIT |
+| [Material Icons](https://github.com/google/material-design-icons) (C) Google: player and settings icons added for 1.0 (subtitles, audio_track, repeat, info, info_outline, check, logout, person, shield, view_list, language, thumb_up, thumb_down) | `app/ForgeTube/res/icons/` | Apache-2.0 |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) 3.6 | fetched by `scripts/fetch-deps.sh`, linked into the core | Apache-2.0 |
 | [nlohmann/json](https://github.com/nlohmann/json) 3.12 | fetched by `scripts/fetch-deps.sh` | MIT |
 | [QR Code generator](https://github.com/nayuki/QR-Code-generator) by Project Nayuki | fetched by `scripts/fetch-deps.sh` | MIT |
@@ -19,4 +19,4 @@ OmegaTube reuses the following work. Thanks to their authors.
 
 The omega logo is rendered with the DejaVu Sans Bold font (Bitstream Vera / DejaVu license).
 
-YouTube is a trademark of Google LLC. OmegaTube is an independent project, not affiliated with Google or YouTube.
+YouTube is a trademark of Google LLC. ForgeTube is an independent project, not affiliated with Google or YouTube.

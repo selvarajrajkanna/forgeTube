@@ -19,6 +19,6 @@
 
 - [ ] One topic per PR (unrelated fixes go in separate PRs)
 - [ ] If an LLM helped write the code: I reviewed every line myself and say in the description what it was used for
-- [ ] New texts shown in the app go through `T("…")`, with French and Spanish added in `app/OmegaTube/I18n.cs` (or say so and they'll be added)
+- [ ] New texts shown in the app go through `T("…")`, with French and Spanish added in `app/ForgeTube/I18n.cs` (or say so and they'll be added)
 - [ ] `remote-config.json` changes are still valid for the released versions of the app
 - [ ] No tokens, certificates, logs with personal data or `res/dev.json` committed

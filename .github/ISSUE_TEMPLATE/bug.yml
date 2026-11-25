@@ -1,6 +1,6 @@
 # The app's report screen (Settings > About > Report a problem, or after a crash) opens this form through a
 # QR code, with the fields below pre-filled from the URL: ?template=bug.yml&title=…&version=…&device=…&log=…&fulllog=…
-# Keep the ids in sync with app/OmegaTube/BugReport.cs.
+# Keep the ids in sync with app/ForgeTube/BugReport.cs.
 name: Bug report
 description: Something doesn't work on your TV
 labels: [bug]
@@ -19,7 +19,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: omegatube-modern version
+      label: forgetube version
       placeholder: "1.2.1"
     validations:
       required: true

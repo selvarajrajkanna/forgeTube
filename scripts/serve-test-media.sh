@@ -2,7 +2,7 @@
 # Serves the PoC test streams to the TV and prints the TV's UDP log lines.
 # Usage: scripts/serve-test-media.sh [media dir]
 set -euo pipefail
-DIR="${1:-$HOME/Videos/omegatube-test}"
+DIR="${1:-$HOME/Videos/forgetube-test}"
 python3 -m http.server 8000 --bind 0.0.0.0 --directory "$DIR" &
 HTTP_PID=$!
 trap 'kill $HTTP_PID' EXIT

@@ -222,7 +222,7 @@ bool JsSolver::preprocess(std::string&& player_js, std::string& preprocessed, st
         ok = eval_string(ctx,
                          "(() => { const p = _player; delete globalThis._player;"
                          " const r = jsc({type: 'player', player: p, output_preprocessed: true,"
-                         " requests: [{type: 'n', challenges: ['omegatubeprobe00']}]});"
+                         " requests: [{type: 'n', challenges: ['forgetubeprobe00']}]});"
                          " const n = r.responses[0];"
                          " if (n.type !== 'result') throw new Error('n: ' + n.error);"
                          " return r.preprocessed_player; })()",

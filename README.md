@@ -1,24 +1,24 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="branding/omegatube-mark-dark.png">
-    <img src="branding/omegatube-mark-light.png" width="128" alt="omegatube-modern logo">
+    <source media="(prefers-color-scheme: dark)" srcset="branding/forgetube-mark-dark.png">
+    <img src="branding/forgetube-mark-light.png" width="128" alt="forgetube logo">
   </picture>
 </p>
 
-<h1 align="center">omegatube-modern</h1>
+<h1 align="center">forgetube</h1>
 
 <p align="center">
   <b>A rebuilt, zero-bloat native YouTube client for Samsung Smart TVs (Tizen 10+)</b><br>
   Engineered for reference video clarity, studio-clean 48 kHz audio, instant responsiveness, and an uninterrupted couch experience.<br>
-  <sub>Forked from <a href="https://github.com/IIyn/omegatube">IIyn/omegatube</a> — kept the spirit, replaced almost everything else. Independent project, not affiliated with Google, YouTube, or Samsung.</sub>
+  <sub>Forked from <a href="https://github.com/IIyn/forgetube">IIyn/forgetube</a> — kept the spirit, replaced almost everything else. Independent project, not affiliated with Google, YouTube, or Samsung.</sub>
 </p>
 
 ---
 
 ## Contents
 
-- [Why omegatube-modern Exists](#why-omegatube-modern-exists)
-- [omegatube-modern vs Original OmegaTube](#omegatube-modern-vs-original-omegatube)
+- [Why forgetube Exists](#why-forgetube-exists)
+- [forgetube vs Original ForgeTube](#forgetube-vs-original-forgetube)
 - [Built for Watching Videos](#built-for-watching-videos)
   - [Picture and Hardware Decoding](#picture-and-hardware-decoding)
   - [Audiophile C++ Float Audio Pipeline and Bluetooth Sync](#audiophile-c-float-audio-pipeline-and-bluetooth-sync)
@@ -34,21 +34,21 @@
 
 ---
 
-## Why omegatube-modern Exists
+## Why forgetube Exists
 
-**omegatube-modern** started as a fork of [IIyn/omegatube](https://github.com/IIyn/omegatube) with a simple rule: treat your TV like modern 2026 hardware, not a Tizen 5.5 museum exhibit.
+**forgetube** started as a fork of [IIyn/forgetube](https://github.com/IIyn/forgetube) with a simple rule: treat your TV like modern 2026 hardware, not a Tizen 5.5 museum exhibit.
 
-Instead of wrapping YouTube's sluggish web player in a TV browser—or carrying legacy workarounds for decade-old firmware—**omegatube-modern** pairs a native GPU-accelerated **Tizen 10 NUI** interface with a **C++20 / ARMv8 NEON** media core that decodes, cleans, and feeds streams directly into Samsung's hardware pipelines.
+Instead of wrapping YouTube's sluggish web player in a TV browser—or carrying legacy workarounds for decade-old firmware—**forgetube** pairs a native GPU-accelerated **Tizen 10 NUI** interface with a **C++20 / ARMv8 NEON** media core that decodes, cleans, and feeds streams directly into Samsung's hardware pipelines.
 
 You press play, the video starts cleanly, the picture looks crisp, the sound stays uncolored and dead-on synced, and the interface gets out of your way.
 
 ---
 
-## omegatube-modern vs Original OmegaTube
+## forgetube vs Original ForgeTube
 
-Much love to [IIyn/omegatube](https://github.com/IIyn/omegatube) for proving a native YouTube app on Samsung TVs could exist without a browser. That said, living on the original fork felt like driving a sports car with the handbrake on:
+Much love to [IIyn/forgetube](https://github.com/IIyn/forgetube) for proving a native YouTube app on Samsung TVs could exist without a browser. That said, living on the original fork felt like driving a sports car with the handbrake on:
 
-| Experience | Original `IIyn/omegatube` | `omegatube-modern` |
+| Experience | Original `IIyn/forgetube` | `forgetube` |
 | --- | --- | --- |
 | **Target Platform** | Stretched across Tizen 5.5–9.0 with runtime ELF-loader hacks, glibc shims, and legacy API 6 fallbacks | Laser-focused on **Tizen 10+ (`.NET 8`, ARMv8-A Cortex-A72 / NQ4 AI Gen2, tuned for Samsung S85H)** — zero legacy shims, zero dead fallback baggage |
 | **Home and Chrome** | Heavy carousel/preview scaffolding, bitmap `round_mask.png` alpha masks, disk feed caches, and blocking startup checks | Stripped **~2,100+ lines** of heavy preview/theme bloat (`Hero`, `PreviewRing`, `Backdrop`); native **GPU `CornerRadius`** + crisp **skeleton loading placeholders** |
@@ -58,7 +58,7 @@ Much love to [IIyn/omegatube](https://github.com/IIyn/omegatube) for proving a n
 | **Seeking and Controls** | Fixed step jumps, jumpy seekbar playhead snap-back, and extra skip buttons cluttering the bar | **Reverse-logarithmic acceleration** (up to `10x` over 10s), **non-snapping seekbar**, atomic seek spinner on frame, and compact Material-inspired controls |
 | **Startup and Requests** | Repeated `youtube.com` `visitorData` fetches per video, sequential metadata/track requests, and startup GitHub release polling | **Shared `visitorData` cache**, **60s DNS + TLS resumption + HTTP Keep-Alive + gzip**, off-UI splash init, and **parallel** track/details/SponsorBlock fetching |
 
-In short: the original got YouTube on the TV; **omegatube-modern** makes you actually want to stay on it for four hours straight.
+In short: the original got YouTube on the TV; **forgetube** makes you actually want to stay on it for four hours straight.
 
 ---
 
@@ -75,7 +75,7 @@ In short: the original got YouTube on the TV; **omegatube-modern** makes you act
 
 ### Audiophile C++ Float Audio Pipeline and Bluetooth Sync
 
-Instead of letting a compressed stream hit unknown TV post-processing or dynamic volume pumping (`DRC` off, zero TV DSP suites, zero EQ coloration), `omegatube-modern` decodes and refines audio in a zero-UI **64-bit/32-bit C++ DSP pipeline** inside `libomegacore.so`, falling back automatically to TV hardware passthrough if a model ever rejects raw PCM:
+Instead of letting a compressed stream hit unknown TV post-processing or dynamic volume pumping (`DRC` off, zero TV DSP suites, zero EQ coloration), `forgetube` decodes and refines audio in a zero-UI **64-bit/32-bit C++ DSP pipeline** inside `libomegacore.so`, falling back automatically to TV hardware passthrough if a model ever rejects raw PCM:
 
 - **Pure Software Decode (`Opus 1.6.1` + `FAAD2 2.11.4`):** Native **48 kHz Opus** and **AAC** floating-point decode compiled with inlined ARMv8 NEON intrinsics (`OPUS_PRESUME_NEON`), hardware FMA (`-ffp-contract=fast`), FAAD2 FPU register retention (`-fno-float-store`), RFC 7845 `OpusHead` pre-skip/gain handling, and DRC disabled so dynamics remain untouched.
 - **Zero-Coloration Linear Normalization:** Uses YouTube's embedded `audioConfig.loudnessDb` metadata for linear attenuation with at least **1.0 dB inter-sample peak headroom** and a soft `> 0.995` peak guard—no multiband compression, no loudness pumping, no wasted CPU re-measuring ITU-R BS.1770-4.
@@ -112,7 +112,7 @@ Instead of letting a compressed stream hit unknown TV post-processing or dynamic
 
 | Layer | Technology | What It Owns |
 | --- | --- | --- |
-| **UI Shell** (`app/OmegaTube`) | C# / .NET 8 (`net8.0-tizen10.0`, API 10.0, `TieredPGO=false`, non-concurrent GC) | Native `Tizen.NUI` screens, GPU shaders, remote focus, BlueZ / IME bindings, binary FFI / `delegate* unmanaged` P/Invoke, settings, and `.tpk` packaging. |
+| **UI Shell** (`app/ForgeTube`) | C# / .NET 8 (`net8.0-tizen10.0`, API 10.0, `TieredPGO=false`, non-concurrent GC) | Native `Tizen.NUI` screens, GPU shaders, remote focus, BlueZ / IME bindings, binary FFI / `delegate* unmanaged` P/Invoke, settings, and `.tpk` packaging. |
 | **Media & DSP Core** (`core`) | C++20 (`libomegacore.so`, Cortex-A72 `-mthumb -O3` + LTO + ARMv8 Crypto/NEON) | InnerTube client (`yyjson` arena parser), Mbed TLS 3.6.8 HW AES-GCM + QuickJS-ng EJS solver, zero-copy MP4/WebM demuxers, planar NEON Opus/FAAD2 DSP pipeline, SponsorBlock, and `libesplusplayer.so` integration. |
 
 Key engineering optimizations baked across both layers:
@@ -128,7 +128,7 @@ Key engineering optimizations baked across both layers:
 
 ## Install on Your TV
 
-> **Supported TVs:** Samsung Smart TVs running **Tizen 10.0 or newer**. For older Tizen 6.0–9.0 TVs, see [IIyn/omegatube](https://github.com/IIyn/omegatube).
+> **Supported TVs:** Samsung Smart TVs running **Tizen 10.0 or newer**. For older Tizen 6.0–9.0 TVs, see [IIyn/forgetube](https://github.com/IIyn/forgetube).
 
 You need a computer (Windows 10/11, macOS, or Linux) on the **same local network** as your TV and a free **Samsung account** (used to sign the `.tpk` for your TV).
 
@@ -136,11 +136,11 @@ You need a computer (Windows 10/11, macOS, or Linux) on the **same local network
 
 - **Windows (PowerShell):**
   ```powershell
-  irm https://raw.githubusercontent.com/selvarajrajkanna/omegatube-modern/main/scripts/install-tv.ps1 | iex
+  irm https://raw.githubusercontent.com/selvarajrajkanna/forgeTube/main/scripts/install-tv.ps1 | iex
   ```
 - **macOS / Linux (Terminal):**
   ```sh
-  curl -fsSL https://github.com/selvarajrajkanna/omegatube-modern/releases/latest/download/install.sh | bash
+  curl -fsSL https://github.com/selvarajrajkanna/forgeTube/releases/latest/download/install.sh | bash
   ```
 
 ### 2. Follow the On-Screen Prompts
@@ -153,7 +153,7 @@ You need a computer (Windows 10/11, macOS, or Linux) on the **same local network
    - **Restart your TV** by holding the power button until the Samsung logo appears.
 3. Enter your TV's IP address (**Settings → General → Network → Network Status → IP Settings**).
 4. Sign in to your Samsung account in the browser window that opens to generate your TV's signing certificate (first time only).
-5. The installer downloads, signs, and launches **omegatube-modern** on your TV.
+5. The installer downloads, signs, and launches **forgetube** on your TV.
 
 To **update** later, run the same command again—your certificate, settings, and YouTube account are preserved.
 
@@ -161,11 +161,11 @@ To **update** later, run the same command again—your certificate, settings, an
 
 ## Install with Apps2Samsung
 
-Prefer a graphical installer? **omegatube-modern** can also be installed using [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) (available for Windows, macOS, and Linux):
+Prefer a graphical installer? **forgetube** can also be installed using [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) (available for Windows, macOS, and Linux):
 
 1. Download and open **Apps2Samsung** from its [releases page](https://github.com/Apps2Samsung/Apps2Samsung/releases).
 2. Enable **Developer Mode** on your TV using your computer's IP address and restart the TV.
-3. Select your TV in Apps2Samsung, pick **omegatube-modern**, and install.
+3. Select your TV in Apps2Samsung, pick **forgetube**, and install.
 
 *(Stick to one installer method for updates so your signing certificate stays the same.)*
 
@@ -177,7 +177,7 @@ Prefer a graphical installer? **omegatube-modern** can also be installed using [
 | --- | --- |
 | *"The TV did not answer"* | Confirm Developer Mode is **On** with your computer's IP, the TV was **restarted**, both devices are on the same network, and no VPN is blocking the connection. |
 | Windows firewall prompt for *sdb* or *Java* | Allow access on private networks so the installer can connect to your TV and receive the Samsung sign-in callback. |
-| Signature or certificate error on install | Uninstall any previous version signed with a different certificate on the TV (**Apps → omegatube-modern → long-press OK → Delete**) and run the installer again. |
+| Signature or certificate error on install | Uninstall any previous version signed with a different certificate on the TV (**Apps → forgetube → long-press OK → Delete**) and run the installer again. |
 | Video won't play after a YouTube change | [Report the issue](#reporting-a-bug) with the video link. Many client fixes roll out automatically via `remote-config.json` without needing an app update. |
 
 ---
@@ -185,7 +185,7 @@ Prefer a graphical installer? **omegatube-modern** can also be installed using [
 ## Reporting a Bug
 
 1. On your TV, open **Settings → About → Report a problem** (or scan the QR code shown automatically if an error occurs).
-2. Scan the QR code with your phone to open a pre-filled [GitHub issue](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=bug.yml) containing your app version, TV model, Tizen version, and error details.
+2. Scan the QR code with your phone to open a pre-filled [GitHub issue](https://github.com/selvarajrajkanna/forgeTube/issues/new?template=bug.yml) containing your app version, TV model, Tizen version, and error details.
 3. Add a brief note on what happened and submit.
 
 You can optionally attach the session log from the same screen; sensitive items (account tokens, emails, IP addresses, stream URLs, and titles) are stripped automatically before upload.
@@ -194,7 +194,7 @@ You can optionally attach the session log from the same screen; sensitive items 
 
 ## Contributing
 
-Pull requests and feature ideas are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code, and open a [feature request](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=feature.yml) for new ideas.
+Pull requests and feature ideas are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code, and open a [feature request](https://github.com/selvarajrajkanna/forgeTube/issues/new?template=feature.yml) for new ideas.
 
 For local development, run `scripts/fetch-deps.sh` once, then build the C++20 core natively on Linux (`core/tools` for PC diagnostics via `-DOMEGA_HOST_TOOLS=ON`) or cross-compile + package the `.tpk` via Docker + .NET SDK (`scripts/build-app.sh`).
 
@@ -202,9 +202,9 @@ For local development, run `scripts/fetch-deps.sh` once, then build the C++20 co
 
 ## Credits and License
 
-**omegatube-modern** is free software licensed under the [GNU GPL v3](LICENSE).
+**forgetube** is free software licensed under the [GNU GPL v3](LICENSE).
 
-- Originally forked from [IIyn/omegatube](https://github.com/IIyn/omegatube).
+- Originally forked from [IIyn/forgetube](https://github.com/IIyn/forgetube).
 - Built on the work of [SmartTube](https://github.com/yuliskov/SmartTube), [ytps5-sponsorblock](https://github.com/animatian112/ytps5-sponsorblock), [SponsorBlock](https://sponsor.ajay.app), [Opus](https://opus-codec.org/), [FAAD2](https://github.com/knik0/faad2), [Mbed TLS](https://github.com/Mbed-TLS/mbedtls), [yyjson](https://github.com/ibireme/yyjson), [zlib](https://zlib.net/), [QuickJS-ng](https://github.com/quickjs-ng/quickjs), and [yt-dlp EJS](https://github.com/yt-dlp/ejs). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for full notices and licenses.
 
-YouTube is a trademark of Google LLC. **omegatube-modern** is an independent project and is not affiliated with Google, YouTube, or Samsung.
+YouTube is a trademark of Google LLC. **forgetube** is an independent project and is not affiliated with Google, YouTube, or Samsung.

@@ -14,10 +14,10 @@ else
   TARGET="$TV_IP:26101"
   "$SDB" connect "$TARGET"
 fi
-TPK=$(find app/OmegaTube/bin/Release -name '*.tpk' 2>/dev/null | head -n1)
+TPK=$(find app/ForgeTube/bin/Release -name '*.tpk' 2>/dev/null | head -n1)
 if [ -z "$TPK" ]; then
-  echo "no .tpk in app/OmegaTube/bin/Release: run scripts/build-app.sh first" >&2
+  echo "no .tpk in app/ForgeTube/bin/Release: run scripts/build-app.sh first" >&2
   exit 1
 fi
 "$TIZEN" install -n "$(basename "$TPK")" -t "$("$SDB" devices | awk -v t="$TARGET" '$1==t {print $3}')" -- "$(dirname "$TPK")"
-"$SDB" -s "$TARGET" shell 0 execute org.omegatube.modern
+"$SDB" -s "$TARGET" shell 0 execute org.forgetube.app

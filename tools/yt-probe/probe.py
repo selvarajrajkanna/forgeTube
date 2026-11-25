@@ -99,7 +99,7 @@ def main():
                 has_n = "&n=" in direct[itag]["url"]
                 print(f"{'':11} itag {itag}: {range_test(direct[itag], client['userAgent'])}"
                       f"{'  (url has n= param: throttled until deciphered)' if has_n else ''}")
-        with open(f"/tmp/omegatube-probe-{name}.json", "w") as f:
+        with open(f"/tmp/forgetube-probe-{name}.json", "w") as f:
             json.dump(r, f)
 
 

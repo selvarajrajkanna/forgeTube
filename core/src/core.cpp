@@ -131,7 +131,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
         }
         return !v.empty() && !a.empty();
     };
-    cfg.app_id = "org.omegatube.modern";
+    cfg.app_id = "org.forgetube.app";
     cfg.app_version = kVersion;
     cfg.app_runtitle = "YouTube";
     auto* p = new omega_player(std::move(cfg));
@@ -876,7 +876,7 @@ std::string form_escape(const std::string& s) {
 
 int omega_report_available(void) { return omega::cfg::str({"reports", "paste"}).empty() ? 0 : 1; }
 
-// reports.paste: the service's URL (OmegaTube's own Worker, github.com/IIyn/omegatube-logs). reports.field
+// reports.paste: the service's URL (ForgeTube's own Worker, your own log paste Worker). reports.field
 // empty: the text is the raw body; otherwise a form with the text in that field plus reports.params.
 // Either way the service must answer with the paste's https URL.
 char* omega_report_upload(const char* text) {
@@ -887,10 +887,10 @@ char* omega_report_upload(const char* text) {
         if (req.url.empty()) return to_c_json({{"error", "no log service configured"}});
         std::string field = omega::cfg::str({"reports", "field"});
         if (field.empty()) {
-            req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "text/plain; charset=utf-8"}};
+            req.headers = {{"User-Agent", "forgetube"}, {"Content-Type", "text/plain; charset=utf-8"}};
             req.body = text ? text : "";
         } else {
-            req.headers = {{"User-Agent", "omegatube-modern"}, {"Content-Type", "application/x-www-form-urlencoded"}};
+            req.headers = {{"User-Agent", "forgetube"}, {"Content-Type", "application/x-www-form-urlencoded"}};
             req.body = field + "=" + form_escape(text ? text : "");
             std::string params = omega::cfg::str({"reports", "params"});
             if (!params.empty()) req.body += "&" + params;

@@ -1,4 +1,4 @@
-# Contributing to omegatube-modern
+# Contributing to forgetube
 
 Thanks for helping! Bug reports, ideas and pull requests are all welcome.
 
@@ -14,12 +14,12 @@ Please say in the pull request that you used an LLM, and for what. It's not held
 
 ## Reporting a bug or suggesting a feature
 
-- **Bug**: use the *Report a problem* screen in the app (Settings → About), or the [bug report form](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=bug.yml).
-- **Idea or change**: use the [feature request form](https://github.com/selvarajrajkanna/omegatube-modern/issues/new?template=feature.yml). One idea per issue; if it already exists, add a 👍 or a comment there.
+- **Bug**: use the *Report a problem* screen in the app (Settings → About), or the [bug report form](https://github.com/selvarajrajkanna/forgeTube/issues/new?template=bug.yml).
+- **Idea or change**: use the [feature request form](https://github.com/selvarajrajkanna/forgeTube/issues/new?template=feature.yml). One idea per issue; if it already exists, add a 👍 or a comment there.
 
 ## Pull requests
 
-1. For anything bigger than a small fix, open or comment on an [issue](https://github.com/selvarajrajkanna/omegatube-modern/issues) first, so we agree on the approach before you spend time on it.
+1. For anything bigger than a small fix, open or comment on an [issue](https://github.com/selvarajrajkanna/forgeTube/issues) first, so we agree on the approach before you spend time on it.
 2. Fork the repository, create a branch from `main` (e.g. `fix/12-subtitles-offset`).
 3. **One topic per pull request.** Two unrelated fixes go in two pull requests: they can then be tested, discussed and merged separately.
 4. Open the pull request and fill in the template: what it changes, the issue it fixes (`Fixes #12`), how you tested it, and screenshots if any.
@@ -28,7 +28,7 @@ Please say in the pull request that you used an LLM, and for what. It's not held
 
 - Follow the style of the surrounding code. Comments explain *why*, not *what*.
 - Reuse what exists (e.g. `T("…")` for texts, static methods etc...) rather than adding a second way to do the same thing.
-- Texts shown in the app are written in English through `T("…")`; add the French and Spanish translations in `app/OmegaTube/I18n.cs` if you can (otherwise say so and they'll be added).
+- Texts shown in the app are written in English through `T("…")`; add the French and Spanish translations in `app/ForgeTube/I18n.cs` if you can (otherwise say so and they'll be added).
 - The app targets **Tizen 6.0 (API 8)** and must keep working there, even if you test on a newer TV.
 - `remote-config.json` is downloaded by every installed copy of the app: changes to it must stay compatible with released versions.
 - Never commit certificates, account tokens, `res/dev.json` or logs with personal data.
@@ -49,11 +49,11 @@ All three must pass before a merge. On a first contribution, GitHub asks the mai
 
 ### Testing a pull request on a TV
 
-Download the `omegatube-modern-pr<number>` artifact from the pull request's *Checks* tab, unzip it, then sign it for your TV and install it:
+Download the `forgetube-pr<number>` artifact from the pull request's *Checks* tab, unzip it, then sign it for your TV and install it:
 
 ```sh
-TPK=$(ls org.omegatube.modern-*.tpk)
-~/tizen-studio/tools/ide/bin/tizen package -t tpk -s omegatube-modern -- "$TPK"
+TPK=$(ls org.forgetube.app-*.tpk)
+~/tizen-studio/tools/ide/bin/tizen package -t tpk -s forgetube -- "$TPK"
 ~/tizen-studio/tools/ide/bin/tizen install -n "$TPK" -t <device> -- .   # device name: 3rd column of `sdb devices`
 ```
 

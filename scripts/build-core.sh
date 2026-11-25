@@ -13,8 +13,8 @@ case "$ARCH" in
 esac
 OUT="build/core-$ARCH"
 
-docker build -q -t omegatube-toolchain toolchain/ >/dev/null
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src omegatube-toolchain sh -c "
+docker build -q -t forgetube-toolchain toolchain/ >/dev/null
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src forgetube-toolchain sh -c "
   cmake -S core -B $OUT -DCMAKE_TOOLCHAIN_FILE=/src/toolchain/$TOOLCHAIN.cmake -DCMAKE_BUILD_TYPE=Release >/dev/null &&
   cmake --build $OUT -- -j\"\$(nproc)\" &&
   $STRIP $OUT/libomegacore.so &&
@@ -30,6 +30,6 @@ if [ -n "$NEWER" ]; then
   exit 1
 fi
 
-mkdir -p app/OmegaTube/lib
-cp "$OUT/libomegacore.so" app/OmegaTube/lib/
-echo "-> app/OmegaTube/lib/libomegacore.so ($ARCH)"
+mkdir -p app/ForgeTube/lib
+cp "$OUT/libomegacore.so" app/ForgeTube/lib/
+echo "-> app/ForgeTube/lib/libomegacore.so ($ARCH)"

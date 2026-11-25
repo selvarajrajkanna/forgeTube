@@ -41,13 +41,13 @@ jobs:
             python3 -c "import yaml, sys; yaml.safe_load(open(sys.argv[1]))" "$f" || { echo "::error file=$f::invalid YAML"; exit 1; }
           done
 
-      # The in-app report screen pre-fills bug.yml through URL parameters (app/OmegaTube/BugReport.cs).
+      # The in-app report screen pre-fills bug.yml through URL parameters (app/ForgeTube/BugReport.cs).
       - name: Bug report fields match BugReport.cs
         run: |
           python3 - <<'EOF'
           import re, sys, yaml
           ids = {f.get("id") for f in yaml.safe_load(open(".github/ISSUE_TEMPLATE/bug.yml"))["body"]}
-          params = set(re.findall(r'"&(\w+)="', open("app/OmegaTube/BugReport.cs").read())) - {"title"}
+          params = set(re.findall(r'"&(\w+)="', open("app/ForgeTube/BugReport.cs").read())) - {"title"}
           missing = sorted(params - ids)
           if missing:
               print(f"::error file=.github/ISSUE_TEMPLATE/bug.yml::BugReport.cs fills fields missing from bug.yml: {missing}")
@@ -97,6 +97,6 @@ jobs:
       # (see "Testing a PR on a TV" in the README).
       - uses: actions/upload-artifact@v7
         with:
-          name: omegatube-modern-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.sha }}
-          path: app/OmegaTube/bin/Release/net8.0-tizen10.0/**/*.tpk
+          name: forgetube-${{ github.event.pull_request.number && format('pr{0}', github.event.pull_request.number) || github.sha }}
+          path: app/ForgeTube/bin/Release/net8.0-tizen10.0/**/*.tpk
           retention-days: 14

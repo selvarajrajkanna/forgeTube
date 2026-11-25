@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renders the video-preview countdown ring as a sprite sheet (app/OmegaTube/res/images/preview_ring.png).
+"""Renders the video-preview countdown ring as a sprite sheet (app/ForgeTube/res/images/preview_ring.png).
 
 Frame k (0..FRAMES-1) is an arc sweeping clockwise from 12 o'clock to (k+1)/FRAMES of the circle, with a gradient
 along it (faint tail -> bright, round head) over a soft dark shadow for legibility on bright thumbnails; no
@@ -22,7 +22,7 @@ STROKE = 5.0
 TAIL_ALPHA = 0.10
 SHADOW_ALPHA = 0.45
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "OmegaTube", "res", "images", "preview_ring.png")
+OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "ForgeTube", "res", "images", "preview_ring.png")
 
 
 def frame(sweep_deg):

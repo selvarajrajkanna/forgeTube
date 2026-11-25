@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renders the fade behind the Glorious left nav (app/OmegaTube/res/images/nav_fade.png).
+"""Renders the fade behind the Glorious left nav (app/ForgeTube/res/images/nav_fade.png).
 
 A black horizontal gradient: solid-ish at the left edge of the screen (where the nav icons and labels sit),
 holding, then easing out smoothly to fully transparent on the right so it never shows an edge over the artwork.
@@ -17,7 +17,7 @@ W, H = 320, 32
 PEAK = 0.80          # opacity at the screen edge
 HOLD = 0.60          # fraction of the width kept at PEAK before easing out
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "OmegaTube", "res", "images", "nav_fade.png")
+OUT = os.path.join(os.path.dirname(__file__), "..", "..", "app", "ForgeTube", "res", "images", "nav_fade.png")
 
 
 def main():
