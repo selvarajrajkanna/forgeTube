@@ -24,6 +24,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -255,7 +256,11 @@ DnsCache& dns_cache() {
     return cache;
 }
 
-int open_and_connect(const CachedAddr& ca, const std::string& host, bool large_rcvbuf, std::string& error) {
+using FdRegister = std::function<bool(int)>;  // false: already aborted, give up
+using FdClear = std::function<void()>;
+
+int open_and_connect(const CachedAddr& ca, const std::string& host, bool large_rcvbuf, std::string& error,
+                     const FdRegister& register_fd = {}, const FdClear& clear_fd = {}) {
     int fd = socket(ca.family, ca.socktype, ca.protocol);
     if (fd < 0) {
         error = std::string("socket ") + host + ": " + strerror(errno);
@@ -270,18 +275,28 @@ int open_and_connect(const CachedAddr& ca, const std::string& host, bool large_r
     }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    if (connect(fd, reinterpret_cast<const sockaddr*>(&ca.addr), ca.len) == 0) return fd;
-    error = std::string("connect ") + host + ": " + strerror(errno);
+    if (register_fd && !register_fd(fd)) {
+        error = "aborted";
+        ::close(fd);
+        return -1;
+    }
+    const int rc = connect(fd, reinterpret_cast<const sockaddr*>(&ca.addr), ca.len);
+    const int connect_errno = errno;
+    if (clear_fd) clear_fd();
+    if (rc == 0) return fd;
+    error = std::string("connect ") + host + ": " + strerror(connect_errno);
     ::close(fd);
     return -1;
 }
 
-int connect_tcp(const std::string& host, const std::string& port, bool large_rcvbuf, std::string& error) {
+int connect_tcp(const std::string& host, const std::string& port, bool large_rcvbuf, std::string& error,
+                const FdRegister& register_fd = {}, const FdClear& clear_fd = {}) {
     std::string key = host + ":" + port;
     auto cached = dns_cache().lookup(key);
     for (const auto& ca : cached) {
-        int fd = open_and_connect(ca, host, large_rcvbuf, error);
+        int fd = open_and_connect(ca, host, large_rcvbuf, error, register_fd, clear_fd);
         if (fd >= 0) return fd;
+        if (error == "aborted") return -1;
     }
     if (!cached.empty()) dns_cache().invalidate(key);
 
@@ -307,8 +322,8 @@ int connect_tcp(const std::string& host, const std::string& port, bool large_rcv
     }
     freeaddrinfo(res);
     for (const auto& ca : addrs) {
-        fd = open_and_connect(ca, host, large_rcvbuf, error);
-        if (fd >= 0) break;
+        fd = open_and_connect(ca, host, large_rcvbuf, error, register_fd, clear_fd);
+        if (fd >= 0 || error == "aborted") break;
     }
     if (fd >= 0) dns_cache().put(key, std::move(addrs));
     return fd;
@@ -371,6 +386,7 @@ public:
     virtual ~Transport() = default;
     virtual long send(const void* data, size_t n) = 0;  // <0 on error
     virtual long recv(void* data, size_t n) = 0;        // 0 on EOF, <0 on error
+    virtual void abort() = 0;                           // thread-safe: shutdown(2) the socket, unblocks send/recv
 };
 
 namespace {
@@ -378,11 +394,25 @@ namespace {
 class PlainTransport : public Transport {
 public:
     explicit PlainTransport(int fd) : fd_(fd) {}
-    ~PlainTransport() override { ::close(fd_); }
+    ~PlainTransport() override {
+        int fd = -1;
+        {
+            std::lock_guard<std::mutex> lock(fd_mu_);
+            fd = fd_;
+            fd_ = -1;
+        }
+        if (fd >= 0) ::close(fd);
+    }
+    void abort() override {
+        std::lock_guard<std::mutex> lock(fd_mu_);
+        if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
+    }
     long send(const void* data, size_t n) override {
+        const int fd = fd_;
+        if (fd < 0) return -1;
         size_t sent = 0;
         while (sent < n) {
-            ssize_t r = ::send(fd_, static_cast<const uint8_t*>(data) + sent, n - sent, MSG_NOSIGNAL);
+            ssize_t r = ::send(fd, static_cast<const uint8_t*>(data) + sent, n - sent, MSG_NOSIGNAL);
             if (r < 0) {
                 if (errno == EINTR) continue;
                 return r;
@@ -393,14 +423,17 @@ public:
         return static_cast<long>(sent);
     }
     long recv(void* data, size_t n) override {
+        const int fd = fd_;
+        if (fd < 0) return -1;
         for (;;) {
-            ssize_t r = ::recv(fd_, data, n, 0);
+            ssize_t r = ::recv(fd, data, n, 0);
             if (r < 0 && errno == EINTR) continue;
             return r;
         }
     }
 
 private:
+    std::mutex fd_mu_;
     int fd_;
 };
 
@@ -409,7 +442,17 @@ public:
     explicit TlsTransport(int fd) : fd_(fd) { mbedtls_ssl_init(&ssl_); }
     ~TlsTransport() override {
         mbedtls_ssl_free(&ssl_);
-        ::close(fd_);
+        int fd = -1;
+        {
+            std::lock_guard<std::mutex> lock(fd_mu_);
+            fd = fd_;
+            fd_ = -1;
+        }
+        if (fd >= 0) ::close(fd);
+    }
+    void abort() override {
+        std::lock_guard<std::mutex> lock(fd_mu_);
+        if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
     }
 
     bool handshake(const std::string& host, const std::string& port, std::string& error) {
@@ -470,16 +513,21 @@ public:
 
 private:
     static int bio_send(void* self, const unsigned char* buf, size_t len) {
-        ssize_t r = ::send(static_cast<TlsTransport*>(self)->fd_, buf, len, MSG_NOSIGNAL);
+        const int fd = static_cast<TlsTransport*>(self)->fd_;
+        if (fd < 0) return MBEDTLS_ERR_NET_SEND_FAILED;
+        ssize_t r = ::send(fd, buf, len, MSG_NOSIGNAL);
         if (r < 0) return (errno == EINTR) ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
         return static_cast<int>(r);
     }
     static int bio_recv(void* self, unsigned char* buf, size_t len) {
-        ssize_t r = ::recv(static_cast<TlsTransport*>(self)->fd_, buf, len, 0);
+        const int fd = static_cast<TlsTransport*>(self)->fd_;
+        if (fd < 0) return MBEDTLS_ERR_NET_RECV_FAILED;
+        ssize_t r = ::recv(fd, buf, len, 0);
         if (r < 0) return (errno == EINTR) ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
         return static_cast<int>(r);
     }
 
+    std::mutex fd_mu_;
     int fd_;
     mbedtls_ssl_context ssl_;
     std::string session_key_;
@@ -526,11 +574,28 @@ void Connection::release_headers() {
 }
 
 void Connection::close() {
-    transport_.reset();
+    std::unique_ptr<Transport> old;
+    {
+        std::lock_guard<std::mutex> lock(abort_mu_);
+        old = std::move(transport_);
+    }
+    old.reset();  // destroyed outside abort_mu_: ~Transport() takes its own fd lock
     reusable_ = false;
     host_key_.clear();
     release_headers();
     buf_pos_ = buf_len_ = 0;
+}
+
+void Connection::abort() {
+    std::lock_guard<std::mutex> lock(abort_mu_);
+    aborted_ = true;
+    if (connecting_fd_ >= 0) ::shutdown(connecting_fd_, SHUT_RDWR);
+    if (transport_) transport_->abort();
+}
+
+void Connection::reset_abort() {
+    std::lock_guard<std::mutex> lock(abort_mu_);
+    aborted_ = false;
 }
 
 void warmup() {
@@ -539,14 +604,49 @@ void warmup() {
 
 bool Connection::connect_to(const Url& url) {
     close();
-    int fd = connect_tcp(url.host, url.port, large_rcvbuf_, error_);
+    {
+        std::lock_guard<std::mutex> lock(abort_mu_);
+        if (aborted_) {
+            error_ = "aborted";
+            return false;
+        }
+    }
+    auto register_fd = [this](int fd) {
+        std::lock_guard<std::mutex> lock(abort_mu_);
+        if (aborted_) return false;
+        connecting_fd_ = fd;
+        return true;
+    };
+    auto clear_fd = [this]() {
+        std::lock_guard<std::mutex> lock(abort_mu_);
+        connecting_fd_ = -1;
+    };
+    int fd = connect_tcp(url.host, url.port, large_rcvbuf_, error_, register_fd, clear_fd);
     if (fd < 0) return false;
     if (url.tls) {
         auto t = std::make_unique<TlsTransport>(fd);
-        if (!t->handshake(url.host, url.port, error_)) return false;
-        transport_ = std::move(t);
+        TlsTransport* raw = t.get();
+        {
+            // Published before the handshake so an abort() during it unblocks the handshake.
+            std::lock_guard<std::mutex> lock(abort_mu_);
+            if (aborted_) {
+                error_ = "aborted";
+                return false;  // ~TlsTransport closes fd
+            }
+            transport_ = std::move(t);
+        }
+        if (!raw->handshake(url.host, url.port, error_)) {
+            close();
+            return false;
+        }
     } else {
-        transport_ = std::make_unique<PlainTransport>(fd);
+        auto t = std::make_unique<PlainTransport>(fd);
+        std::lock_guard<std::mutex> lock(abort_mu_);
+        if (aborted_) {
+            error_ = "aborted";
+            return false;
+        }
+        transport_ = std::move(t);
     }
     host_key_ = (url.tls ? "s:" : "p:") + url.host + ":" + url.port;
     return true;
@@ -1071,6 +1171,12 @@ size_t RangeReader::read(void* dst, size_t n) {
     auto* out = static_cast<uint8_t*>(dst);
     size_t total = 0;
     while (total < n && !eof_) {
+        if (hooks_.aborted && hooks_.aborted()) {
+            error_ = "aborted";
+            open_ = false;
+            conn_.close();
+            break;
+        }
         if (!open_ && !open_next()) {
             if (eof_ || !recover()) break;
             continue;
@@ -1230,6 +1336,12 @@ size_t LiveReader::read(void* dst, size_t n) {
     auto* out = static_cast<uint8_t*>(dst);
     size_t total = 0;
     while (total < n && !eof_) {
+        if (hooks_.aborted && hooks_.aborted()) {
+            error_ = "aborted";
+            open_ = false;
+            conn_.close();
+            break;
+        }
         if (!open_ && !open_segment()) {
             // ~8 s per 404: give up after ~1 min without a new segment (broadcast over), ~3 min of network errors.
             if (!retry(last_status_ == 404 ? 7 : 40)) {

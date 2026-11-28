@@ -114,21 +114,45 @@ void Player::teardown_esp() {
     }
 }
 
-Player::~Player() {
+void Player::abort_track_source(Track& t) {
+    std::lock_guard<std::mutex> lock(t.source_mu);
+    if (t.active_source) t.active_source->abort();
+}
+
+// Idempotent. Order matters: the decoder must stop first (< 50 ms) so audio never outlives the screen, even
+// when a demux thread is still blocked on a slow socket; those sockets are aborted so they wake at once.
+void Player::stop() {
+    if (stopped_.exchange(true)) return;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         running_ = false;
     }
     state_cv_.notify_all();
-    for (Track* t : {&video_, &audio_}) notify_track(*t);
+    for (Track* t : {&video_, &audio_}) {
+        {
+            std::lock_guard<std::mutex> lock(t->mutex);
+            t->active = false;
+        }
+        t->cv.notify_all();
+        abort_track_source(*t);
+    }
     if (control_thread_.joinable()) control_thread_.join();
     for (Track* t : {&video_, &audio_}) {
         if (t->feed_thread.joinable()) t->feed_thread.join();
-        if (t->demux_thread.joinable()) t->demux_thread.join();
-        t->queue.clear();
-        t->pool.reset();
     }
     teardown_esp();
+    for (Track* t : {&video_, &audio_}) {
+        if (t->demux_thread.joinable()) t->demux_thread.join();
+        std::lock_guard<std::mutex> lock(t->mutex);
+        t->queue.clear();
+        t->queued_ms = 0;
+        t->queued_bytes = 0;
+        t->pool.reset();
+    }
+}
+
+Player::~Player() {
+    stop();
 #if defined(__GLIBC__)
     malloc_trim(0);
 #endif
@@ -138,6 +162,11 @@ bool Player::start() {
     api_ = esp::api();
     if (!api_) {
         error_ = "libesplusplayer.so unavailable";
+        return false;
+    }
+    auto is_cancelled = [this]() { return cfg_.cancel_check && cfg_.cancel_check(); };
+    if (is_cancelled()) {
+        error_ = "cancelled";
         return false;
     }
 
@@ -181,12 +210,15 @@ bool Player::start() {
         else src.http = std::make_unique<net::RangeReader>(init_url, cfg_.stream_headers, 4 * 1024 * 1024, 0,
                                                            t.type == esp::STREAM_VIDEO,
                                                            cfg_.start_ms > 0 ? (256 * 1024) : 0);
-        if (!cfg_.live) {
+        {
             // Opening: fresh URLs on 403/410, but give up soon if the stream stays refused (the caller then
-            // tries another player client); start_track() puts the playback hooks back.
+            // tries another player client); start_track() puts the playback hooks back. Cancellable.
             net::StreamSource::Hooks hooks;
-            hooks.refresh_url = [this, &t] { return fresh_url(t); };
-            hooks.refusal_budget_ms = 20000;
+            hooks.aborted = [is_cancelled] { return is_cancelled(); };
+            if (!cfg_.live) {
+                hooks.refresh_url = [this, &t] { return fresh_url(t); };
+                hooks.refusal_budget_ms = 4000;
+            }
             src.http->set_hooks(std::move(hooks));
         }
         net::StreamSource* http = src.http.get();
@@ -220,6 +252,10 @@ bool Player::start() {
         second.join();
     } else if (!sources.empty()) {
         open_source(0);
+    }
+    if (is_cancelled()) {
+        error_ = "cancelled";
+        return false;
     }
     for (size_t i = 0; i < sources.size(); ++i) {
         if (!results[i].ok) {
@@ -297,16 +333,25 @@ bool Player::start() {
         std::unique_lock<std::mutex> lock(state_mutex_);
         for (;;) {
             fed = tracks_fed();
-            if (!running_ || prepared_ || prepare_failed_) break;
+            if (!running_ || prepared_ || prepare_failed_ || is_cancelled()) break;
             const auto now = Clock::now();
             if (esp_deadline == Clock::time_point{} && fed) {
                 esp_deadline = now + std::chrono::milliseconds(esp_wait_ms);
             }
             const auto deadline = (esp_deadline != Clock::time_point{}) ? esp_deadline : net_deadline;
             if (now >= deadline) break;
-            state_cv_.wait_until(lock, deadline);
+            // Wakes every 100 ms to notice a cancellation (Back / another video picked).
+            state_cv_.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(100)));
         }
         return fed;
+    };
+
+    // Tears the half-started player down after a cancellation.
+    auto abort_start = [&]() {
+        running_ = false;
+        for (Source& src : sources) stop_track(*src.track);
+        teardown_esp();
+        error_ = "cancelled";
     };
 
     bool sources_consumed = false;
@@ -316,6 +361,10 @@ bool Player::start() {
     bool pcm_fell_back = false;
 
     for (size_t attempt = 0; attempt < audio_candidates.size(); ++attempt) {
+        if (is_cancelled()) {
+            error_ = "cancelled";
+            return false;
+        }
         const int pcm_bits = audio_candidates[attempt];
         const bool has_fallback = (pcm_bits > 0 && attempt + 1 < audio_candidates.size());
 
@@ -586,10 +635,16 @@ bool Player::start() {
         }
 
         if (audio_dsp_) {
-            const bool fed = await_prepare((cached > 0) ? 5000 : 20000, (cached > 0) ? 5000 : 3500);
+            const bool fed = await_prepare((cached > 0) ? 5000 : 8000, (cached > 0) ? 5000 : 3500);
+            if (is_cancelled()) {
+                abort_start();
+                return false;
+            }
             if (!prepared_) {
                 const bool rejected = prepare_failed_.load();
-                if (!rejected) all_pcm_rejected = false;
+                // Only a starved network says nothing about PCM: packets that were fed but never prepared
+                // count as a rejection, so g_cached_pcm_bits can latch and later videos skip the probing.
+                if (!rejected && !fed) all_pcm_rejected = false;
                 if (!rejected && (cached > 0 || !fed)) {
                     // Slow network/resume loading, not a TV PCM rejection: keep DSP active and let control_loop() wait.
                     OLOG("audio dsp: prepare still loading (%s), keeping PCM_S%dLE", fed ? "buffering" : "network",
@@ -614,6 +669,10 @@ bool Player::start() {
         } else if (pcm_fell_back) {
             await_prepare((cached < 0 && all_pcm_rejected) ? 12000 : 5000,
                           (cached < 0 && all_pcm_rejected) ? 3500 : 5000);
+            if (is_cancelled()) {
+                abort_start();
+                return false;
+            }
             if (prepared_ && cached < 0 && all_pcm_rejected) {
                 g_cached_pcm_bits = 0;
                 OLOG("audio dsp: TV rejected all PCM modes, latching HW decoder");
@@ -626,6 +685,10 @@ bool Player::start() {
             }
         }
 
+        if (is_cancelled()) {
+            abort_start();
+            return false;
+        }
         control_thread_ = std::thread([this] { control_loop(); });
         return true;
     }
@@ -699,6 +762,7 @@ void Player::stop_track(Track& t) {
         t.active = false;
     }
     t.cv.notify_all();
+    abort_track_source(t);
     if (t.feed_thread.joinable()) t.feed_thread.join();
     if (t.demux_thread.joinable()) t.demux_thread.join();
     size_t freed_bytes = 0;
@@ -802,6 +866,19 @@ void Player::demux_loop(Track& t, media::Demuxer* reader_raw, net::StreamSource*
     if (t.type == esp::STREAM_VIDEO) pin_thread_core(3);
     std::unique_ptr<media::Demuxer> reader(reader_raw);
     std::unique_ptr<net::StreamSource> source(source_raw);
+    // Published so stop_track()/stop() can shutdown(2) the socket under a blocked read.
+    {
+        std::lock_guard<std::mutex> lock(t.source_mu);
+        t.active_source = source.get();
+    }
+    struct SourceGuard {
+        Track& t;
+        ~SourceGuard() {
+            std::lock_guard<std::mutex> lock(t.source_mu);
+            t.active_source = nullptr;
+        }
+    } source_guard{t};
+    if (!running_ || !t.active) source->abort();
     if (!t.pool) {
         const bool is_video = (t.type == esp::STREAM_VIDEO);
         t.pool = std::make_shared<media::SamplePool>(is_video ? (512u << 10) : (64u << 10), is_video ? 16 : 8);

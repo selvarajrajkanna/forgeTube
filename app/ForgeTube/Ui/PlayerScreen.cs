@@ -538,8 +538,15 @@ namespace ForgeTube.Ui
                 }
                 var target = ComputeAudioSyncTarget(hdmiDelay);
                 NativeCore.SetDefaultAudioDelay(target.delayMs);
-                return (target.route, target.delayMs,
-                        NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio));
+                IntPtr p = NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio);
+                if (p != IntPtr.Zero &&
+                    (System.Threading.Volatile.Read(ref closingFlag) != 0 ||
+                     System.Threading.Volatile.Read(ref startGen) != gen))
+                {
+                    NativeCore.PlayerDestroy(p);
+                    return ("", 0, IntPtr.Zero);
+                }
+                return (target.route, target.delayMs, p);
             });
             if (closing || gen != startGen)
             {
@@ -1024,6 +1031,7 @@ namespace ForgeTube.Ui
             runtimeStatsTag = null;
             System.Threading.Volatile.Write(ref closingFlag, 1);
             System.Threading.Interlocked.Increment(ref startGen);
+            NativeCore.PlayerCancelPending();
             commentsPanel.Close();
             if (tick != null)
             {
@@ -1153,6 +1161,8 @@ namespace ForgeTube.Ui
         {
             SavePosition();
             long pos = stats.PositionMs;
+            System.Threading.Interlocked.Increment(ref startGen);
+            NativeCore.PlayerCancelPending();
             Release(playerHandle);
             playerHandle = null;
             player = IntPtr.Zero;

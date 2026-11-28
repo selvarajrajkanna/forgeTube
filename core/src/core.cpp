@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -17,6 +18,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -35,6 +38,43 @@ constexpr const char* kVersion = OMEGA_VERSION;  // from the repo's VERSION file
 // Samsung S85H: 4K OLED with a 4K-class decoder (NQ4 AI Gen2): never offer or pick 8K (4320p) formats.
 constexpr int kPanelMaxHeight = 2160;
 std::atomic<int> g_default_audio_delay_ms{0};
+
+// Bumped by omega_player_cancel_pending(): an omega_player_create_youtube started before it gives up.
+std::atomic<uint64_t> g_player_create_gen{0};
+
+// Player clients whose streams googlevideo refused (403 with fresh URLs) are skipped for a while: the next
+// video would otherwise burn the same refusal wait again before falling back.
+std::mutex g_refused_mutex;
+std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> g_refused_clients;
+constexpr auto kRefusedClientTtl = std::chrono::minutes(5);
+
+std::vector<std::string> recent_refused_clients() {
+    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> active;
+    for (auto it = g_refused_clients.begin(); it != g_refused_clients.end();) {
+        if (now - it->second >= kRefusedClientTtl) {
+            it = g_refused_clients.erase(it);
+        } else {
+            active.push_back(it->first);
+            ++it;
+        }
+    }
+    return active;
+}
+
+void remember_refused_client(const std::string& name) {
+    if (name.empty()) return;
+    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    for (auto& e : g_refused_clients) {
+        if (e.first == name) {
+            e.second = now;
+            return;
+        }
+    }
+    g_refused_clients.emplace_back(name, now);
+}
 }
 
 struct omega_player {
@@ -42,7 +82,10 @@ struct omega_player {
     std::unique_ptr<omega::yt::WatchReporter> history;  // signed-in YouTube playback only
     std::string formats_json = "{\"available\":[]}";    // pre-serialized JSON for omega_player_formats
     explicit omega_player(omega::PlayerConfig cfg) : impl(std::move(cfg)) {}
-    ~omega_player() { history.reset(); }  // stop pinging before the player goes away
+    ~omega_player() {
+        impl.stop();      // the decoder (and its audio) stops first, whatever the history thread is doing
+        history.reset();  // then stop pinging
+    }
 };
 
 const char* omega_version(void) { return kVersion; }
@@ -84,7 +127,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
                             const omega::yt::VideoInfo& info, const omega::yt::Format* video,
                             const omega::yt::Format* audio, int64_t start_ms,
                             const std::vector<std::string>& skipped_clients, bool& stream_refused,
-                            std::string& start_error) {
+                            std::string& start_error, const std::function<bool()>& cancel_check) {
     stream_refused = false;
     start_error.clear();
     OLOG("youtube: video itag %d %dx%d@%d %s %lld kb/s, audio itag %d %s %d Hz", video->itag, video->width,
@@ -134,6 +177,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.app_id = "org.forgetube.app";
     cfg.app_version = kVersion;
     cfg.app_runtitle = "YouTube";
+    cfg.cancel_check = cancel_check;
     auto* p = new omega_player(std::move(cfg));
     if (!p->impl.start()) {
         start_error = p->impl.error();
@@ -249,10 +293,17 @@ void omega_yt_preload(const char* video_id) {
 omega_player* omega_player_create_youtube(void* window, int width, int height, const char* video_id,
                                           int max_height, const char* codecs, int64_t start_ms,
                                           const char* audio_track) try {
+    const uint64_t create_gen = g_player_create_gen.load(std::memory_order_acquire);
+    const std::function<bool()> is_cancelled = [create_gen] {
+        return g_player_create_gen.load(std::memory_order_acquire) != create_gen;
+    };
     omega::yt::Client client;
     omega::yt::VideoInfo info;
     std::string error;
     std::string vid = video_id ? video_id : "";
+    // Clients that were refused recently go straight to the back of the line (see remember_refused_client).
+    std::vector<std::string> skipped_clients = recent_refused_clients();
+    for (const auto& name : skipped_clients) client.skip_client(name);
     bool used_preload = false;
     if (!vid.empty()) {
         std::unique_lock<std::mutex> lock(g_preload_mutex);
@@ -267,17 +318,34 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
         g_preload.info = omega::yt::VideoInfo{};
         g_preload.video_id.clear();
     }
+    if (is_cancelled()) return nullptr;
     if (used_preload) {
         OLOG("youtube %s: using preloaded VideoInfo (%zu formats)", vid.c_str(), info.formats.size());
     } else if (!client.player(vid, info, error)) {
-        OLOG("youtube %s: %s", video_id ? video_id : "-", error.c_str());
-        const omega::yt::Client::Refusal& r = client.refusal();
-        set_play_error(refusal_kind(r.status), r.status, r.reason, error);
-        return nullptr;
+        bool recovered = false;
+        if (!skipped_clients.empty() && !is_cancelled()) {
+            // Every client that was not refused recently failed: the cooldown must never lock playback out.
+            OLOG("youtube %s: retrying with every player client", video_id ? video_id : "-");
+            omega::yt::Client fresh;
+            std::string fresh_error;
+            if (fresh.player(vid, info, fresh_error)) {
+                recovered = true;
+                skipped_clients.clear();
+            } else {
+                error = fresh_error;
+            }
+        }
+        if (!recovered) {
+            OLOG("youtube %s: %s", video_id ? video_id : "-", error.c_str());
+            const omega::yt::Client::Refusal& r = client.refusal();
+            set_play_error(refusal_kind(r.status), r.status, r.reason, error);
+            return nullptr;
+        }
     }
+    if (is_cancelled()) return nullptr;
     std::vector<std::string> prefs = omega::yt::parse_codec_list(codecs && *codecs ? codecs : "av01,vp9,avc1");
-    // Clients whose streams googlevideo refused (403 even with fresh URLs: our IP flagged as a bot).
-    std::vector<std::string> skipped_clients;
+    // Clients whose streams googlevideo refused (403 even with fresh URLs: our IP flagged as a bot) are kept in
+    // skipped_clients (seeded above from the recent refusals).
     for (;;) {
         std::vector<const omega::yt::Format*> videos =
             omega::yt::rank_videos(info, std::min(max_height > 0 ? max_height : 1080, kPanelMaxHeight), prefs);
@@ -301,16 +369,22 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
         bool stream_refused = false;
         std::string last_start_error;
         for (const omega::yt::Format* video : videos) {
+            if (is_cancelled()) return nullptr;
             if (std::find(refused.begin(), refused.end(), video->video_codec()) != refused.end()) continue;
             omega_player* p = start_youtube(window, width, height, client, info, video, audio, start_ms,
-                                            skipped_clients, stream_refused, last_start_error);
-            if (!p && !stream_refused && audio->codecs == "opus" && fallback_aac) {
+                                            skipped_clients, stream_refused, last_start_error, is_cancelled);
+            if (!p && !stream_refused && audio->codecs == "opus" && fallback_aac && !is_cancelled()) {
                 // If the TV refused Opus audio rather than the video codec, retry with AAC.
                 if (last_start_error.find("audio Opus") != std::string::npos) {
                     audio = fallback_aac;
                     p = start_youtube(window, width, height, client, info, video, audio, start_ms,
-                                      skipped_clients, stream_refused, last_start_error);
+                                      skipped_clients, stream_refused, last_start_error, is_cancelled);
                 }
+            }
+            if (!p && is_cancelled()) return nullptr;  // not a codec problem: nobody wants this player any more
+            if (p && is_cancelled()) {
+                delete p;
+                return nullptr;
             }
             if (p) {
                 // What the quality panel offers: the format each height cap would pick (codecs the TV refused aside).
@@ -371,7 +445,9 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
         }
         OLOG("youtube %s: streams refused for %s, trying another player client", video_id, info.client.c_str());
         skipped_clients.push_back(info.client);
+        remember_refused_client(info.client);
         client.skip_client(info.client);
+        if (is_cancelled()) return nullptr;
         if (!client.player(video_id, info, error)) {
             OLOG("youtube %s: %s", video_id, error.c_str());
             std::string refused_list;
@@ -401,6 +477,18 @@ int omega_player_seek(omega_player* p, int64_t position_ms) { return p && p->imp
 int omega_player_set_rate(omega_player* p, double rate) { return p && p->impl.set_rate(rate) ? 0 : -1; }
 
 void omega_set_default_audio_delay(int delay_ms) { g_default_audio_delay_ms = delay_ms; }
+
+void omega_player_cancel_pending(void) { g_player_create_gen.fetch_add(1, std::memory_order_acq_rel); }
+
+void omega_yt_prewarm_decipher(void) {
+    try {
+        std::string error;
+        omega::yt::shared_decipher().ensure(error);
+        if (!error.empty()) OLOG("decipher prewarm: %s", error.c_str());
+    } catch (const std::exception& e) {
+        OLOG("decipher prewarm exception: %s", e.what());
+    }
+}
 
 void omega_player_set_audio_delay(omega_player* p, int delay_ms) {
     if (p) p->impl.set_audio_delay_ms(delay_ms);

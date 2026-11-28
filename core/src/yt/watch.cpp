@@ -214,6 +214,7 @@ void WatchReporter::run() {
         OLOG("history: no tracking URLs for %s", video_id_.c_str());
         return;
     }
+    if (stop_) return;
     const std::string cpn = make_cpn();
     const std::string version = cfg::str({"innertube", "browse", "clientVersion"});
     // el=detailpage: without it YouTube files the view as a Short and it never shows in the history.
@@ -258,10 +259,18 @@ void WatchReporter::run() {
         if (final_report) wf.push_back({"final", "1"});
         add_client(wf, version);
         wf.insert(wf.end(), {{"rt", seconds_text(elapsed)}, {"muted", "0"}, {"volume", "100"}});
-        bool sent = ping(stats_url(watchtime, wf), token);
-        if (final_report || !sent)
-            OLOG("history: %swatchtime %s %.0f-%.0f s -> %s", final_report ? "final " : "", video_id_.c_str(),
-                 span_start / 1000.0, last / 1000.0, sent ? "ok" : "failed");
+        const std::string final_url = stats_url(watchtime, wf);
+        if (final_report) {
+            std::thread([final_url, token, vid = video_id_, span_start, last] {
+                bool sent = ping(final_url, token);
+                OLOG("history: final watchtime %s %.0f-%.0f s -> %s", vid.c_str(),
+                     span_start / 1000.0, last / 1000.0, sent ? "ok" : "failed");
+            }).detach();
+            break;
+        }
+        bool sent = ping(final_url, token);
+        if (!sent)
+            OLOG("history: watchtime %s %.0f-%.0f s -> failed", video_id_.c_str(), span_start / 1000.0, last / 1000.0);
         span_start = last;
     }
 }

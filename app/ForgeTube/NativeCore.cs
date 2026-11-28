@@ -83,10 +83,11 @@ namespace ForgeTube
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<byte*> _version;
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<IntPtr, void> _free;
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void> _setDefaultAudioDelay;
+        private static delegate* unmanaged[Cdecl, SuppressGCTransition]<void> _playerCancelPending;
 
         private static delegate* unmanaged[Cdecl]<IntPtr> _playerLastError, _configRefresh, _authStatus, _authBegin, _authAccount, _authAccounts;
         private static delegate* unmanaged[Cdecl]<int> _reportAvailable, _btAudioDelayMs;
-        private static delegate* unmanaged[Cdecl]<void> _authSignOut;
+        private static delegate* unmanaged[Cdecl]<void> _authSignOut, _ytPrewarmDecipher;
         private static delegate* unmanaged[Cdecl]<byte*, int, int, int> _logTail;
         private static delegate* unmanaged[Cdecl]<byte*, int, int> _tlsInfo;
         private static delegate* unmanaged[Cdecl]<byte*, int, void> _logInitUdp;
@@ -110,6 +111,7 @@ namespace ForgeTube
             _version = (delegate* unmanaged[Cdecl, SuppressGCTransition]<byte*>)Export("omega_version");
             _free = (delegate* unmanaged[Cdecl, SuppressGCTransition]<IntPtr, void>)Export("omega_free");
             _setDefaultAudioDelay = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>)Export("omega_set_default_audio_delay");
+            _playerCancelPending = (delegate* unmanaged[Cdecl, SuppressGCTransition]<void>)Export("omega_player_cancel_pending");
 
             _logInitUdp = (delegate* unmanaged[Cdecl]<byte*, int, void>)Export("omega_log_init_udp");
             _logLine = (delegate* unmanaged[Cdecl]<byte*, void>)Export("omega_log_line");
@@ -117,6 +119,7 @@ namespace ForgeTube
             _tlsInfo = (delegate* unmanaged[Cdecl]<byte*, int, int>)Export("omega_tls_info");
             _playerCreateYouTube = (delegate* unmanaged[Cdecl]<IntPtr, int, int, byte*, int, byte*, long, byte*, IntPtr>)Export("omega_player_create_youtube");
             _ytPreload = (delegate* unmanaged[Cdecl]<byte*, void>)Export("omega_yt_preload");
+            _ytPrewarmDecipher = (delegate* unmanaged[Cdecl]<void>)Export("omega_yt_prewarm_decipher");
             _playerLastError = (delegate* unmanaged[Cdecl]<IntPtr>)Export("omega_player_last_error");
             _playerTogglePause = (delegate* unmanaged[Cdecl]<IntPtr, void>)Export("omega_player_toggle_pause");
             _playerSeek = (delegate* unmanaged[Cdecl]<IntPtr, long, int>)Export("omega_player_seek");
@@ -349,6 +352,8 @@ namespace ForgeTube
         }
 
         public static void YtPreload(string videoId) => CallVoidS(_ytPreload, videoId);
+        public static void PlayerCancelPending() => _playerCancelPending();
+        public static void YtPrewarmDecipher() => _ytPrewarmDecipher();
         public static IntPtr PlayerLastError() => _playerLastError();
         public static void PlayerTogglePause(IntPtr player) => _playerTogglePause(player);
         public static int PlayerSeek(IntPtr player, long positionMs) => _playerSeek(player, positionMs);

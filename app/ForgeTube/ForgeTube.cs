@@ -111,7 +111,11 @@ namespace ForgeTube
 
         // Remote config (InnerTube clients...) off the UI thread, after the initial Home feed finishes loading.
         private static System.Threading.Tasks.Task RefreshRemote() =>
-            System.Threading.Tasks.Task.Run(() => YouTube.Call(NativeCore.ConfigRefresh()));
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                YouTube.Call(NativeCore.ConfigRefresh());
+                NativeCore.YtPrewarmDecipher();
+            });
 
         public void Push(Screen screen)
         {

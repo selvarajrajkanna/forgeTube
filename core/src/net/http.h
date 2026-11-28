@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -44,6 +45,9 @@ public:
     size_t read_some(void* dst, size_t n);
     std::string read_all(size_t limit = 64 * 1024 * 1024);
     void close();
+    // Thread-safe: shuts down the connecting / active socket so a blocked connect, handshake or read returns now.
+    void abort();
+    void reset_abort();
     void release_headers();
     void set_large_rcvbuf(bool v) { large_rcvbuf_ = v; }
 
@@ -64,6 +68,9 @@ private:
     bool read_line(std::string& line);
     bool next_chunk();
 
+    mutable std::mutex abort_mu_;
+    bool aborted_ = false;
+    int connecting_fd_ = -1;
     std::unique_ptr<Transport> transport_;
     std::string host_key_;
     bool reusable_ = false;
@@ -114,6 +121,8 @@ public:
     virtual const std::string& error() const = 0;
     // Gave up because the server kept refusing the stream (Hooks::max_refusals).
     virtual bool refused() const { return false; }
+    // Thread-safe: wakes a read blocked on the network (player teardown).
+    virtual void abort() {}
     void set_hooks(Hooks hooks) { hooks_ = std::move(hooks); }
 
 protected:
@@ -136,6 +145,7 @@ public:
     const std::string& url() const override { return url_; }
     const std::string& error() const override { return error_; }
     bool refused() const override { return refused_; }
+    void abort() override { conn_.abort(); }
 
 private:
     bool open_next();
@@ -176,6 +186,7 @@ public:
     const std::string& url() const override { return url_; }
     const std::string& error() const override { return error_; }
     int64_t sequence() const { return seq_; }
+    void abort() override { conn_.abort(); }
 
 private:
     bool open_segment();

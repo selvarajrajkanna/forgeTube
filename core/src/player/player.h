@@ -45,6 +45,7 @@ struct PlayerConfig {
     int64_t max_queue_ms = 30000;   // demuxed read-ahead per stream (network side)
     size_t max_queue_bytes = 48u << 20;  // ...and its memory cap (4K VP9 runs at 20-40 Mb/s)
     int64_t feed_ahead_ms = 6000;   // how far ahead of the playback clock we submit to ESPlayer
+    std::function<bool()> cancel_check;  // true: the caller no longer wants this player (aborts start())
 };
 
 struct PlayerStats {
@@ -71,6 +72,8 @@ public:
     ~Player();
 
     bool start();
+    // Stops playback and releases the TV decoder at once (audio ends immediately); idempotent, also run by ~Player().
+    void stop();
     void toggle_pause();
     // Jumps to the keyframe segment at or before `ms`. Returns false if not seekable (yet).
     bool seek(int64_t ms);
@@ -102,9 +105,12 @@ private:
         std::vector<media::Segment> segments;
         std::shared_ptr<media::SamplePool> pool;
         std::atomic<int64_t> submitted_ms{0};
+        std::mutex source_mu;
+        net::StreamSource* active_source = nullptr;  // owned by demux_loop; guarded by source_mu
         std::thread demux_thread, feed_thread;
     };
 
+    void abort_track_source(Track& t);
     void demux_loop(Track& t, media::Demuxer* reader, net::StreamSource* source);
     void start_track(Track& t, media::Demuxer* reader, net::StreamSource* source);
     void stop_track(Track& t);
@@ -143,6 +149,7 @@ private:
 
     Track video_, audio_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> stopped_{false};
     std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false}, dsp_confirmed_{false};
     std::mutex state_mutex_;
     std::condition_variable state_cv_;

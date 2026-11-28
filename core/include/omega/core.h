@@ -65,6 +65,12 @@ OMEGA_API omega_player* omega_player_create_youtube(void* ecore_wl2_window, int 
 // Pre-resolves InnerTube VideoInfo for video_id into a short-lived cache consumed by the next
 // omega_player_create_youtube call. Blocking (network): call off the UI thread.
 OMEGA_API void omega_yt_preload(const char* video_id);
+// Makes every omega_player_create_youtube call started before it give up as soon as possible (returns NULL):
+// Back / another video picked while a player is still loading.
+OMEGA_API void omega_player_cancel_pending(void);
+// Loads (compiling and caching it on the first run) the player JS used to decipher TV client streams.
+// Blocking: call off the UI thread, e.g. once the home feed is on screen.
+OMEGA_API void omega_yt_prewarm_decipher(void);
 // Why the last omega_player_create_youtube returned NULL: {"kind","status","reason","detail","signedIn"}.
 // kind: login | age | upcoming | unplayable | unavailable | rate_limited | http | network | formats | player | other;
 // status: YouTube's playabilityStatus ("LOGIN_REQUIRED"...) or "HTTP_<code>"; reason: YouTube's own message
