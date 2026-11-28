@@ -2,7 +2,10 @@
 
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
+#include <mutex>
 #include <random>
 #include <utility>
 #include <vector>
@@ -11,6 +14,7 @@
 
 #include "net/http.h"
 #include "util/log.h"
+#include "util/no_destroy.h"
 #include "util/remote_config.h"
 #include "yt/auth.h"
 
@@ -189,6 +193,56 @@ bool tracking_urls(const std::string& video_id, const std::string& token, std::s
     return !playback.empty();
 }
 
+struct FinalPing {
+    std::string url;
+    std::string token;
+    std::string video_id;
+    int64_t span_start = 0;
+    int64_t last = 0;
+};
+
+class FinalPingQueue {
+public:
+    static constexpr size_t kMaxPending = 4;
+
+    void enqueue(FinalPing item) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!started_) {
+            started_ = true;
+            std::thread([this] { worker(); }).detach();
+        }
+        if (queue_.size() >= kMaxPending) queue_.pop_front();
+        queue_.push_back(std::move(item));
+        cv_.notify_one();
+    }
+
+private:
+    void worker() {
+        for (;;) {
+            FinalPing job;
+            {
+                std::unique_lock<std::mutex> lock(mu_);
+                cv_.wait(lock, [&] { return !queue_.empty(); });
+                job = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            bool sent = ping(job.url, job.token);
+            OLOG("history: final watchtime %s %.0f-%.0f s -> %s", job.video_id.c_str(),
+                 job.span_start / 1000.0, job.last / 1000.0, sent ? "ok" : "failed");
+        }
+    }
+
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<FinalPing> queue_;
+    bool started_ = false;
+};
+
+FinalPingQueue& final_ping_queue() {
+    static omega::NoDestroy<FinalPingQueue> q;
+    return *q;
+}
+
 }  // namespace
 
 WatchReporter::WatchReporter(std::string video_id, int64_t length_ms, PositionFn position)
@@ -201,11 +255,13 @@ WatchReporter::~WatchReporter() {
         std::lock_guard<std::mutex> lock(mu_);
         stop_ = true;
     }
+    cancel_token_.abort();
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
 }
 
 void WatchReporter::run() {
+    net::CancelScope cancel_scope(&cancel_token_);
     std::string error;
     std::string token = shared_auth().access_token(error);
     if (token.empty() || stop_) return;  // signed out or stopped: nothing to report
@@ -261,11 +317,7 @@ void WatchReporter::run() {
         wf.insert(wf.end(), {{"rt", seconds_text(elapsed)}, {"muted", "0"}, {"volume", "100"}});
         const std::string final_url = stats_url(watchtime, wf);
         if (final_report) {
-            std::thread([final_url, token, vid = video_id_, span_start, last] {
-                bool sent = ping(final_url, token);
-                OLOG("history: final watchtime %s %.0f-%.0f s -> %s", vid.c_str(),
-                     span_start / 1000.0, last / 1000.0, sent ? "ok" : "failed");
-            }).detach();
+            final_ping_queue().enqueue({final_url, token, video_id_, span_start, last});
             break;
         }
         bool sent = ping(final_url, token);

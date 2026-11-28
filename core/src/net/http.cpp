@@ -1,4 +1,5 @@
 #include "net/http.h"
+#include "util/no_destroy.h"
 
 #include <netdb.h>
 #include <netinet/in.h>
@@ -124,8 +125,8 @@ private:
 };
 
 TlsStatusTracker& tls_status_tracker() {
-    static TlsStatusTracker tracker;
-    return tracker;
+    static omega::NoDestroy<TlsStatusTracker> tracker;
+    return *tracker;
 }
 
 // Process-wide TLS configuration: CA chain, RNG and client defaults are shared by all connections.
@@ -186,8 +187,8 @@ struct TlsContext {
 };
 
 TlsContext& tls() {
-    static TlsContext ctx;
-    return ctx;
+    static omega::NoDestroy<TlsContext> ctx;
+    return *ctx;
 }
 
 struct CachedAddr {
@@ -252,8 +253,8 @@ private:
 };
 
 DnsCache& dns_cache() {
-    static DnsCache cache;
-    return cache;
+    static omega::NoDestroy<DnsCache> cache;
+    return *cache;
 }
 
 using FdRegister = std::function<bool(int)>;  // false: already aborted, give up
@@ -375,8 +376,8 @@ private:
 };
 
 TlsSessionCache& tls_sessions() {
-    static TlsSessionCache cache;
-    return cache;
+    static omega::NoDestroy<TlsSessionCache> cache;
+    return *cache;
 }
 
 }  // namespace
@@ -398,17 +399,17 @@ public:
         int fd = -1;
         {
             std::lock_guard<std::mutex> lock(fd_mu_);
-            fd = fd_;
-            fd_ = -1;
+            fd = fd_.exchange(-1, std::memory_order_relaxed);
         }
         if (fd >= 0) ::close(fd);
     }
     void abort() override {
         std::lock_guard<std::mutex> lock(fd_mu_);
-        if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
+        int fd = fd_.load(std::memory_order_relaxed);
+        if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
     }
     long send(const void* data, size_t n) override {
-        const int fd = fd_;
+        const int fd = fd_.load(std::memory_order_relaxed);
         if (fd < 0) return -1;
         size_t sent = 0;
         while (sent < n) {
@@ -423,7 +424,7 @@ public:
         return static_cast<long>(sent);
     }
     long recv(void* data, size_t n) override {
-        const int fd = fd_;
+        const int fd = fd_.load(std::memory_order_relaxed);
         if (fd < 0) return -1;
         for (;;) {
             ssize_t r = ::recv(fd, data, n, 0);
@@ -434,7 +435,7 @@ public:
 
 private:
     std::mutex fd_mu_;
-    int fd_;
+    std::atomic<int> fd_;
 };
 
 class TlsTransport : public Transport {
@@ -445,14 +446,14 @@ public:
         int fd = -1;
         {
             std::lock_guard<std::mutex> lock(fd_mu_);
-            fd = fd_;
-            fd_ = -1;
+            fd = fd_.exchange(-1, std::memory_order_relaxed);
         }
         if (fd >= 0) ::close(fd);
     }
     void abort() override {
         std::lock_guard<std::mutex> lock(fd_mu_);
-        if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
+        int fd = fd_.load(std::memory_order_relaxed);
+        if (fd >= 0) ::shutdown(fd, SHUT_RDWR);
     }
 
     bool handshake(const std::string& host, const std::string& port, std::string& error) {
@@ -513,14 +514,14 @@ public:
 
 private:
     static int bio_send(void* self, const unsigned char* buf, size_t len) {
-        const int fd = static_cast<TlsTransport*>(self)->fd_;
+        const int fd = static_cast<TlsTransport*>(self)->fd_.load(std::memory_order_relaxed);
         if (fd < 0) return MBEDTLS_ERR_NET_SEND_FAILED;
         ssize_t r = ::send(fd, buf, len, MSG_NOSIGNAL);
         if (r < 0) return (errno == EINTR) ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
         return static_cast<int>(r);
     }
     static int bio_recv(void* self, unsigned char* buf, size_t len) {
-        const int fd = static_cast<TlsTransport*>(self)->fd_;
+        const int fd = static_cast<TlsTransport*>(self)->fd_.load(std::memory_order_relaxed);
         if (fd < 0) return MBEDTLS_ERR_NET_RECV_FAILED;
         ssize_t r = ::recv(fd, buf, len, 0);
         if (r < 0) return (errno == EINTR) ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
@@ -528,12 +529,60 @@ private:
     }
 
     std::mutex fd_mu_;
-    int fd_;
+    std::atomic<int> fd_;
     mbedtls_ssl_context ssl_;
     std::string session_key_;
 };
 
 }  // namespace
+
+namespace {
+thread_local CancelToken* g_tls_cancel_token = nullptr;
+
+struct ScopedCancelAttach {
+    CancelToken* tok;
+    Connection* conn;
+    ScopedCancelAttach(CancelToken* t, Connection* c) : tok(t), conn(c) {
+        if (tok) tok->attach(conn);
+    }
+    ~ScopedCancelAttach() {
+        if (tok) tok->detach(conn);
+    }
+};
+}  // namespace
+
+void CancelToken::abort() {
+    aborted_.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(mu_);
+    for (Connection* c : conns_) c->abort();
+}
+
+void CancelToken::attach(Connection* c) {
+    bool already_aborted = false;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        already_aborted = aborted_.load(std::memory_order_acquire);
+        if (!already_aborted) {
+            conns_.push_back(c);
+            return;
+        }
+    }
+    if (already_aborted) c->abort();
+}
+
+void CancelToken::detach(Connection* c) {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (auto it = conns_.begin(); it != conns_.end(); ++it) {
+        if (*it == c) {
+            conns_.erase(it);
+            return;
+        }
+    }
+}
+
+CancelScope::CancelScope(CancelToken* token) : prev_(g_tls_cancel_token) { g_tls_cancel_token = token; }
+CancelScope::~CancelScope() { g_tls_cancel_token = prev_; }
+CancelToken* CancelScope::current() { return g_tls_cancel_token; }
 
 bool Url::parse(std::string_view url, Url& out) {
     size_t at;
@@ -653,6 +702,7 @@ bool Connection::connect_to(const Url& url) {
 }
 
 bool Connection::send(const Request& req) {
+    ScopedCancelAttach cancel_attach(CancelScope::current(), this);
     error_.clear();
     Url url;
     if (!Url::parse(req.url, url)) {
@@ -844,6 +894,7 @@ bool Connection::next_chunk() {
 }
 
 size_t Connection::read_some(void* dst, size_t n) {
+    ScopedCancelAttach cancel_attach(CancelScope::current(), this);
     if (body_done_) return 0;
     if (chunked_ && remaining_ == 0) {
         if (!next_chunk() || body_done_) return 0;
@@ -935,8 +986,8 @@ private:
 };
 
 ConnectionPool& conn_pool() {
-    static ConnectionPool pool;
-    return pool;
+    static omega::NoDestroy<ConnectionPool> pool;
+    return *pool;
 }
 
 bool read_compressed(Connection& conn, bool gzip, std::string& out, size_t limit, bool& too_large) {
@@ -1011,7 +1062,11 @@ Response fetch(const Request& req, size_t max_body) {
     }
     if (!has_ae) current.headers.emplace_back("Accept-Encoding", "gzip");
     for (int redirects = 0;; ++redirects) {
-        if (!conn->send(current) && !conn->send(current)) {  // one retry: TV Wi-Fi hiccups are common
+        if (CancelToken* ct = CancelScope::current(); ct && ct->is_aborted()) {
+            res.error = "aborted";
+            return res;
+        }
+        if (!conn->send(current) && (!(CancelScope::current() && CancelScope::current()->is_aborted()) && !conn->send(current))) {  // one retry: TV Wi-Fi hiccups are common
             res.error = conn->error();
             return res;
         }

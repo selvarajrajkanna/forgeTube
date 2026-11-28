@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <string_view>
@@ -13,6 +14,7 @@
 #include <unordered_map>
 
 #include "util/log.h"
+#include "util/no_destroy.h"
 #include "util/remote_config.h"
 #include "yt/auth.h"
 #include "yt/js_solver.h"
@@ -563,47 +565,81 @@ VideoCodec classify_video_codec(const std::string& mime, const std::string& code
 
 }  // namespace
 
-bool Client::ensure_visitor(std::string& error) {
-    std::lock_guard<std::mutex> inst_lock(mutex_);
-    if (!visitor_data_.empty()) return true;
-    static std::mutex g_visitor_mutex;
-    static std::string g_visitor_data;
-    static std::string g_web_client_version;
-    std::lock_guard<std::mutex> lock(g_visitor_mutex);
-    if (g_visitor_data.empty()) {
-        net::Request req;
-        req.url = "https://www.youtube.com/";
-        req.headers = {{"User-Agent", cfg::str({"innertube", "search", "userAgent"})}, {"Accept-Language", "en-US"}};
-        net::Response res = net::fetch(req);
-        if (!res.ok()) {
-            error = "youtube.com: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
+bool Client::ensure_visitor(std::string& visitor_out, std::string& version_out, std::string& error) {
+    struct VisitorState {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool loading = false;
+        std::string visitor_data;
+        std::string web_client_version;
+    };
+    static omega::NoDestroy<VisitorState> g_visitor;
+    VisitorState& st = *g_visitor;
+
+    std::unique_lock<std::mutex> lock(st.mutex);
+    while (st.loading) {
+        if (auto* ct = net::CancelScope::current(); ct && ct->is_aborted()) {
+            error = "cancelled";
             return false;
         }
-        const std::string key = "\"VISITOR_DATA\":\"";
-        size_t at = res.body.find(key);
-        if (at == std::string::npos) {
-            error = "VISITOR_DATA not found";
-            return false;
-        }
-        at += key.size();
-        size_t end = res.body.find('"', at);
-        if (end == std::string::npos || end == at) {
-            error = "VISITOR_DATA malformed";
-            return false;
-        }
-        g_visitor_data = res.body.substr(at, end - at);
-        const std::string ver_key = "\"INNERTUBE_CLIENT_VERSION\":\"";
-        size_t v = res.body.find(ver_key);
-        if (v != std::string::npos) {
-            v += ver_key.size();
-            size_t vend = res.body.find('"', v);
-            if (vend != std::string::npos && vend > v) g_web_client_version = res.body.substr(v, vend - v);
-        }
-        if (g_web_client_version.empty()) g_web_client_version = cfg::str({"innertube", "search", "clientVersion"});
-        OLOG("yt: visitorData %zu chars, web client %s", g_visitor_data.size(), g_web_client_version.c_str());
+        st.cv.wait_for(lock, std::chrono::milliseconds(100));
     }
-    visitor_data_ = g_visitor_data;
-    web_client_version_ = g_web_client_version;
+    if (!st.visitor_data.empty()) {
+        visitor_out = st.visitor_data;
+        version_out = st.web_client_version;
+        return true;
+    }
+    st.loading = true;
+    lock.unlock();
+
+    struct LoadingGuard {
+        VisitorState& s;
+        ~LoadingGuard() {
+            {
+                std::lock_guard<std::mutex> lk(s.mutex);
+                s.loading = false;
+            }
+            s.cv.notify_all();
+        }
+    } guard{st};
+
+    net::Request req;
+    req.url = "https://www.youtube.com/";
+    req.headers = {{"User-Agent", cfg::str({"innertube", "search", "userAgent"})}, {"Accept-Language", "en-US"}};
+    net::Response res = net::fetch(req);
+    if (!res.ok()) {
+        error = "youtube.com: " + (res.error.empty() ? "http " + std::to_string(res.status) : res.error);
+        return false;
+    }
+    const std::string key = "\"VISITOR_DATA\":\"";
+    size_t at = res.body.find(key);
+    if (at == std::string::npos) {
+        error = "VISITOR_DATA not found";
+        return false;
+    }
+    at += key.size();
+    size_t end = res.body.find('"', at);
+    if (end == std::string::npos || end == at) {
+        error = "VISITOR_DATA malformed";
+        return false;
+    }
+    std::string visitor = res.body.substr(at, end - at);
+    std::string web_ver;
+    const std::string ver_key = "\"INNERTUBE_CLIENT_VERSION\":\"";
+    size_t v = res.body.find(ver_key);
+    if (v != std::string::npos) {
+        v += ver_key.size();
+        size_t vend = res.body.find('"', v);
+        if (vend != std::string::npos && vend > v) web_ver = res.body.substr(v, vend - v);
+    }
+    if (web_ver.empty()) web_ver = cfg::str({"innertube", "search", "clientVersion"});
+    OLOG("yt: visitorData %zu chars, web client %s", visitor.size(), web_ver.c_str());
+
+    lock.lock();
+    st.visitor_data = std::move(visitor);
+    st.web_client_version = std::move(web_ver);
+    visitor_out = st.visitor_data;
+    version_out = st.web_client_version;
     return true;
 }
 
@@ -640,7 +676,8 @@ std::vector<json> player_clients(bool include_disabled) {
 
 bool Client::player(const std::string& video_id, VideoInfo& out, std::string& error, const std::string& only_client) {
     refusal_ = {};
-    if (!ensure_visitor(error)) {
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) {
         refusal_ = {"NETWORK", error};
         return false;
     }
@@ -650,12 +687,16 @@ bool Client::player(const std::string& video_id, VideoInfo& out, std::string& er
     std::vector<json> clients = player_clients(!only_client.empty());
     std::string errors;
     for (size_t i = 0; i < clients.size(); i++) {
+        if (auto* ct = net::CancelScope::current(); ct && ct->is_aborted()) {
+            error = "cancelled";
+            return false;
+        }
         const json& c = clients[i];
         std::string name = c.value("clientName", "");
         if (!only_client.empty() && name != only_client) continue;
         if (std::find(skipped_clients_.begin(), skipped_clients_.end(), name) != skipped_clients_.end()) continue;
         std::string err;
-        if (try_client(c, video_id, out, err)) {
+        if (try_client(c, video_id, visitor, out, err)) {
             out.client = name;
             if (i > 0) OLOG("yt: %s played through %s", video_id.c_str(), name.c_str());
             return true;
@@ -669,7 +710,8 @@ bool Client::player(const std::string& video_id, VideoInfo& out, std::string& er
 
 // One client: deciphering when its URLs need the player JS, and (auth "retry") once more as the signed-in
 // account when YouTube wants a login (bot check, age); auth "always" sends the account right away.
-bool Client::try_client(const json& c, const std::string& video_id, VideoInfo& out, std::string& error) {
+bool Client::try_client(const json& c, const std::string& video_id, const std::string& visitor, VideoInfo& out,
+                        std::string& error) {
     bool decipher = c.value("decipher", false);
     if (decipher && !shared_decipher().ensure(error)) return false;
     std::string auth = c.value("auth", "never");
@@ -678,12 +720,13 @@ bool Client::try_client(const json& c, const std::string& video_id, VideoInfo& o
         std::string token_error;
         token = shared_auth().access_token(token_error);
     }
-    if (auth == "always" && !token.empty()) return player_with(c, video_id, out, error, token) && !out.formats.empty();
-    if (player_with(c, video_id, out, error) && !out.formats.empty()) return true;
+    if (auth == "always" && !token.empty())
+        return player_with(c, video_id, visitor, out, error, token) && !out.formats.empty();
+    if (player_with(c, video_id, visitor, out, error) && !out.formats.empty()) return true;
     bool account_may_help = refusal_.status == "LOGIN_REQUIRED" || refusal_.status.rfind("AGE_", 0) == 0;
     if (auth == "retry" && account_may_help && !token.empty()) {
         error.clear();
-        if (player_with(c, video_id, out, error, token) && !out.formats.empty()) {
+        if (player_with(c, video_id, visitor, out, error, token) && !out.formats.empty()) {
             OLOG("yt: %s played as the signed-in account", video_id.c_str());
             return true;
         }
@@ -692,10 +735,10 @@ bool Client::try_client(const json& c, const std::string& video_id, VideoInfo& o
     return false;
 }
 
-bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& out, std::string& error,
-                         const std::string& access_token) {
+bool Client::player_with(const json& c, const std::string& video_id, const std::string& visitor, VideoInfo& out,
+                         std::string& error, const std::string& access_token) {
     bool decipher = c.value("decipher", false);
-    ClientDef def = client_def_from(c, visitor_data_);
+    ClientDef def = client_def_from(c, visitor);
     json body = {
         {"context", {{"client", def.client}}},
         {"videoId", video_id},
@@ -717,7 +760,7 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     if (!access_token.empty()) req.headers.emplace_back("Authorization", "Bearer " + access_token);
     req.body = body.dump();
     net::Response res = net::fetch(req);
@@ -833,8 +876,9 @@ bool Client::player_with(const json& c, const std::string& video_id, VideoInfo& 
 }
 
 bool Client::search(const std::string& query, const std::string& continuation, Feed& out, std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}};
     if (continuation.empty()) {
         body["query"] = query;
@@ -844,7 +888,7 @@ bool Client::search(const std::string& query, const std::string& continuation, F
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
@@ -865,13 +909,14 @@ bool Client::search(const std::string& query, const std::string& continuation, F
 
 bool Client::playlist(const std::string& video_id, const std::string& playlist_id, Feed& out, std::string& title,
                       std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}, {"videoId", video_id}, {"playlistId", playlist_id}};
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
@@ -920,15 +965,16 @@ bool Client::playlist(const std::string& video_id, const std::string& playlist_i
 
 bool Client::playlist_page(const std::string& playlist_id, const std::string& continuation, Feed& out,
                            std::string& title, std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}};
     if (continuation.empty()) body["browseId"] = "VL" + playlist_id;
     else body["continuation"] = continuation;
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
@@ -992,8 +1038,9 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
             if (!continuation.empty()) return false;
         }
     }
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}};
     if (continuation.empty()) {
         body["videoId"] = video_id;
@@ -1003,7 +1050,7 @@ bool Client::related(const std::string& video_id, const std::string& continuatio
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
@@ -1063,13 +1110,14 @@ std::string find_comments_token(yyjson_val* j) {
 
 bool Client::details(const std::string& video_id, const std::string& access_token, VideoDetails& out,
                      std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}, {"videoId", video_id}};
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
 
     // Fetch the account's subscription state (TV "next") concurrently with the WEB "next" page.
@@ -1159,8 +1207,9 @@ bool Client::details(const std::string& video_id, const std::string& access_toke
 
 bool Client::channel(const std::string& channel_id, const std::string& continuation, Feed& out, ChannelInfo& header,
                      std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     json body = {{"context", {{"client", def.client}}}};
     if (continuation.empty()) {
         body["browseId"] = channel_id;
@@ -1171,7 +1220,7 @@ bool Client::channel(const std::string& channel_id, const std::string& continuat
     net::Request req;
     req.method = "POST";
     req.url = "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false";
-    req.headers = client_headers(def, visitor_data_);
+    req.headers = client_headers(def, visitor);
     req.body = body.dump();
     net::Response res = net::fetch(req);
     if (!res.ok()) {
@@ -1446,14 +1495,15 @@ void apply_votes(net::Response& res, CommentPage& page) {
 
 bool Client::comments(const std::string& video_id, const std::string& continuation, const std::string& access_token,
                       CommentPage& out, std::string& error) {
-    if (!ensure_visitor(error)) return false;
-    ClientDef def = client_def("search", visitor_data_, web_client_version_);
+    std::string visitor, web_ver;
+    if (!ensure_visitor(visitor, web_ver, error)) return false;
+    ClientDef def = client_def("search", visitor, web_ver);
     auto next = [&](json body, YDoc& doc) {
         body["context"] = {{"client", def.client}};
         net::Request req;
         req.method = "POST";
         req.url = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
-        req.headers = client_headers(def, visitor_data_);
+        req.headers = client_headers(def, visitor);
         req.body = body.dump();
         net::Response res = net::fetch(req);
         if (!res.ok()) {
@@ -1602,8 +1652,8 @@ void Client::record_response(const std::string& body) {
 }
 
 Client& shared_client() {
-    static Client client;
-    return client;
+    static omega::NoDestroy<Client> client;
+    return *client;
 }
 
 std::string Format::video_codec() const {

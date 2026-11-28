@@ -181,18 +181,17 @@ public:
     void set_capture_response(bool v) { capture_response_ = v; }
 
 private:
-    bool try_client(const nlohmann::json& client, const std::string& video_id, VideoInfo& out, std::string& error);
-    bool player_with(const nlohmann::json& client, const std::string& video_id, VideoInfo& out, std::string& error,
-                     const std::string& access_token = "");
-    bool ensure_visitor(std::string& error);
+    bool try_client(const nlohmann::json& client, const std::string& video_id, const std::string& visitor,
+                    VideoInfo& out, std::string& error);
+    bool player_with(const nlohmann::json& client, const std::string& video_id, const std::string& visitor,
+                     VideoInfo& out, std::string& error, const std::string& access_token = "");
+    bool ensure_visitor(std::string& visitor_out, std::string& version_out, std::string& error);
     void record_response(const std::string& body);
     bool capture_response_ = false;
     std::string last_response_;
     Refusal refusal_;
     std::vector<std::string> skipped_clients_;
     std::mutex mutex_;  // guards the lazily fetched session data below
-    std::string visitor_data_;
-    std::string web_client_version_;
     std::string cached_comments_video_id_;
     std::string cached_comments_token_;
     std::chrono::steady_clock::time_point cached_comments_at_{};

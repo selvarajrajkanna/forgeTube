@@ -302,6 +302,15 @@ namespace ForgeTube.Ui
             ClearEntries();
         }
 
+        protected override void Dispose(DisposeTypes type)
+        {
+            if (type == DisposeTypes.Explicit)
+            {
+                Close();
+            }
+            base.Dispose(type);
+        }
+
         private void Begin()
         {
             if (started)

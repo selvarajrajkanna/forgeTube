@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -28,6 +29,34 @@ struct Url {
 };
 
 class Transport;
+class Connection;
+
+// Thread-safe cancellation token: abort() shuts down every Connection currently attached via CancelScope.
+class CancelToken {
+public:
+    void abort();
+    bool is_aborted() const { return aborted_.load(std::memory_order_acquire); }
+    void attach(Connection* c);
+    void detach(Connection* c);
+
+private:
+    std::atomic<bool> aborted_{false};
+    std::mutex mu_;
+    std::vector<Connection*> conns_;
+};
+
+// Thread-local RAII scope binding a CancelToken to net::fetch() / Connection operations on this thread.
+class CancelScope {
+public:
+    explicit CancelScope(CancelToken* token);
+    ~CancelScope();
+    CancelScope(const CancelScope&) = delete;
+    CancelScope& operator=(const CancelScope&) = delete;
+    static CancelToken* current();
+
+private:
+    CancelToken* prev_;
+};
 
 // One HTTP/1.1 connection (plain or TLS) that can carry several requests to the same host
 // (keep-alive). A response body must be fully read (or the connection closed) before the next request.

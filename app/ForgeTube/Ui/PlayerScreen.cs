@@ -79,13 +79,128 @@ namespace ForgeTube.Ui
 
         private sealed class PlayerHandle
         {
-            public readonly object Gate = new object();
-            public IntPtr Ptr;
-            public bool Destroyed;
+            private readonly object gate = new object();
+            private IntPtr ptr;
+            private int activeCalls;
+            private bool closing;
+            private bool destroyed;
 
             public PlayerHandle(IntPtr ptr)
             {
-                Ptr = ptr;
+                this.ptr = ptr;
+            }
+
+            public bool IsAlive
+            {
+                get
+                {
+                    lock (gate)
+                    {
+                        return !closing && !destroyed && ptr != IntPtr.Zero;
+                    }
+                }
+            }
+
+            public void MarkClosing()
+            {
+                lock (gate)
+                {
+                    closing = true;
+                }
+            }
+
+            public bool TryUse(Action<IntPtr> action)
+            {
+                IntPtr p;
+                lock (gate)
+                {
+                    if (closing || destroyed || ptr == IntPtr.Zero)
+                    {
+                        return false;
+                    }
+                    activeCalls++;
+                    p = ptr;
+                }
+                try
+                {
+                    action(p);
+                    return true;
+                }
+                finally
+                {
+                    lock (gate)
+                    {
+                        activeCalls--;
+                        if (activeCalls == 0)
+                        {
+                            System.Threading.Monitor.PulseAll(gate);
+                        }
+                    }
+                }
+            }
+
+            public T TryUse<T>(Func<IntPtr, T> func, T fallback = default)
+            {
+                IntPtr p;
+                lock (gate)
+                {
+                    if (closing || destroyed || ptr == IntPtr.Zero)
+                    {
+                        return fallback;
+                    }
+                    activeCalls++;
+                    p = ptr;
+                }
+                try
+                {
+                    return func(p);
+                }
+                finally
+                {
+                    lock (gate)
+                    {
+                        activeCalls--;
+                        if (activeCalls == 0)
+                        {
+                            System.Threading.Monitor.PulseAll(gate);
+                        }
+                    }
+                }
+            }
+
+            public void Destroy()
+            {
+                IntPtr p;
+                bool needStopFirst;
+                lock (gate)
+                {
+                    closing = true;
+                    if (destroyed || ptr == IntPtr.Zero)
+                    {
+                        return;
+                    }
+                    p = ptr;
+                    needStopFirst = activeCalls > 0;
+                }
+                // Stop decoder/sockets outside the gate if a worker (e.g. Seek) is in flight so it drains fast.
+                if (needStopFirst)
+                {
+                    NativeCore.PlayerStop(p);
+                }
+                lock (gate)
+                {
+                    while (activeCalls > 0)
+                    {
+                        System.Threading.Monitor.Wait(gate);
+                    }
+                    if (destroyed || ptr == IntPtr.Zero)
+                    {
+                        return;
+                    }
+                    destroyed = true;
+                    ptr = IntPtr.Zero;
+                }
+                NativeCore.PlayerDestroy(p);
             }
         }
 
@@ -128,7 +243,6 @@ namespace ForgeTube.Ui
         private VideoItem upNextItem;
 
         private PlayerHandle playerHandle;
-        private IntPtr player = IntPtr.Zero;
         private bool closing;
         private int closingFlag;
         private int startGen;
@@ -529,6 +643,7 @@ namespace ForgeTube.Ui
             string audio = audioTrack;
             ShowLoading(T("Loading…"), opaque: true);
             int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
+            double initRate = sessionSpeed;
             (string initRoute, int initDelay, IntPtr created) = await DecoderAsync(() =>
             {
                 if (System.Threading.Volatile.Read(ref closingFlag) != 0 ||
@@ -538,6 +653,7 @@ namespace ForgeTube.Ui
                 }
                 var target = ComputeAudioSyncTarget(hdmiDelay);
                 NativeCore.SetDefaultAudioDelay(target.delayMs);
+                NativeCore.SetDefaultPlaybackRate(initRate);
                 IntPtr p = NativeCore.PlayerCreateYouTube(window, w, h, item.Id, height, codecs, start, audio);
                 if (p != IntPtr.Zero &&
                     (System.Threading.Volatile.Read(ref closingFlag) != 0 ||
@@ -556,16 +672,14 @@ namespace ForgeTube.Ui
             if (created == IntPtr.Zero)
             {
                 playerHandle = null;
-                player = IntPtr.Zero;
                 ShowError(YouTube.LastPlayError());
                 return;
             }
             playerHandle = new PlayerHandle(created);
-            player = created;
             activeAudioRoute = initRoute;
             appliedAudioDelayMs = initDelay;
             lastBtCheck = DateTime.Now;
-            info = YouTube.Playback(player);
+            info = playerHandle.TryUse(p => YouTube.Playback(p)) ?? new PlaybackInfo();
             ApplyHdrUiMode((info.Current != null && info.Current.Hdr) || info.ContainerHdr ||
                            info.ColorTransfer == 16 || info.ColorTransfer == 18);
             live = info.Live;
@@ -591,22 +705,6 @@ namespace ForgeTube.Ui
             {
                 captionsAutoPicked = true;
                 AutoPickCaptions();
-            }
-            if (sessionSpeed != 1.0 && !live)
-            {
-                PlayerHandle handle = playerHandle;
-                double s = sessionSpeed;
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(1500);  // the rate applies once prepared
-                    lock (handle.Gate)
-                    {
-                        if (!handle.Destroyed && handle.Ptr != IntPtr.Zero)
-                        {
-                            NativeCore.PlayerSetRate(handle.Ptr, s);
-                        }
-                    }
-                });
             }
         }
 
@@ -973,6 +1071,10 @@ namespace ForgeTube.Ui
 
         private async Task LoadSuggestions()
         {
+            if (closing || IsDisposed)
+            {
+                return;
+            }
             int nextY = SuggestionsY;
             if (InList)
             {
@@ -1021,6 +1123,22 @@ namespace ForgeTube.Ui
             App.Pop(showBelow: false);
         }
 
+        public override void OnDestroy()
+        {
+            Close();
+            playlistRow?.Dispose();
+            playlistRow = null;
+            suggestions?.Dispose();
+            suggestions = null;
+            commentsPanel.Dispose();
+            panel.Dispose();
+            if (upNext != null)
+            {
+                upNext.Dispose();
+                upNext = null;
+            }
+        }
+
         private void Close()
         {
             if (closing)
@@ -1058,14 +1176,15 @@ namespace ForgeTube.Ui
                 slide = null;
             }
             SavePosition();
-            Release(playerHandle);
+            PlayerHandle old = playerHandle;
             playerHandle = null;
-            player = IntPtr.Zero;
+            old?.MarkClosing();
+            Release(old);
         }
 
         private void SavePosition()
         {
-            if (player != IntPtr.Zero && stats.DurationMs > 0)
+            if (playerHandle != null && playerHandle.IsAlive && stats.DurationMs > 0)
             {
                 LocalStore.SavePosition(item.Id, stats.Eos != 0 ? stats.DurationMs : stats.PositionMs, stats.DurationMs);
             }
@@ -1085,18 +1204,7 @@ namespace ForgeTube.Ui
             {
                 return;
             }
-            Decoder(() =>
-            {
-                lock (handle.Gate)
-                {
-                    if (!handle.Destroyed && handle.Ptr != IntPtr.Zero)
-                    {
-                        handle.Destroyed = true;
-                        NativeCore.PlayerDestroy(handle.Ptr);
-                        handle.Ptr = IntPtr.Zero;
-                    }
-                }
-            });
+            Decoder(handle.Destroy);
         }
 
         // The TV has one video decoder: player creation and teardown run one after the other on
@@ -1163,9 +1271,10 @@ namespace ForgeTube.Ui
             long pos = stats.PositionMs;
             System.Threading.Interlocked.Increment(ref startGen);
             NativeCore.PlayerCancelPending();
-            Release(playerHandle);
+            PlayerHandle old = playerHandle;
             playerHandle = null;
-            player = IntPtr.Zero;
+            old?.MarkClosing();
+            Release(old);
             resumeMs = pos;
             ended = false;
             pendingSeekMs = -1;
@@ -1183,9 +1292,10 @@ namespace ForgeTube.Ui
                 return;
             }
             DateTime now = DateTime.Now;
-            if (player != IntPtr.Zero)
+            PlayerHandle h = playerHandle;
+            bool hasPlayer = h != null && h.TryUse(p => NativeCore.PlayerGetStats(p, out stats));
+            if (hasPlayer)
             {
-                NativeCore.PlayerGetStats(player, out stats);
                 if (seekingTargetMs >= 0 && (Math.Abs(stats.PositionMs - seekingTargetMs) < 3000 || now > seekingUntil))
                 {
                     seekingTargetMs = -1;
@@ -1237,7 +1347,7 @@ namespace ForgeTube.Ui
                 HideChrome();
             }
             UpdateChrome(now);
-            if (statsLabel.Visibility && player != IntPtr.Zero &&
+            if (statsLabel.Visibility && hasPlayer &&
                 (lastStatsUiAt == default || (now - lastStatsUiAt).TotalMilliseconds >= 1000))
             {
                 lastStatsUiAt = now;
@@ -1720,7 +1830,8 @@ namespace ForgeTube.Ui
             {
                 return;
             }
-            if (cues == null || player == IntPtr.Zero || ended)
+            PlayerHandle h = playerHandle;
+            if (cues == null || h == null || !h.IsAlive || ended)
             {
                 if (captionLabel.Visibility)
                 {
@@ -1731,7 +1842,11 @@ namespace ForgeTube.Ui
                 }
                 return;
             }
-            NativeCore.PlayerGetStats(player, out NativeCore.PlayerStats now);
+            NativeCore.PlayerStats now = default;
+            if (!h.TryUse(p => NativeCore.PlayerGetStats(p, out now)))
+            {
+                return;
+            }
             long pos = now.PositionMs;
             if (pos < lastCuePosMs)
             {
@@ -2605,13 +2720,7 @@ namespace ForgeTube.Ui
                     PlayerHandle speedHandle = playerHandle;
                     if (speedHandle != null)
                     {
-                        lock (speedHandle.Gate)
-                        {
-                            if (!speedHandle.Destroyed && speedHandle.Ptr != IntPtr.Zero)
-                            {
-                                rateRc = NativeCore.PlayerSetRate(speedHandle.Ptr, sessionSpeed);
-                            }
-                        }
+                        rateRc = speedHandle.TryUse(p => NativeCore.PlayerSetRate(p, sessionSpeed));
                     }
                     if (rateRc != 0 && sessionSpeed != 1.0)
                     {
@@ -2732,10 +2841,7 @@ namespace ForgeTube.Ui
 
         private void TogglePause()
         {
-            if (player != IntPtr.Zero)
-            {
-                NativeCore.PlayerTogglePause(player);
-            }
+            playerHandle?.TryUse(NativeCore.PlayerTogglePause);
         }
 
         // Repeated presses accumulate; the seek is issued once the user stops.
@@ -2800,7 +2906,7 @@ namespace ForgeTube.Ui
             noSkipUntil = DateTime.Now.AddSeconds(1.5);
             UpdateChrome(DateTime.Now);
             PlayerHandle h = playerHandle;
-            if (h != null && !h.Destroyed && h.Ptr != IntPtr.Zero)
+            if (h != null && h.IsAlive)
             {
                 System.Threading.Interlocked.Increment(ref seekingInFlight);
                 ShowLoading("", opaque: false);
@@ -2808,13 +2914,7 @@ namespace ForgeTube.Ui
                 {
                     try
                     {
-                        lock (h.Gate)
-                        {
-                            if (!h.Destroyed && h.Ptr != IntPtr.Zero)
-                            {
-                                NativeCore.PlayerSeek(h.Ptr, target);
-                            }
-                        }
+                        h.TryUse(p => NativeCore.PlayerSeek(p, target));
                     }
                     finally
                     {
@@ -3048,10 +3148,12 @@ namespace ForgeTube.Ui
         private void SyncBluetoothAudioDelay(DateTime now)
         {
             lastBtCheck = now;
-            if (player == IntPtr.Zero)
+            PlayerHandle h = playerHandle;
+            if (h == null || !h.IsAlive)
             {
                 return;
             }
+            int gen = startGen;
             int hdmiDelay = App.Config.Player.HdmiAudioDelayMs;
             if (System.Threading.Interlocked.CompareExchange(ref btCheckInFlight, 1, 0) != 0)
             {
@@ -3062,15 +3164,17 @@ namespace ForgeTube.Ui
                 try
                 {
                     var (route, delayMs) = await Task.Run(() => ComputeAudioSyncTarget(hdmiDelay));
-                    if (closing || player == IntPtr.Zero)
+                    if (closing || gen != startGen || h != playerHandle || !h.IsAlive)
                     {
                         return;
                     }
                     activeAudioRoute = route;
                     if (delayMs != appliedAudioDelayMs)
                     {
-                        appliedAudioDelayMs = delayMs;
-                        NativeCore.PlayerSetAudioDelay(player, delayMs);
+                        if (h.TryUse(p => NativeCore.PlayerSetAudioDelay(p, delayMs)))
+                        {
+                            appliedAudioDelayMs = delayMs;
+                        }
                     }
                 }
                 finally

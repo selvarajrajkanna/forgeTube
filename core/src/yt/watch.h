@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include "net/http.h"
+
 namespace omega::yt {
 
 // Watch history: the playback-statistics pings YouTube's own players send, so a video watched here
@@ -31,6 +33,7 @@ private:
     int64_t length_ms_;
     PositionFn position_;
     std::atomic<bool> stop_{false};
+    net::CancelToken cancel_token_;
     std::mutex mu_;
     std::condition_variable cv_;
     std::thread thread_;

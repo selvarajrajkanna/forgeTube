@@ -45,6 +45,7 @@ struct PlayerConfig {
     int64_t max_queue_ms = 30000;   // demuxed read-ahead per stream (network side)
     size_t max_queue_bytes = 48u << 20;  // ...and its memory cap (4K VP9 runs at 20-40 Mb/s)
     int64_t feed_ahead_ms = 6000;   // how far ahead of the playback clock we submit to ESPlayer
+    double playback_rate = 1.0;     // initial playback speed applied right after esplusplayer_start()
     std::function<bool()> cancel_check;  // true: the caller no longer wants this player (aborts start())
 };
 
@@ -138,7 +139,9 @@ private:
 
     PlayerConfig cfg_;
     const esp::Api* api_ = nullptr;
+    std::mutex ctrl_mutex_;  // serializes handle_ access (start/pause/rate/seek/get_playing_time/teardown)
     esp::Handle handle_ = nullptr;
+    esp::State last_state_ = esp::STATE_NONE;
     void* sound_stream_info_ = nullptr;
     std::string error_;
     bool stream_refused_ = false;
@@ -150,6 +153,9 @@ private:
     Track video_, audio_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopped_{false};
+    std::atomic<bool> shutting_down_esp_{false};
+    std::atomic<double> playback_rate_{1.0};
+    std::atomic<int32_t> dsp_bits_{0}, dsp_hf_{0};
     std::atomic<bool> prepared_{false}, prepare_failed_{false}, paused_{false}, eos_{false}, dsp_confirmed_{false};
     std::mutex state_mutex_;
     std::condition_variable state_cv_;

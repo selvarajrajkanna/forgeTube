@@ -26,6 +26,7 @@
 #include "net/http.h"
 #include "player/player.h"
 #include "util/log.h"
+#include "util/no_destroy.h"
 #include "util/remote_config.h"
 #include "yt/auth.h"
 #include "yt/innertube.h"
@@ -38,23 +39,43 @@ constexpr const char* kVersion = OMEGA_VERSION;  // from the repo's VERSION file
 // Samsung S85H: 4K OLED with a 4K-class decoder (NQ4 AI Gen2): never offer or pick 8K (4320p) formats.
 constexpr int kPanelMaxHeight = 2160;
 std::atomic<int> g_default_audio_delay_ms{0};
+std::atomic<double> g_default_playback_rate{1.0};
 
 // Bumped by omega_player_cancel_pending(): an omega_player_create_youtube started before it gives up.
 std::atomic<uint64_t> g_player_create_gen{0};
+std::atomic<uint64_t> g_auth_gen{0};
+
+struct PendingCreatesState {
+    std::mutex mutex;
+    std::vector<std::shared_ptr<omega::net::CancelToken>> tokens;
+};
+
+PendingCreatesState& pending_creates() {
+    static omega::NoDestroy<PendingCreatesState> s;
+    return *s;
+}
 
 // Player clients whose streams googlevideo refused (403 with fresh URLs) are skipped for a while: the next
 // video would otherwise burn the same refusal wait again before falling back.
-std::mutex g_refused_mutex;
-std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> g_refused_clients;
+struct RefusedClientsState {
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> entries;
+};
+
+RefusedClientsState& refused_clients_state() {
+    static omega::NoDestroy<RefusedClientsState> s;
+    return *s;
+}
 constexpr auto kRefusedClientTtl = std::chrono::minutes(5);
 
 std::vector<std::string> recent_refused_clients() {
-    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    RefusedClientsState& st = refused_clients_state();
+    std::lock_guard<std::mutex> lock(st.mutex);
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::string> active;
-    for (auto it = g_refused_clients.begin(); it != g_refused_clients.end();) {
+    for (auto it = st.entries.begin(); it != st.entries.end();) {
         if (now - it->second >= kRefusedClientTtl) {
-            it = g_refused_clients.erase(it);
+            it = st.entries.erase(it);
         } else {
             active.push_back(it->first);
             ++it;
@@ -65,15 +86,16 @@ std::vector<std::string> recent_refused_clients() {
 
 void remember_refused_client(const std::string& name) {
     if (name.empty()) return;
-    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    RefusedClientsState& st = refused_clients_state();
+    std::lock_guard<std::mutex> lock(st.mutex);
     const auto now = std::chrono::steady_clock::now();
-    for (auto& e : g_refused_clients) {
+    for (auto& e : st.entries) {
         if (e.first == name) {
             e.second = now;
             return;
         }
     }
-    g_refused_clients.emplace_back(name, now);
+    st.entries.emplace_back(name, now);
 }
 }
 
@@ -177,6 +199,7 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
     cfg.app_id = "org.forgetube.app";
     cfg.app_version = kVersion;
     cfg.app_runtitle = "YouTube";
+    cfg.playback_rate = info.is_live ? 1.0 : g_default_playback_rate.load(std::memory_order_relaxed);
     cfg.cancel_check = cancel_check;
     auto* p = new omega_player(std::move(cfg));
     if (!p->impl.start()) {
@@ -201,17 +224,25 @@ omega_player* start_youtube(void* window, int width, int height, omega::yt::Clie
 namespace {
 
 // Why the last omega_player_create_youtube failed (omega_player_last_error).
-std::mutex g_play_error_mutex;
-nlohmann::json g_play_error = nlohmann::json::object();
+struct PlayErrorState {
+    std::mutex mutex;
+    nlohmann::json err = nlohmann::json::object();
+};
+
+PlayErrorState& play_error_state() {
+    static omega::NoDestroy<PlayErrorState> s;
+    return *s;
+}
 
 void set_play_error(const std::string& kind, const std::string& status, const std::string& reason,
                     const std::string& detail) {
-    std::lock_guard<std::mutex> lock(g_play_error_mutex);
-    g_play_error = {{"kind", kind},
-                    {"status", status},
-                    {"reason", reason},
-                    {"detail", detail},
-                    {"signedIn", omega::yt::shared_auth().signed_in()}};
+    PlayErrorState& st = play_error_state();
+    std::lock_guard<std::mutex> lock(st.mutex);
+    st.err = {{"kind", kind},
+              {"status", status},
+              {"reason", reason},
+              {"detail", detail},
+              {"signedIn", omega::yt::shared_auth().signed_in()}};
 }
 
 // YouTube's playabilityStatus (or HTTP refusal) -> the app's error kinds.
@@ -244,59 +275,101 @@ nlohmann::json audio_tracks_json(const omega::yt::VideoInfo& info) {
 struct PreloadedVideo {
     std::string video_id;
     omega::yt::VideoInfo info;
+    uint64_t auth_gen = 0;
     std::chrono::steady_clock::time_point ts;
     std::string in_flight;  // video id being resolved by omega_yt_preload right now
 };
-std::mutex g_preload_mutex;
-std::condition_variable g_preload_cv;
-PreloadedVideo g_preload;
+struct PreloadState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    PreloadedVideo entry;
+};
+
+PreloadState& preload_state() {
+    static omega::NoDestroy<PreloadState> s;
+    return *s;
+}
 constexpr auto kPreloadTtl = std::chrono::seconds(45);
+
+void clear_preload() {
+    PreloadState& st = preload_state();
+    std::lock_guard<std::mutex> lock(st.mutex);
+    st.entry.info = omega::yt::VideoInfo{};
+    st.entry.video_id.clear();
+}
 
 }  // namespace
 
 void omega_yt_preload(const char* video_id) {
     if (!video_id || !*video_id) return;
     std::string vid(video_id);
+    const uint64_t auth_gen = g_auth_gen.load(std::memory_order_acquire);
+    PreloadState& st = preload_state();
     {
-        std::lock_guard<std::mutex> lock(g_preload_mutex);
-        if (g_preload.in_flight == vid) return;
-        if (g_preload.video_id == vid && !g_preload.info.formats.empty() &&
-            std::chrono::steady_clock::now() - g_preload.ts < kPreloadTtl) {
+        std::lock_guard<std::mutex> lock(st.mutex);
+        if (st.entry.in_flight == vid) return;
+        if (st.entry.video_id == vid && st.entry.auth_gen == auth_gen && !st.entry.info.formats.empty() &&
+            std::chrono::steady_clock::now() - st.entry.ts < kPreloadTtl) {
             return;
         }
-        g_preload.in_flight = vid;
+        st.entry.in_flight = vid;
     }
     bool ok = false;
     try {
         omega::yt::Client client;
+        for (const auto& name : recent_refused_clients()) client.skip_client(name);
         omega::yt::VideoInfo info;
         std::string error;
         ok = client.player(vid, info, error) && !info.formats.empty();
         {
-            std::lock_guard<std::mutex> lock(g_preload_mutex);
-            if (g_preload.in_flight == vid) g_preload.in_flight.clear();
-            if (ok) {
-                g_preload.video_id = vid;
-                g_preload.info = std::move(info);
-                g_preload.ts = std::chrono::steady_clock::now();
-                OLOG("youtube %s: preloaded (%zu formats)", vid.c_str(), g_preload.info.formats.size());
+            std::lock_guard<std::mutex> lock(st.mutex);
+            if (st.entry.in_flight == vid) st.entry.in_flight.clear();
+            if (ok && g_auth_gen.load(std::memory_order_acquire) == auth_gen) {
+                st.entry.video_id = vid;
+                st.entry.info = std::move(info);
+                st.entry.auth_gen = auth_gen;
+                st.entry.ts = std::chrono::steady_clock::now();
+                OLOG("youtube %s: preloaded (%zu formats)", vid.c_str(), st.entry.info.formats.size());
             }
         }
     } catch (const std::exception& e) {
         OLOG("youtube %s: preload exception: %s", vid.c_str(), e.what());
-        std::lock_guard<std::mutex> lock(g_preload_mutex);
-        if (g_preload.in_flight == vid) g_preload.in_flight.clear();
+        std::lock_guard<std::mutex> lock(st.mutex);
+        if (st.entry.in_flight == vid) st.entry.in_flight.clear();
     }
-    g_preload_cv.notify_all();
+    st.cv.notify_all();
 }
 
 omega_player* omega_player_create_youtube(void* window, int width, int height, const char* video_id,
                                           int max_height, const char* codecs, int64_t start_ms,
                                           const char* audio_track) try {
     const uint64_t create_gen = g_player_create_gen.load(std::memory_order_acquire);
+    auto cancel_tok = std::make_shared<omega::net::CancelToken>();
+    {
+        PendingCreatesState& pc = pending_creates();
+        std::lock_guard<std::mutex> lock(pc.mutex);
+        pc.tokens.push_back(cancel_tok);
+    }
+    struct PendingGuard {
+        std::shared_ptr<omega::net::CancelToken> tok;
+        ~PendingGuard() {
+            PendingCreatesState& pc = pending_creates();
+            std::lock_guard<std::mutex> lock(pc.mutex);
+            auto& v = pc.tokens;
+            v.erase(std::remove(v.begin(), v.end(), tok), v.end());
+        }
+    } pending_guard{cancel_tok};
+    omega::net::CancelScope cancel_scope(cancel_tok.get());
+
     const std::function<bool()> is_cancelled = [create_gen] {
         return g_player_create_gen.load(std::memory_order_acquire) != create_gen;
     };
+    if (is_cancelled()) cancel_tok->abort();
+    auto return_cancelled = []() -> omega_player* {
+        set_play_error("cancelled", "CANCELLED", "", "cancelled");
+        return nullptr;
+    };
+
     omega::yt::Client client;
     omega::yt::VideoInfo info;
     std::string error;
@@ -306,19 +379,22 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
     for (const auto& name : skipped_clients) client.skip_client(name);
     bool used_preload = false;
     if (!vid.empty()) {
-        std::unique_lock<std::mutex> lock(g_preload_mutex);
-        // A preload of this very video still resolving: wait for it instead of resolving it twice.
-        g_preload_cv.wait_for(lock, std::chrono::seconds(4), [&] { return g_preload.in_flight != vid; });
-        if (g_preload.video_id == vid && !g_preload.info.formats.empty() &&
-            std::chrono::steady_clock::now() - g_preload.ts < kPreloadTtl) {
-            info = std::move(g_preload.info);
+        PreloadState& st = preload_state();
+        const uint64_t auth_gen = g_auth_gen.load(std::memory_order_acquire);
+        std::unique_lock<std::mutex> lock(st.mutex);
+        // A preload of this very video still resolving: wait for it instead of resolving it twice, or abort on cancel.
+        st.cv.wait_for(lock, std::chrono::seconds(4),
+                       [&] { return st.entry.in_flight != vid || is_cancelled(); });
+        if (!is_cancelled() && st.entry.video_id == vid && st.entry.auth_gen == auth_gen &&
+            !st.entry.info.formats.empty() && std::chrono::steady_clock::now() - st.entry.ts < kPreloadTtl) {
+            info = std::move(st.entry.info);
             used_preload = true;
         }
         // Single use; a stale entry for another video is dropped too.
-        g_preload.info = omega::yt::VideoInfo{};
-        g_preload.video_id.clear();
+        st.entry.info = omega::yt::VideoInfo{};
+        st.entry.video_id.clear();
     }
-    if (is_cancelled()) return nullptr;
+    if (is_cancelled()) return return_cancelled();
     if (used_preload) {
         OLOG("youtube %s: using preloaded VideoInfo (%zu formats)", vid.c_str(), info.formats.size());
     } else if (!client.player(vid, info, error)) {
@@ -335,6 +411,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
                 error = fresh_error;
             }
         }
+        if (is_cancelled()) return return_cancelled();
         if (!recovered) {
             OLOG("youtube %s: %s", video_id ? video_id : "-", error.c_str());
             const omega::yt::Client::Refusal& r = client.refusal();
@@ -342,7 +419,7 @@ omega_player* omega_player_create_youtube(void* window, int width, int height, c
             return nullptr;
         }
     }
-    if (is_cancelled()) return nullptr;
+    if (is_cancelled()) return return_cancelled();
     std::vector<std::string> prefs = omega::yt::parse_codec_list(codecs && *codecs ? codecs : "av01,vp9,avc1");
     // Clients whose streams googlevideo refused (403 even with fresh URLs: our IP flagged as a bot) are kept in
     // skipped_clients (seeded above from the recent refusals).
@@ -478,7 +555,23 @@ int omega_player_set_rate(omega_player* p, double rate) { return p && p->impl.se
 
 void omega_set_default_audio_delay(int delay_ms) { g_default_audio_delay_ms = delay_ms; }
 
-void omega_player_cancel_pending(void) { g_player_create_gen.fetch_add(1, std::memory_order_acq_rel); }
+void omega_set_default_playback_rate(double rate) {
+    g_default_playback_rate.store(rate > 0.0 ? rate : 1.0, std::memory_order_relaxed);
+}
+
+void omega_player_cancel_pending(void) {
+    g_player_create_gen.fetch_add(1, std::memory_order_acq_rel);
+    std::vector<std::shared_ptr<omega::net::CancelToken>> tokens;
+    {
+        PendingCreatesState& pc = pending_creates();
+        std::lock_guard<std::mutex> lock(pc.mutex);
+        tokens = pc.tokens;
+    }
+    for (const auto& t : tokens) {
+        if (t) t->abort();
+    }
+    preload_state().cv.notify_all();
+}
 
 void omega_yt_prewarm_decipher(void) {
     try {
@@ -516,6 +609,10 @@ void omega_player_get_stats(omega_player* p, omega_player_stats* out) {
     out->video_bitrate_kbps = s.video_bitrate_kbps;
 }
 
+void omega_player_stop(omega_player* p) {
+    if (p) p->impl.stop();
+}
+
 void omega_player_destroy(omega_player* p) { delete p; }
 
 namespace {
@@ -528,8 +625,9 @@ char* to_c_string(const std::string& s) {
 }
 
 char* omega_player_last_error(void) {
-    std::lock_guard<std::mutex> lock(g_play_error_mutex);
-    return to_c_json(g_play_error);
+    PlayErrorState& st = play_error_state();
+    std::lock_guard<std::mutex> lock(st.mutex);
+    return to_c_json(st.err);
 }
 
 char* omega_player_formats(omega_player* p) {
@@ -1024,6 +1122,8 @@ char* omega_auth_poll(const char* device_code) {
         static const char* names[] = {"pending", "slow_down", "done", "denied", "expired", "failed"};
         omega::yt::PollResult r = omega::yt::shared_auth().poll(code, error);
         if (r == omega::yt::PollResult::Done) {
+            g_auth_gen.fetch_add(1, std::memory_order_acq_rel);
+            clear_preload();
             // Cache the new account's profile so the picker can show its name/avatar without another round-trip.
             std::string e;
             std::string token = omega::yt::shared_auth().access_token(e);
@@ -1035,7 +1135,11 @@ char* omega_auth_poll(const char* device_code) {
     });
 }
 
-void omega_auth_sign_out(void) { omega::yt::shared_auth().sign_out(); }
+void omega_auth_sign_out(void) {
+    omega::yt::shared_auth().sign_out();
+    g_auth_gen.fetch_add(1, std::memory_order_acq_rel);
+    clear_preload();
+}
 
 char* omega_auth_account(void) {
     return c_api_json_guard("omega_auth_account", [] {
@@ -1064,6 +1168,8 @@ char* omega_auth_accounts(void) {
 char* omega_auth_switch(const char* id) {
     return c_api_json_guard("omega_auth_switch", [&] {
         if (!omega::yt::shared_auth().switch_to(id ? id : "")) return to_c_json({{"error", "no such account"}});
+        g_auth_gen.fetch_add(1, std::memory_order_acq_rel);
+        clear_preload();
         return to_c_json({{"ok", true}});
     });
 }

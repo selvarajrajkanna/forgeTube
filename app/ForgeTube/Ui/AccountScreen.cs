@@ -477,11 +477,14 @@ namespace ForgeTube.Ui
         public override void OnHide()
         {
             closed = true;
+            generation++;
             statusSpin.Stop();
         }
 
         public override void OnDestroy()
         {
+            closed = true;
+            generation++;
             statusSpin.Stop();
             statusSpin.Dispose();
         }

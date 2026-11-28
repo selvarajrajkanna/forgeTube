@@ -159,6 +159,10 @@ namespace ForgeTube.Ui
         {
             UiWork.Cancel(pump);
             if (scroll != null) { scroll.Stop(); scroll.Dispose(); scroll = null; }
+            if (type == DisposeTypes.Explicit)
+            {
+                Clear();
+            }
             base.Dispose(type);
         }
 

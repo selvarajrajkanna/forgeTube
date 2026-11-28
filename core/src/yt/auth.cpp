@@ -9,6 +9,7 @@
 
 #include "net/http.h"
 #include "util/log.h"
+#include "util/no_destroy.h"
 #include "util/remote_config.h"
 
 namespace omega::yt {
@@ -411,8 +412,8 @@ void Auth::cache_profile(const std::string& id, const std::string& name, const s
 }
 
 Auth& shared_auth() {
-    static Auth auth;
-    return auth;
+    static omega::NoDestroy<Auth> auth;
+    return *auth;
 }
 
 std::string prefilled_verification_url(const std::string& verification_url, const std::string& user_code) {

@@ -161,6 +161,17 @@ namespace ForgeTube.Ui
             results?.UnloadAll();
         }
 
+        public override void OnDestroy()
+        {
+            suggestGeneration++;
+            if (results != null)
+            {
+                resultsHost.Remove(results);
+                results.Dispose();
+                results = null;
+            }
+        }
+
         private static bool IsSubmitKey(string key) =>
             key == "Return" || key == "Enter" || key == "KP_Enter" || key == "KeypadEnter"
             || key == "Select" || key == "Done" || key == "XF86Done";

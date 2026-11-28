@@ -7,6 +7,7 @@
 
 #include "net/http.h"
 #include "util/log.h"
+#include "util/no_destroy.h"
 
 extern const char omega_remote_config_default[];  // generated from ../remote-config.json (CMakeLists.txt)
 
@@ -15,10 +16,17 @@ namespace {
 
 using json = nlohmann::json;
 
-std::mutex g_mutex;
-json g_config;
-std::string g_cache_path;
-std::string g_language = "en", g_region = "IN";
+struct CfgState {
+    std::mutex mutex;
+    json config;
+    std::string cache_path;
+    std::string language = "en", region = "IN";
+};
+
+CfgState& state() {
+    static omega::NoDestroy<CfgState> s;
+    return *s;
+}
 
 // Objects merge key by key; anything else replaces.
 void merge(json& base, const json& over) {
@@ -50,9 +58,10 @@ void init(const std::string& cache_path) {
         json cached = json::parse(ss.str(), nullptr, false);
         if (cached.is_object()) merge(config, cached);
     }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_cache_path = cache_path;
-    g_config = std::move(config);
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.cache_path = cache_path;
+    s.config = std::move(config);
 }
 
 bool refresh(std::string& error) {
@@ -73,52 +82,59 @@ bool refresh(std::string& error) {
         error = "remote config: invalid json";
         return false;
     }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    merge(g_config, remote);
-    if (!g_cache_path.empty()) {
-        std::string tmp = g_cache_path + ".tmp";
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    merge(s.config, remote);
+    if (!s.cache_path.empty()) {
+        std::string tmp = s.cache_path + ".tmp";
         bool ok = false;
         {
             std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
             ok = out && out.write(res.body.data(), static_cast<std::streamsize>(res.body.size()));
         }
-        if (ok) std::rename(tmp.c_str(), g_cache_path.c_str());
+        if (ok) std::rename(tmp.c_str(), s.cache_path.c_str());
     }
     OLOG("remote config: updated from %s (version %d)", repo.c_str(), remote.value("version", 0));
     return true;
 }
 
 json snapshot() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_config;
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.config;
 }
 
 std::string str(std::initializer_list<const char*> path, const std::string& fallback) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const json* v = lookup(g_config, path);
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const json* v = lookup(s.config, path);
     return v && v->is_string() ? v->get<std::string>() : fallback;
 }
 
 json obj(std::initializer_list<const char*> path) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const json* v = lookup(g_config, path);
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const json* v = lookup(s.config, path);
     return v && v->is_object() ? *v : json::object();
 }
 
 void set_locale(const std::string& language, const std::string& region) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!language.empty()) g_language = language;
-    if (!region.empty()) g_region = region;
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!language.empty()) s.language = language;
+    if (!region.empty()) s.region = region;
 }
 
 std::string language() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_language;
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.language;
 }
 
 std::string region() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_region;
+    CfgState& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.region;
 }
 
 }  // namespace omega::cfg

@@ -181,6 +181,15 @@ namespace ForgeTube.Ui
                 scroll.Dispose();
                 scroll = null;
             }
+            if (type == DisposeTypes.Explicit)
+            {
+                foreach (RowViews r in rows)
+                {
+                    lines.Remove(r.Root);
+                    r.Root.Dispose();
+                }
+                rows.Clear();
+            }
             base.Dispose(type);
         }
     }

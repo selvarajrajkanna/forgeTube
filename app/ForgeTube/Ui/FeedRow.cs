@@ -84,6 +84,22 @@ namespace ForgeTube.Ui
         {
             UiWork.Cancel(pump);
             if (slide != null) { slide.Stop(); slide.Dispose(); slide = null; }
+            if (type == DisposeTypes.Explicit)
+            {
+                foreach (Card c in activeCards.Values)
+                {
+                    c.Unload(force: true);
+                    strip.Remove(c);
+                    c.Dispose();
+                }
+                activeCards.Clear();
+                while (cardPool.Count > 0)
+                {
+                    Card c = cardPool.Pop();
+                    strip.Remove(c);
+                    c.Dispose();
+                }
+            }
             base.Dispose(type);
         }
 

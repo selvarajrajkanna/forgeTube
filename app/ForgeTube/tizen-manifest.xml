@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest package="org.forgetube.app" version="1.7.2" api-version="10.0" xmlns="http://tizen.org/ns/packages">
+<manifest package="org.forgetube.app" version="1.7.3" api-version="10.0" xmlns="http://tizen.org/ns/packages">
   <profile name="tv" />
   <ui-application appid="org.forgetube.app" exec="ForgeTube.dll" type="dotnet" multiple="false" nodisplay="false" taskmanage="true" launch_mode="single">
     <label>ForgeTube</label>

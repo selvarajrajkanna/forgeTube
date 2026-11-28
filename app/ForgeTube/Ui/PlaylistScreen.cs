@@ -85,6 +85,11 @@ namespace ForgeTube.Ui
             grid.UnloadAll();
         }
 
+        public override void OnDestroy()
+        {
+            grid.Dispose();
+        }
+
         public override bool OnKey(string key)
         {
             if (key == "XF86Back" || key == "Escape")

@@ -290,13 +290,59 @@ namespace ForgeTube
             }
             Screen top = stack[stack.Count - 1];
             stack.RemoveAt(stack.Count - 1);
-            top.OnHide();
-            top.OnDestroy();
-            Window.Default.Remove(top.Root);
-            top.Root.Dispose();
+            try
+            {
+                top.OnHide();
+            }
+            catch (Exception e)
+            {
+                Tizen.Log.Error("forgetube", "replace OnHide: " + e);
+            }
+            try
+            {
+                top.OnDestroy();
+                Window.Default.Remove(top.Root);
+                top.Root.Dispose();
+            }
+            catch (Exception e)
+            {
+                Tizen.Log.Error("forgetube", "replace Dispose: " + e);
+            }
             stack.Add(screen);
             Window.Default.Add(screen.Root);
-            screen.OnShow();
+            try
+            {
+                screen.OnShow();
+            }
+            catch (Exception)
+            {
+                stack.Remove(screen);
+                try
+                {
+                    screen.OnHide();
+                    screen.OnDestroy();
+                }
+                catch (Exception)
+                {
+                }
+                Window.Default.Remove(screen.Root);
+                screen.Root.Dispose();
+                Window.Default.BackgroundColor = Color.Black;
+                if (stack.Count > 0)
+                {
+                    Screen below = stack[stack.Count - 1];
+                    below.Root.Show();
+                    try
+                    {
+                        below.OnShow();
+                    }
+                    catch (Exception again)
+                    {
+                        Tizen.Log.Error("forgetube", "re-show after failed replace: " + again.Message);
+                    }
+                }
+                throw;
+            }
         }
 
         // A playlist card opens the list to pick from; a mix (endless) plays right away.

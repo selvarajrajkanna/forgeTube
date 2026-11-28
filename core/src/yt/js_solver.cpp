@@ -16,6 +16,7 @@
 
 #include "net/http.h"
 #include "util/log.h"
+#include "util/no_destroy.h"
 
 // The EJS solver bundles, embedded at build time (CMakeLists.txt).
 extern const char omega_ejs_lib[];
@@ -196,6 +197,7 @@ int parse_sts(const std::string& js) {
 JsSolver::~JsSolver() { reset(); }
 
 void JsSolver::reset() {
+    if (rt_) JS_UpdateStackTop(rt_);
     if (ctx_) JS_FreeContext(ctx_);
     if (rt_) JS_FreeRuntime(rt_);
     ctx_ = nullptr;
@@ -380,21 +382,56 @@ void Decipher::set_cache_dir(const std::string& dir) {
 }
 
 bool Decipher::ensure(std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (solver_ && Clock::now() - checked_ < std::chrono::hours(1)) return true;
+    std::string cache_dir;
+    std::string known_id;
+    bool had_solver = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (loading_) {
+            if (auto* ct = net::CancelScope::current(); ct && ct->is_aborted()) {
+                error = "cancelled";
+                return false;
+            }
+            cv_.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        if (solver_ && Clock::now() - checked_ < std::chrono::hours(1)) return true;
+        loading_ = true;
+        cache_dir = cache_dir_;
+        known_id = player_id_;
+        had_solver = (solver_ != nullptr);
+    }
+
+    struct LoadingGuard {
+        std::mutex& mu;
+        std::condition_variable& cv;
+        bool& flag;
+        ~LoadingGuard() {
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                flag = false;
+            }
+            cv.notify_all();
+        }
+    } guard{mutex_, cv_, loading_};
+
     std::string id, url;
-    if (!find_player(id, url, error)) return solver_ != nullptr;  // keep using the known player offline
-    checked_ = Clock::now();
-    if (solver_ && id == player_id_) return true;
+    if (!find_player(id, url, error)) return had_solver;  // keep using the known player offline
+    const auto now = Clock::now();
+    if (had_solver && id == known_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        checked_ = now;
+        return true;
+    }
 
     // Release the previous QuickJS runtime before allocating a new preprocess/load heap on player rotation.
-    if (solver_) {
+    if (had_solver) {
+        std::lock_guard<std::mutex> lock(mutex_);
         solver_.reset();
         player_id_.clear();
         n_cache_.clear();
     }
     auto t0 = Clock::now();
-    std::string base = cache_dir_.empty() ? "" : cache_dir_ + "/player-" + id;
+    std::string base = cache_dir.empty() ? "" : cache_dir + "/player-" + id;
     const std::string bc_ext = "-qjs0180.bc";
     int sts = base.empty() ? 0 : atoi(read_file(base + ".sts").c_str());
     auto solver = std::make_unique<JsSolver>();
@@ -424,16 +461,16 @@ bool Decipher::ensure(std::string& error) {
             if (!JsSolver::preprocess(std::move(js.body), preprocessed, error)) return false;
             if (!base.empty() && (!write_file(base + ".js", preprocessed) || !write_file(base + ".sts", std::to_string(sts)))) {
                 OLOG("decipher: could not cache %s", base.c_str());
-            } else if (!cache_dir_.empty()) {
+            } else if (!cache_dir.empty()) {
                 // Prune older player-<id>.* files so cache storage never grows unbounded across YouTube rotations.
                 const std::string keep_js = "player-" + id + ".js";
                 const std::string keep_sts = "player-" + id + ".sts";
                 const std::string keep_bc = "player-" + id + bc_ext;
-                if (DIR* dir = opendir(cache_dir_.c_str())) {
+                if (DIR* dir = opendir(cache_dir.c_str())) {
                     while (dirent* ent = readdir(dir)) {
                         std::string name(ent->d_name);
                         if (name.rfind("player-", 0) == 0 && name != keep_js && name != keep_sts && name != keep_bc) {
-                            std::remove((cache_dir_ + "/" + name).c_str());
+                            std::remove((cache_dir + "/" + name).c_str());
                         }
                     }
                     closedir(dir);
@@ -449,6 +486,8 @@ bool Decipher::ensure(std::string& error) {
     OLOG("decipher: player %s ready in %lld ms%s", id.c_str(),
          static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()),
          loaded_bc ? " (bytecode)" : "");
+    std::lock_guard<std::mutex> lock(mutex_);
+    checked_ = now;
     solver_ = std::move(solver);
     player_id_ = id;
     sts_ = sts;
@@ -457,7 +496,8 @@ bool Decipher::ensure(std::string& error) {
 }
 
 int Decipher::signature_timestamp() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (loading_) cv_.wait_for(lock, std::chrono::milliseconds(100));
     return sts_;
 }
 
@@ -483,7 +523,14 @@ bool Decipher::solve_cached(const char* type, const std::string& challenge, std:
 
 bool Decipher::stream_url(const std::string& url, const std::string& signature_cipher, std::string& out,
                           std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (loading_) {
+        if (auto* ct = net::CancelScope::current(); ct && ct->is_aborted()) {
+            error = "cancelled";
+            return false;
+        }
+        cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
     out = url;
     if (out.empty() && !signature_cipher.empty()) {
         out = query_value(signature_cipher, "url");
@@ -515,8 +562,8 @@ bool Decipher::stream_url(const std::string& url, const std::string& signature_c
 }
 
 Decipher& shared_decipher() {
-    static Decipher d;
-    return d;
+    static omega::NoDestroy<Decipher> d;
+    return *d;
 }
 
 }  // namespace omega::yt

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -53,6 +54,8 @@ private:
     bool solve_cached(const char* type, const std::string& challenge, std::string& out, std::string& error);
 
     std::mutex mutex_;
+    std::condition_variable cv_;
+    bool loading_ = false;
     std::string cache_dir_;
     std::string player_id_;
     int sts_ = 0;

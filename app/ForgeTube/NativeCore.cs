@@ -83,6 +83,7 @@ namespace ForgeTube
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<byte*> _version;
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<IntPtr, void> _free;
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void> _setDefaultAudioDelay;
+        private static delegate* unmanaged[Cdecl, SuppressGCTransition]<double, void> _setDefaultPlaybackRate;
         private static delegate* unmanaged[Cdecl, SuppressGCTransition]<void> _playerCancelPending;
 
         private static delegate* unmanaged[Cdecl]<IntPtr> _playerLastError, _configRefresh, _authStatus, _authBegin, _authAccount, _authAccounts;
@@ -94,7 +95,7 @@ namespace ForgeTube
         private static delegate* unmanaged[Cdecl]<byte*, void> _logLine, _init, _ytPreload;
         private static delegate* unmanaged[Cdecl]<byte*, byte*, void> _setLocale;
         private static delegate* unmanaged[Cdecl]<IntPtr, int, int, byte*, int, byte*, long, byte*, IntPtr> _playerCreateYouTube;
-        private static delegate* unmanaged[Cdecl]<IntPtr, void> _playerTogglePause, _playerDestroy;
+        private static delegate* unmanaged[Cdecl]<IntPtr, void> _playerTogglePause, _playerStop, _playerDestroy;
         private static delegate* unmanaged[Cdecl]<IntPtr, IntPtr> _playerFormats;
         private static delegate* unmanaged[Cdecl]<IntPtr, long, int> _playerSeek;
         private static delegate* unmanaged[Cdecl]<IntPtr, double, int> _playerSetRate;
@@ -111,6 +112,7 @@ namespace ForgeTube
             _version = (delegate* unmanaged[Cdecl, SuppressGCTransition]<byte*>)Export("omega_version");
             _free = (delegate* unmanaged[Cdecl, SuppressGCTransition]<IntPtr, void>)Export("omega_free");
             _setDefaultAudioDelay = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, void>)Export("omega_set_default_audio_delay");
+            _setDefaultPlaybackRate = (delegate* unmanaged[Cdecl, SuppressGCTransition]<double, void>)Export("omega_set_default_playback_rate");
             _playerCancelPending = (delegate* unmanaged[Cdecl, SuppressGCTransition]<void>)Export("omega_player_cancel_pending");
 
             _logInitUdp = (delegate* unmanaged[Cdecl]<byte*, int, void>)Export("omega_log_init_udp");
@@ -124,6 +126,7 @@ namespace ForgeTube
             _playerTogglePause = (delegate* unmanaged[Cdecl]<IntPtr, void>)Export("omega_player_toggle_pause");
             _playerSeek = (delegate* unmanaged[Cdecl]<IntPtr, long, int>)Export("omega_player_seek");
             _playerGetStats = (delegate* unmanaged[Cdecl]<IntPtr, PlayerStats*, void>)Export("omega_player_get_stats");
+            _playerStop = (delegate* unmanaged[Cdecl]<IntPtr, void>)Export("omega_player_stop");
             _playerDestroy = (delegate* unmanaged[Cdecl]<IntPtr, void>)Export("omega_player_destroy");
             _ytSearch = (delegate* unmanaged[Cdecl]<byte*, byte*, uint*, IntPtr>)Export("omega_yt_search");
             _ytSuggest = (delegate* unmanaged[Cdecl]<byte*, IntPtr>)Export("omega_yt_suggest");
@@ -367,9 +370,11 @@ namespace ForgeTube
             }
         }
 
+        public static void PlayerStop(IntPtr player) => _playerStop(player);
         public static void PlayerDestroy(IntPtr player) => _playerDestroy(player);
         public static IntPtr PlayerFormats(IntPtr player) => _playerFormats(player);
         public static int PlayerSetRate(IntPtr player, double rate) => _playerSetRate(player, rate);
+        public static void SetDefaultPlaybackRate(double rate) => _setDefaultPlaybackRate(rate);
         public static void SetDefaultAudioDelay(int delayMs) => _setDefaultAudioDelay(delayMs);
         public static void PlayerSetAudioDelay(IntPtr player, int delayMs) => _playerSetAudioDelay(player, delayMs);
         public static int BtAudioDelayMs() => _btAudioDelayMs();

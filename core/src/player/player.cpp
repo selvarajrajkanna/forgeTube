@@ -98,19 +98,29 @@ Player::Player(PlayerConfig cfg) : cfg_(std::move(cfg)) {
     audio_.type = esp::STREAM_AUDIO;
     audio_.url = cfg_.audio_url;
     audio_delay_ms_ = cfg_.audio_delay_ms;
+    playback_rate_.store(cfg_.playback_rate > 0.0 ? cfg_.playback_rate : 1.0, std::memory_order_relaxed);
 }
 
 void Player::teardown_esp() {
-    if (handle_) {
-        api_->stop(handle_);
-        api_->close(handle_);
-        api_->destroy(handle_);
+    esp::Handle h = nullptr;
+    void* ssi = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(ctrl_mutex_);
+        shutting_down_esp_.store(true, std::memory_order_release);
+        h = handle_;
         handle_ = nullptr;
+        last_state_ = esp::STATE_NONE;
+        ssi = sound_stream_info_;
+        sound_stream_info_ = nullptr;
+    }
+    if (h) {
+        api_->stop(h);
+        api_->close(h);
+        api_->destroy(h);
         OLOG("player: destroyed");
     }
-    if (sound_stream_info_ && api_ && api_->destroy_sound_stream_info) {
-        api_->destroy_sound_stream_info(sound_stream_info_);
-        sound_stream_info_ = nullptr;
+    if (ssi && api_ && api_->destroy_sound_stream_info) {
+        api_->destroy_sound_stream_info(ssi);
     }
 }
 
@@ -136,6 +146,8 @@ void Player::stop() {
         t->cv.notify_all();
         abort_track_source(*t);
     }
+    // Wait for any in-flight seek() to unwind (it sees running_ == false and exits) before joining/destroying.
+    std::lock_guard<std::mutex> seek_lock(seek_mutex_);
     if (control_thread_.joinable()) control_thread_.join();
     for (Track* t : {&video_, &audio_}) {
         if (t->feed_thread.joinable()) t->feed_thread.join();
@@ -247,7 +259,11 @@ bool Player::start() {
         results[idx].ok = true;
     };
     if (sources.size() > 1) {
-        std::thread second([&] { open_source(1); });
+        net::CancelToken* parent_cancel = net::CancelScope::current();
+        std::thread second([&] {
+            net::CancelScope cancel_scope(parent_cancel);
+            open_source(1);
+        });
         open_source(0);
         second.join();
     } else if (!sources.empty()) {
@@ -380,11 +396,20 @@ bool Player::start() {
         if (pcm_bits > 0 && dsp) {
             dsp->reconfigure_bits(pcm_bits);
             audio_dsp_ = std::move(dsp);
+            dsp_bits_.store(audio_dsp_->pcm_bits(), std::memory_order_relaxed);
+            dsp_hf_.store(0, std::memory_order_relaxed);
         } else {
             audio_dsp_.reset();
+            dsp_bits_.store(0, std::memory_order_relaxed);
+            dsp_hf_.store(0, std::memory_order_relaxed);
         }
 
-        handle_ = api_->create();
+        shutting_down_esp_.store(false, std::memory_order_release);
+        esp::Handle h = api_->create();
+        {
+            std::lock_guard<std::mutex> lock(ctrl_mutex_);
+            handle_ = h;
+        }
         if (!handle_) {
             error_ = "esplusplayer_create failed";
             return false;
@@ -784,7 +809,7 @@ void Player::stop_track(Track& t) {
 
 bool Player::seek(int64_t ms) {
     std::lock_guard<std::mutex> lock(seek_mutex_);
-    if (!prepared_ || video_.segments.empty()) return false;
+    if (!running_.load() || stopped_.load() || !prepared_ || video_.segments.empty()) return false;
     ms = std::max<int64_t>(0, std::min<int64_t>(ms, duration_ms_ > 0 ? duration_ms_ - 1000 : ms));
     // Exact seek: ESPlayer is told the exact target; video is fed from the keyframe segment at or before it
     // (the decoder needs it) and audio from the target. Precision matters for SponsorBlock skips.
@@ -804,6 +829,7 @@ bool Player::seek(int64_t ms) {
     }
     for (int i = 0; i < 2; ++i)
         if (use[i]) stop_track(*tracks[i]);
+    if (!running_.load() || stopped_.load()) return false;
     if (audio_dsp_) audio_dsp_->reset();
 
     for (Track* t : tracks) {
@@ -817,7 +843,15 @@ bool Player::seek(int64_t ms) {
     const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
     const int64_t started_ms = started_at_ms_.load();
     stall_grace_until_ms_ = (started_ms > 0 ? (now_ms - started_ms) : 0) + 3000;
-    int rc = api_->seek(handle_, static_cast<uint64_t>(target));
+    int rc = -1;
+    {
+        std::lock_guard<std::mutex> ctrl_lock(ctrl_mutex_);
+        if (!handle_ || !running_.load() || stopped_.load()) {
+            seek_pending_ = false;
+            return false;
+        }
+        rc = api_->seek(handle_, static_cast<uint64_t>(target));
+    }
     if (rc != 0) seek_pending_ = false;
 
     for (int i = 0; i < 2; ++i) {
@@ -1040,6 +1074,7 @@ void Player::feed_loop(Track& t) {
                 OLOG("audio dsp: frame error at pts=%lld", static_cast<long long>(s.pts_ms));
                 continue;
             }
+            dsp_hf_.store(audio_dsp_->hf_mode(), std::memory_order_relaxed);
             for (const auto& f : pcm_out) {
                 if (!running_ || !t.active) return;
                 if (!submit_es_packet(t, t.type, f.data.data(), f.data.size(), f.pts_ms, f.duration_ms)) return;
@@ -1073,7 +1108,17 @@ void Player::control_loop() {
     }
     if (!running_ || prepare_failed_) return;
     confirm_active_dsp();
-    int rc = api_->start(handle_);
+    int rc = -1;
+    {
+        std::lock_guard<std::mutex> lock(ctrl_mutex_);
+        if (!handle_ || !running_) return;
+        rc = api_->start(handle_);
+        const double init_rate = playback_rate_.load(std::memory_order_relaxed);
+        if (rc == 0 && init_rate > 0.0 && init_rate != 1.0) {
+            int rate_rc = api_->set_playback_rate(handle_, init_rate, false);
+            OLOG("esp initial set_playback_rate(%.2f) -> %d", init_rate, rate_rc);
+        }
+    }
     const auto started_at = Clock::now();
     started_at_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(started_at.time_since_epoch()).count();
     OLOG("esp start -> %d", rc);
@@ -1084,8 +1129,13 @@ void Player::control_loop() {
     bool in_stall = false;
     while (running_) {
         sleep_ms(50);
+        if (!running_) break;
         uint64_t pos = 0;
-        api_->get_playing_time(handle_, &pos);
+        {
+            std::lock_guard<std::mutex> lock(ctrl_mutex_);
+            if (!handle_ || !running_) break;
+            api_->get_playing_time(handle_, &pos);
+        }
         // Until seek_done the player still reports the old position: keep the target so feeding
         // (paced on position_ms_) is not throttled against a stale clock.
         if (!seek_pending_) {
@@ -1121,6 +1171,7 @@ void Player::control_loop() {
 }
 
 void Player::toggle_pause() {
+    std::lock_guard<std::mutex> lock(ctrl_mutex_);
     if (!handle_ || !prepared_) return;
     paused_ = !paused_;
     int rc = paused_ ? api_->pause(handle_) : api_->resume(handle_);
@@ -1128,7 +1179,9 @@ void Player::toggle_pause() {
 }
 
 bool Player::set_rate(double rate) {
-    if (!handle_ || !prepared_) return false;
+    playback_rate_.store(rate, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(ctrl_mutex_);
+    if (!handle_ || !prepared_) return true;  // applied by control_loop() once prepared + started
     int rc = api_->set_playback_rate(handle_, rate, false);
     OLOG("esp set_playback_rate(%.2f) -> %d", rate, rc);
     return rc == 0;
@@ -1136,7 +1189,6 @@ bool Player::set_rate(double rate) {
 
 PlayerStats Player::stats() {
     PlayerStats s{};
-    s.state = handle_ ? api_->get_state(handle_) : esp::STATE_NONE;
     s.position_ms = position_ms_.load(std::memory_order_relaxed);
     s.video_queued_ms = video_.queued_ms.load(std::memory_order_relaxed);
     s.audio_queued_ms = audio_.queued_ms.load(std::memory_order_relaxed);
@@ -1148,27 +1200,36 @@ PlayerStats Player::stats() {
     s.duration_ms = duration_ms_;
     s.reconnecting = (video_.reconnecting || audio_.reconnecting) ? 1 : 0;
     s.dropped_frames = dropped_frames_;
-    s.dsp_bits = audio_dsp_ ? audio_dsp_->pcm_bits() : 0;
-    s.dsp_hf = audio_dsp_ ? audio_dsp_->hf_mode() : 0;
+    s.dsp_bits = dsp_bits_.load(std::memory_order_relaxed);
+    s.dsp_hf = dsp_hf_.load(std::memory_order_relaxed);
     s.video_bitrate_kbps = video_bitrate_kbps_.load(std::memory_order_relaxed);
-    if (handle_ && prepared_ && s.state >= esp::STATE_READY) {
-        uint64_t adaptive_drops = 0;
-        if (api_->get_adaptive_info &&
-            api_->get_adaptive_info(handle_, &adaptive_drops, esp::ADAPT_DROPPED_FRAMES) == 0) {
-            s.dropped_frames = static_cast<uint32_t>(std::min<uint64_t>(adaptive_drops, UINT32_MAX));
+    std::unique_lock<std::mutex> lock(ctrl_mutex_, std::try_to_lock);
+    if (lock.owns_lock() && handle_) {
+        last_state_ = static_cast<esp::State>(api_->get_state(handle_));
+        s.state = last_state_;
+        if (prepared_ && s.state >= esp::STATE_READY) {
+            uint64_t adaptive_drops = 0;
+            if (api_->get_adaptive_info &&
+                api_->get_adaptive_info(handle_, &adaptive_drops, esp::ADAPT_DROPPED_FRAMES) == 0) {
+                s.dropped_frames = static_cast<uint32_t>(std::min<uint64_t>(adaptive_drops, UINT32_MAX));
+            }
         }
+    } else {
+        s.state = last_state_;
     }
     return s;
 }
 
 void Player::on_error(int err, void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     ++p->errors_;
     OLOG("esp error 0x%x (%s)", err, p->api_->get_error_string(err));
 }
 
 void Player::on_buffer_status(esp::StreamType type, esp::BufferStatus status, void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     // Underruns are expected while filling up before prepare; only count them during playback.
     if (status == esp::BUFFER_UNDERRUN && p->prepared_) {
         Track& t = type == esp::STREAM_VIDEO ? p->video_ : p->audio_;
@@ -1193,12 +1254,15 @@ void Player::on_buffer_status(esp::StreamType type, esp::BufferStatus status, vo
 }
 
 void Player::on_eos(void* self) {
-    static_cast<Player*>(self)->eos_ = true;
+    auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
+    p->eos_ = true;
     OLOG("esp eos");
 }
 
 void Player::on_ready_to_prepare(esp::StreamType type, void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     OLOG("esp ready_to_prepare(%s)", stream_name(type));
     Track& t = (type == esp::STREAM_VIDEO ? p->video_ : p->audio_);
     {
@@ -1211,6 +1275,7 @@ void Player::on_ready_to_prepare(esp::StreamType type, void* self) {
 
 void Player::on_prepare_done(bool ok, void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     OLOG("esp prepare_done ok=%d", ok ? 1 : 0);
     {
         std::lock_guard<std::mutex> lock(p->state_mutex_);
@@ -1221,6 +1286,7 @@ void Player::on_prepare_done(bool ok, void* self) {
 
 void Player::on_ready_to_seek(esp::StreamType type, uint64_t time_ms, void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     OLOG("esp ready_to_seek(%s, %llu)", stream_name(type), static_cast<unsigned long long>(time_ms));
     Track& t = (type == esp::STREAM_VIDEO ? p->video_ : p->audio_);
     {
@@ -1233,6 +1299,7 @@ void Player::on_ready_to_seek(esp::StreamType type, uint64_t time_ms, void* self
 
 void Player::on_seek_done(void* self) {
     auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
     p->seek_pending_ = false;
     for (Track* t : {&p->video_, &p->audio_}) {
         {
@@ -1245,12 +1312,16 @@ void Player::on_seek_done(void* self) {
 }
 
 void Player::on_resource_conflicted(void* self) {
-    ++static_cast<Player*>(self)->errors_;
+    auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
+    ++p->errors_;
     OLOG("esp resource conflicted");
 }
 
 void Player::on_video_frame_dropped(uint64_t count, void* self) {
-    static_cast<Player*>(self)->dropped_frames_ = static_cast<uint32_t>(std::min<uint64_t>(count, UINT32_MAX));
+    auto* p = static_cast<Player*>(self);
+    if (!p || p->shutting_down_esp_.load(std::memory_order_acquire)) return;
+    p->dropped_frames_ = static_cast<uint32_t>(std::min<uint64_t>(count, UINT32_MAX));
 }
 
 }  // namespace omega
