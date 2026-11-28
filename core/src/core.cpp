@@ -258,16 +258,39 @@ std::string refusal_kind(const std::string& status) {
     return "other";
 }
 
-// Audio languages of a multi-track video, in YouTube's order (one entry per track id).
+// Audio languages of a multi-track video, original track first, then remaining tracks in YouTube's order.
 nlohmann::json audio_tracks_json(const omega::yt::VideoInfo& info) {
-    nlohmann::json tracks = nlohmann::json::array();
-    std::vector<std::string> seen;
+    struct TrackEntry {
+        std::string id;
+        std::string name;
+        bool original = false;
+        bool auto_dubbed = false;
+        bool descriptive = false;
+    };
+    std::vector<TrackEntry> entries;
     for (const auto& f : info.formats) {
-        if (!f.is_audio() || f.audio_track_id.empty() ||
-            std::find(seen.begin(), seen.end(), f.audio_track_id) != seen.end())
-            continue;
-        seen.push_back(f.audio_track_id);
-        tracks.push_back({{"id", f.audio_track_id}, {"name", f.audio_track_name}, {"default", f.audio_default}});
+        if (!omega::yt::is_playable_audio(info, f) || f.audio_track_id.empty()) continue;
+        auto it = std::find_if(entries.begin(), entries.end(),
+                               [&](const TrackEntry& e) { return e.id == f.audio_track_id; });
+        if (it == entries.end()) {
+            entries.push_back({f.audio_track_id, f.audio_track_name, f.audio_original,
+                               f.audio_auto_dubbed, f.audio_descriptive});
+        } else {
+            if (it->name.empty() && !f.audio_track_name.empty()) it->name = f.audio_track_name;
+            it->original = it->original || f.audio_original;
+            it->auto_dubbed = it->auto_dubbed || f.audio_auto_dubbed;
+            it->descriptive = it->descriptive || f.audio_descriptive;
+        }
+    }
+    std::stable_partition(entries.begin(), entries.end(), [](const TrackEntry& e) { return e.original; });
+    nlohmann::json tracks = nlohmann::json::array();
+    for (const auto& t : entries) {
+        tracks.push_back({{"id", t.id},
+                          {"name", t.name},
+                          {"default", t.original},
+                          {"original", t.original},
+                          {"autoDubbed", t.auto_dubbed},
+                          {"descriptive", t.descriptive}});
     }
     return tracks;
 }

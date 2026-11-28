@@ -27,9 +27,12 @@ struct Format {
     int audio_sample_rate = 0;
     int audio_channels = 2;
     // Videos with several audio languages (dubbed): the same itags once per track.
-    std::string audio_track_id;    // e.g. "fr.3", "en.4" (empty: single-track video)
-    std::string audio_track_name;  // e.g. "Français (doublage)", "English (United States) original"
-    bool audio_default = false;
+    std::string audio_track_id;        // e.g. "fr.3", "ta.4" (empty: single-track video)
+    std::string audio_track_name;      // e.g. "Français (doublage)", "Tamil original"
+    bool audio_default = false;        // InnerTube audioIsDefault (matches request hl, NOT necessarily original)
+    bool audio_original = false;       // creator's original language track
+    bool audio_auto_dubbed = false;    // YouTube AI auto-dubbed track
+    bool audio_descriptive = false;    // accessibility audio description track
     VideoCodec codec = VideoCodec::Unknown;
     HdrMode hdr_mode = HdrMode::None;
     bool is_video() const { return mime.compare(0, 6, "video/") == 0; }
@@ -202,8 +205,10 @@ private:
 std::vector<const Format*> rank_videos(const VideoInfo& info, int max_height, const std::vector<std::string>& codecs);
 // "avc1,vp9" -> {"avc1", "vp9"}
 std::vector<std::string> parse_codec_list(const std::string& list);
+// True if `f` is a stereo/mono AAC or (for VOD) Opus audio format that ESPlayer can play.
+bool is_playable_audio(const VideoInfo& info, const Format& f);
 // Playable audio formats of the preferred audio track (Opus 48 kHz first, then AAC): `track` is a track id
-// ("fr.3") or a language ("fr"); empty, or not offered, picks the default (original) track.
+// ("fr.3") or a language ("fr"); empty, or not offered, picks the creator's original track.
 std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string& track = "");
 const Format* pick_audio(const VideoInfo& info, const std::string& track = "");
 

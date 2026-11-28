@@ -563,6 +563,213 @@ VideoCodec classify_video_codec(const std::string& mime, const std::string& code
     return VideoCodec::Unknown;
 }
 
+bool icontains(std::string_view hay, std::string_view needle) {
+    if (needle.empty()) return true;
+    if (hay.size() < needle.size()) return false;
+    for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+        size_t j = 0;
+        while (j < needle.size() &&
+               std::tolower(static_cast<unsigned char>(hay[i + j])) == static_cast<unsigned char>(needle[j])) {
+            ++j;
+        }
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
+std::string lang_base(std::string_view code) {
+    size_t cut = code.find_first_of(".-_");
+    if (cut != std::string_view::npos) code = code.substr(0, cut);
+    std::string out(code);
+    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+int audio_track_id_type(std::string_view id) {
+    size_t dot = id.rfind('.');
+    if (dot == std::string_view::npos || dot + 1 >= id.size()) return -1;
+    std::string_view suf = id.substr(dot + 1);
+    int val = -1;
+    auto [ptr, ec] = std::from_chars(suf.data(), suf.data() + suf.size(), val);
+    if (ec != std::errc{} || ptr != suf.data() + suf.size()) return -1;
+    return val;
+}
+
+struct XTagsInfo {
+    std::string acont;
+    std::string lang;
+};
+
+int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+std::string url_decode(std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            int hi = hex_val(in[i + 1]), lo = hex_val(in[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        } else if (in[i] == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(in[i]);
+    }
+    return out;
+}
+
+std::string base64url_decode(std::string_view in) {
+    auto b64_val = [](unsigned char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+' || c == '-') return 62;
+        if (c == '/' || c == '_') return 63;
+        return -1;
+    };
+    std::string out;
+    out.reserve((in.size() * 3) / 4);
+    uint32_t acc = 0;
+    int bits = 0;
+    for (unsigned char c : in) {
+        if (c == '=') break;
+        int v = b64_val(c);
+        if (v < 0) continue;
+        acc = (acc << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((acc >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+bool read_varint(const uint8_t* data, size_t len, size_t& pos, uint64_t& out) {
+    out = 0;
+    int shift = 0;
+    while (pos < len && shift < 64) {
+        uint8_t b = data[pos++];
+        out |= static_cast<uint64_t>(b & 0x7F) << shift;
+        if ((b & 0x80) == 0) return true;
+        shift += 7;
+    }
+    return false;
+}
+
+bool skip_pb_field(const uint8_t* data, size_t len, size_t& pos, uint64_t wire_type) {
+    uint64_t v = 0;
+    switch (wire_type) {
+        case 0: return read_varint(data, len, pos, v);
+        case 1:
+            if (pos + 8 > len) return false;
+            pos += 8;
+            return true;
+        case 2:
+            if (!read_varint(data, len, pos, v) || v > len - pos) return false;
+            pos += static_cast<size_t>(v);
+            return true;
+        case 5:
+            if (pos + 4 > len) return false;
+            pos += 4;
+            return true;
+        default: return false;
+    }
+}
+
+XTagsInfo parse_url_xtags(std::string_view url) {
+    XTagsInfo info;
+    size_t q = url.find('?');
+    if (q == std::string_view::npos) return info;
+    std::string_view query = url.substr(q + 1);
+    std::string_view raw;
+    size_t pos = 0;
+    while (pos < query.size()) {
+        size_t amp = query.find('&', pos);
+        if (amp == std::string_view::npos) amp = query.size();
+        std::string_view part = query.substr(pos, amp - pos);
+        if (part.size() >= 6 && part.compare(0, 6, "xtags=") == 0) {
+            raw = part.substr(6);
+            break;
+        }
+        pos = amp + 1;
+    }
+    if (raw.empty()) return info;
+
+    std::string decoded = url_decode(raw);
+    auto apply_kv = [&info](std::string_view key, std::string_view val) {
+        if (key == "acont") info.acont.assign(val.data(), val.size());
+        else if (key == "lang") info.lang.assign(val.data(), val.size());
+    };
+
+    // Colon-separated key=value format (e.g. "acont=original:lang=ta"); check keys explicitly so base64 '=' padding doesn't false-match.
+    if (decoded.rfind("acont=", 0) == 0 || decoded.find(":acont=") != std::string::npos ||
+        decoded.rfind("lang=", 0) == 0 || decoded.find(":lang=") != std::string::npos) {
+        size_t start = 0;
+        while (start < decoded.size()) {
+            size_t colon = decoded.find(':', start);
+            if (colon == std::string::npos) colon = decoded.size();
+            std::string_view kv(decoded.data() + start, colon - start);
+            size_t eq = kv.find('=');
+            if (eq != std::string_view::npos) apply_kv(kv.substr(0, eq), kv.substr(eq + 1));
+            start = colon + 1;
+        }
+        return info;
+    }
+
+    // Base64url-encoded Protobuf: message XTags { repeated Tag { string key = 1; string value = 2; } = 1; }
+    std::string pb = base64url_decode(decoded);
+    const auto* data = reinterpret_cast<const uint8_t*>(pb.data());
+    size_t len = pb.size();
+    size_t p = 0;
+    while (p < len) {
+        uint64_t tag = 0;
+        if (!read_varint(data, len, p, tag)) break;
+        uint64_t fn = tag >> 3, wt = tag & 7;
+        if (fn == 1 && wt == 2) {
+            uint64_t mlen = 0;
+            if (!read_varint(data, len, p, mlen) || mlen > len - p) break;
+            size_t mend = p + static_cast<size_t>(mlen);
+            std::string_view key, val;
+            while (p < mend) {
+                uint64_t itag = 0;
+                if (!read_varint(data, mend, p, itag)) {
+                    p = mend;
+                    break;
+                }
+                uint64_t ifn = itag >> 3, iwt = itag & 7;
+                if ((ifn == 1 || ifn == 2) && iwt == 2) {
+                    uint64_t slen = 0;
+                    if (!read_varint(data, mend, p, slen) || slen > mend - p) {
+                        p = mend;
+                        break;
+                    }
+                    std::string_view sv(reinterpret_cast<const char*>(data + p), static_cast<size_t>(slen));
+                    if (ifn == 1) key = sv;
+                    else val = sv;
+                    p += static_cast<size_t>(slen);
+                } else if (!skip_pb_field(data, mend, p, iwt)) {
+                    p = mend;
+                    break;
+                }
+            }
+            if (!key.empty()) apply_kv(key, val);
+        } else if (!skip_pb_field(data, len, p, wt)) {
+            break;
+        }
+    }
+    return info;
+}
+
 }  // namespace
 
 bool Client::ensure_visitor(std::string& visitor_out, std::string& version_out, std::string& error) {
@@ -809,6 +1016,12 @@ bool Client::player_with(const json& c, const std::string& video_id, const std::
     size_t total_adaptive = 0;
     std::string first_err;
     if (yyjson_val* af = yarr(yobj(r, "streamingData"), "adaptiveFormats")) {
+        struct RawAudioMeta {
+            size_t fmt_idx;
+            XTagsInfo xt;
+            bool explicit_dub;
+        };
+        std::vector<RawAudioMeta> raw_audio;
         yyjson_arr_iter it = yyjson_arr_iter_with(af);
         while (yyjson_val* f = yyjson_arr_iter_next(&it)) {
             if (!yyjson_is_obj(f)) continue;
@@ -841,10 +1054,33 @@ bool Client::player_with(const json& c, const std::string& video_id, const std::
             int ch = static_cast<int>(yint(f, "audioChannels"));
             fmt.audio_channels = ch > 0 ? ch : 2;
             if (ybool(f, "isDrc")) continue;  // loudness-compressed duplicate of an audio format
-            yyjson_val* track = yobj(f, "audioTrack");
-            fmt.audio_track_id = ystr(track, "id");
-            fmt.audio_track_name = ystr(track, "displayName");
-            fmt.audio_default = ybool(track, "audioIsDefault");
+
+            bool explicit_dub = false;
+            XTagsInfo xt;
+            if (fmt.is_audio()) {
+                yyjson_val* track = yobj(f, "audioTrack");
+                fmt.audio_track_id = ystr(track, "id");
+                fmt.audio_track_name = ystr(track, "displayName");
+                fmt.audio_default = ybool(track, "audioIsDefault");
+                bool json_auto_dub = ybool(track, "isAutoDubbed");
+                xt = parse_url_xtags(fmt.url);
+                int id_type = audio_track_id_type(fmt.audio_track_id);
+                fmt.audio_descriptive = (xt.acont == "descriptive") || (id_type == 2) ||
+                                        icontains(fmt.audio_track_name, "descriptive");
+                fmt.audio_auto_dubbed = json_auto_dub || (xt.acont == "dubbed-auto") ||
+                                        (id_type == 6 || id_type == 10) ||
+                                        fmt.audio_track_id.rfind("ml.", 0) == 0 ||
+                                        icontains(fmt.audio_track_name, "auto-dub") ||
+                                        icontains(fmt.audio_track_name, "autodub");
+                explicit_dub = fmt.audio_descriptive || fmt.audio_auto_dubbed ||
+                               (xt.acont == "dubbed") || (id_type == 3) ||
+                               icontains(fmt.audio_track_name, "dubbed") ||
+                               icontains(fmt.audio_track_name, "doublage");
+                fmt.audio_original = !explicit_dub &&
+                                     ((xt.acont == "original") ||
+                                      icontains(fmt.audio_track_name, "original") ||
+                                      (id_type == 4));
+            }
 
             if (fmt.is_video()) {
                 fmt.codec = classify_video_codec(fmt.mime, fmt.codecs);
@@ -857,7 +1093,71 @@ bool Client::player_with(const json& c, const std::string& video_id, const std::
                 }
             }
 
+            if (fmt.is_audio()) raw_audio.push_back({out.formats.size(), std::move(xt), explicit_dub});
             out.formats.push_back(std::move(fmt));
+        }
+
+        // If a client omitted audioTrack JSON on a multi-audio video, synthesize ids from xtags.
+        bool has_any_track_id = false;
+        for (const auto& m : raw_audio) {
+            if (!out.formats[m.fmt_idx].audio_track_id.empty()) {
+                has_any_track_id = true;
+                break;
+            }
+        }
+        if (!has_any_track_id && !raw_audio.empty()) {
+            std::vector<std::string> distinct_keys;
+            for (const auto& m : raw_audio) {
+                if (m.xt.lang.empty()) continue;
+                std::string k = m.xt.lang + "|" + m.xt.acont;
+                if (std::find(distinct_keys.begin(), distinct_keys.end(), k) == distinct_keys.end())
+                    distinct_keys.push_back(std::move(k));
+            }
+            if (distinct_keys.size() > 1) {
+                for (const auto& m : raw_audio) {
+                    if (m.xt.lang.empty()) continue;
+                    const char* suf = (m.xt.acont == "original")      ? ".4"
+                                    : (m.xt.acont == "dubbed-auto")   ? ".10"
+                                    : (m.xt.acont == "descriptive")   ? ".2"
+                                    : (m.xt.acont == "dubbed")        ? ".3"
+                                                                      : "";
+                    out.formats[m.fmt_idx].audio_track_id = m.xt.lang + suf;
+                }
+            }
+        }
+
+        // Guarantee one original track on multi-track videos even if YouTube omitted explicit original markers.
+        bool has_multi_playable = false;
+        bool has_original = false;
+        for (const auto& m : raw_audio) {
+            const Format& f = out.formats[m.fmt_idx];
+            if (!f.audio_track_id.empty() && is_playable_audio(out, f)) {
+                has_multi_playable = true;
+                if (f.audio_original) {
+                    has_original = true;
+                    break;
+                }
+            }
+        }
+        if (has_multi_playable && !has_original) {
+            int best_score = -1;
+            std::string fallback_orig_id;
+            for (const auto& m : raw_audio) {
+                const Format& f = out.formats[m.fmt_idx];
+                if (f.audio_track_id.empty() || !is_playable_audio(out, f)) continue;
+                int score = (f.audio_descriptive ? 0 : 1000) + (!m.explicit_dub ? 500 : 0) +
+                            (!f.audio_auto_dubbed ? 100 : 0) + (f.audio_default ? 10 : 0);
+                if (score > best_score) {
+                    best_score = score;
+                    fallback_orig_id = f.audio_track_id;
+                }
+            }
+            if (!fallback_orig_id.empty()) {
+                for (const auto& m : raw_audio) {
+                    Format& f = out.formats[m.fmt_idx];
+                    if (f.audio_track_id == fallback_orig_id) f.audio_original = true;
+                }
+            }
         }
     }
     OLOG("yt: '%s' by %s, %llds, %zu formats (%s client%s)", out.title.c_str(), out.author.c_str(),
@@ -1744,42 +2044,32 @@ std::vector<std::string> parse_codec_list(const std::string& list) {
     return out;
 }
 
+bool is_playable_audio(const VideoInfo& info, const Format& f) {
+    if (!f.is_audio() || f.audio_channels > 2) return false;
+    if (f.mime == "audio/mp4" && f.codecs.compare(0, 4, "mp4a") == 0) return true;
+    if (!info.is_live && f.mime == "audio/webm" && f.codecs == "opus") return true;
+    return false;
+}
+
 std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string& track) {
-    auto playable_audio = [&info](const Format& f) {
-        if (!f.is_audio() || f.audio_channels > 2) return false;
-        if (f.mime == "audio/mp4" && f.codecs.compare(0, 4, "mp4a") == 0) return true;
-        if (!info.is_live && f.mime == "audio/webm" && f.codecs == "opus") return true;
-        return false;
-    };
-    auto is_descriptive = [](const Format& f) {
-        const std::string& name = f.audio_track_name;
-        constexpr std::string_view needle = "descriptive";
-        if (name.size() < needle.size()) return false;
-        for (size_t i = 0; i + needle.size() <= name.size(); ++i) {
-            size_t j = 0;
-            while (j < needle.size() &&
-                   std::tolower(static_cast<unsigned char>(name[i + j])) == static_cast<unsigned char>(needle[j]))
-                ++j;
-            if (j == needle.size()) return true;
-        }
-        return false;
-    };
-    // The track to play: exact id, else same language ("fr" matches "fr.3" and "fr-FR.3", preferring default /
-    // non-descriptive tracks), else the default.
+    // The track to play: exact id, else same language ("fr" matches "fr.3" and "fr-FR.3", preferring original /
+    // human dub / non-descriptive tracks), else the creator's original track.
     std::string wanted;
     if (!track.empty()) {
         for (const Format& f : info.formats)
-            if (playable_audio(f) && f.audio_track_id == track) {
+            if (is_playable_audio(info, f) && f.audio_track_id == track) {
                 wanted = track;
                 break;
             }
         if (wanted.empty()) {
-            std::string lang = track.substr(0, track.find_first_of(".-"));
+            std::string lang = lang_base(track);
             int best_score = -1;
             for (const Format& f : info.formats) {
-                if (!playable_audio(f) || f.audio_track_id.empty()) continue;
-                if (f.audio_track_id.substr(0, f.audio_track_id.find_first_of(".-")) != lang) continue;
-                int score = (is_descriptive(f) ? 0 : 2) + (f.audio_default ? 1 : 0);
+                if (!is_playable_audio(info, f) || f.audio_track_id.empty()) continue;
+                if (lang_base(f.audio_track_id) != lang) continue;
+                int score = (f.audio_descriptive ? 0 : 100) +
+                            (f.audio_original ? 20 : (!f.audio_auto_dubbed ? 10 : 0)) +
+                            (f.audio_default ? 1 : 0);
                 if (score > best_score) {
                     best_score = score;
                     wanted = f.audio_track_id;
@@ -1790,8 +2080,9 @@ std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string&
     if (wanted.empty()) {
         int best_score = -1;
         for (const Format& f : info.formats) {
-            if (!playable_audio(f) || !f.audio_default) continue;
-            int score = is_descriptive(f) ? 0 : 1;
+            if (!is_playable_audio(info, f) || f.audio_track_id.empty()) continue;
+            int score = (f.audio_descriptive ? 0 : 1000) + (f.audio_original ? 500 : 0) +
+                        (!f.audio_auto_dubbed ? 100 : 0) + (f.audio_default ? 10 : 0);
             if (score > best_score) {
                 best_score = score;
                 wanted = f.audio_track_id;
@@ -1800,7 +2091,7 @@ std::vector<const Format*> rank_audios(const VideoInfo& info, const std::string&
     }
     std::vector<const Format*> out;
     for (const Format& f : info.formats) {
-        if (!playable_audio(f) || (!wanted.empty() && f.audio_track_id != wanted)) continue;
+        if (!is_playable_audio(info, f) || (!wanted.empty() && f.audio_track_id != wanted)) continue;
         out.push_back(&f);
     }
     // Weight Opus ~1.35x AAC: 128-160k Opus (itag 251) beats 128k AAC (140), while 256k Premium AAC (141) beats

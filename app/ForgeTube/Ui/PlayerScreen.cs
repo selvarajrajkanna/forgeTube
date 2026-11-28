@@ -2603,7 +2603,7 @@ namespace ForgeTube.Ui
                         items.Add(new ListPanel.Item
                         {
                             Text = AudioName(a.Id),
-                            SubText = a.Default ? T("Original track") : null,
+                            SubText = a.Original ? T("Original track") : a.AutoDubbed ? T("Auto-dubbed") : a.Descriptive ? T("Audio description") : null,
                             Checked = a.Id == info.AudioTrack,
                         });
                     }
@@ -3001,12 +3001,28 @@ namespace ForgeTube.Ui
             return list;
         }
 
+        private static readonly string[] AudioRoleSuffixes =
+        {
+            " (original)", " [original]", " - original", " original",
+            " (auto-dubbed)", " [auto-dubbed]", " - auto-dubbed", " auto-dubbed",
+            " (descriptive)", " [descriptive]", " descriptive",
+        };
+
         private string AudioName(string id)
         {
             AudioTrack a = info.AudioTracks.Find(t => t.Id == id);
             if (a != null && !string.IsNullOrEmpty(a.Name))
             {
-                return a.Name;
+                string name = a.Name.Trim();
+                foreach (string suf in AudioRoleSuffixes)
+                {
+                    if (name.Length > suf.Length && name.EndsWith(suf, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string stripped = name.Substring(0, name.Length - suf.Length).TrimEnd();
+                        if (!string.IsNullOrEmpty(stripped)) return stripped;
+                    }
+                }
+                return name;
             }
             return string.IsNullOrEmpty(id) ? T("default") : Languages.Name(id);
         }

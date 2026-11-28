@@ -40,7 +40,7 @@ namespace ForgeTube.Data
     public class AudioTrack
     {
         public string Id, Name;
-        public bool Default;
+        public bool Default, Original, AutoDubbed, Descriptive;
     }
 
     public class CaptionTrack
@@ -383,7 +383,16 @@ namespace ForgeTube.Data
                     {
                         foreach (JsonElement o in tracks.EnumerateArray())
                         {
-                            info.AudioTracks.Add(new AudioTrack { Id = Json.Str(o, "id"), Name = Json.Str(o, "name"), Default = Json.Bool(o, "default") });
+                            bool orig = Json.Bool(o, "original", Json.Bool(o, "default"));
+                            info.AudioTracks.Add(new AudioTrack
+                            {
+                                Id = Json.Str(o, "id"),
+                                Name = Json.Str(o, "name"),
+                                Default = orig,
+                                Original = orig,
+                                AutoDubbed = Json.Bool(o, "autoDubbed"),
+                                Descriptive = Json.Bool(o, "descriptive"),
+                            });
                         }
                     }
                     if (Json.TryArr(root, "captions", out JsonElement caps))

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using ForgeTube.Util;
 using static ForgeTube.I18n;
@@ -56,20 +57,42 @@ namespace ForgeTube.Config
 
     public enum SkipMode { Auto, Manual, Off }
 
-    // Languages offered for subtitles / dubbed audio (French names), by ISO 639-1 code.
+    // Languages offered for subtitles / dubbed audio, by ISO 639-1 code.
     public static class Languages
     {
-        public static readonly string[] Codes = { "fr", "en", "es", "de", "it", "pt", "nl", "ar", "ja", "ko", "zh", "ru", "tr", "pl", "cs" };
+        public static readonly string[] Codes =
+        {
+            "en", "hi", "ta", "te", "ml", "kn", "bn", "mr", "gu", "pa", "ur",
+            "fr", "es", "de", "it", "pt", "nl", "ar", "ja", "ko", "zh", "ru",
+            "tr", "pl", "cs", "id", "th", "vi", "ms", "fil",
+        };
         private static readonly string[] Names =
         {
-            "French", "English", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Arabic", "Japanese",
-            "Korean", "Chinese", "Russian", "Turkish", "Polish", "Czech",
+            "English", "Hindi", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Marathi", "Gujarati", "Punjabi", "Urdu",
+            "French", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Arabic", "Japanese", "Korean", "Chinese", "Russian",
+            "Turkish", "Polish", "Czech", "Indonesian", "Thai", "Vietnamese", "Malay", "Filipino",
         };
 
         public static string Name(string code)
         {
-            int i = Array.IndexOf(Codes, Base(code));
-            return i >= 0 ? T(Names[i]) : code;
+            string b = Base(code);
+            int i = Array.IndexOf(Codes, b);
+            if (i >= 0) return T(Names[i]);
+            if (string.IsNullOrEmpty(b)) return code ?? "";
+            try
+            {
+                var ci = CultureInfo.GetCultureInfo(b);
+                if (!string.IsNullOrEmpty(ci.EnglishName) &&
+                    !ci.EnglishName.StartsWith("Unknown Language", StringComparison.OrdinalIgnoreCase) &&
+                    !ci.EnglishName.StartsWith("Invariant Language", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ci.EnglishName;
+                }
+            }
+            catch (CultureNotFoundException)
+            {
+            }
+            return b.ToUpperInvariant();
         }
 
         private static readonly char[] LangSeparators = { '-', '.', '_' };
